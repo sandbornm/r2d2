@@ -1,0 +1,38 @@
+[llm]
+provider = "openai"
+model = "gpt-5-mini-2025-08-07"
+api_key_env = "OPENAI_API_KEY"
+max_tokens = 4096
+temperature = 0.1
+
+[analysis]
+auto_analyze = true
+max_binary_size = "5MB"
+timeout_quick = 5
+timeout_deep = 60
+enable_angr = false
+
+default_radare_profile = "analysis.quick"
+
+enable_trajectory_recording = true
+
+[output]
+format = "terminal"
+verbosity = "normal"
+save_artifacts = true
+artifacts_dir = "~/.cache/r2d2"
+
+[performance]
+parallel_functions = 4
+cache_results = true
+
+[storage]
+database_path = "~/.local/share/r2d2/r2d2.db"
+auto_migrate = true
+
+[ghidra]
+use_bridge = false
+bridge_host = "127.0.0.1"
+bridge_port = 13100
+install_dir = ""
+project_dir = "${HOME}/.local/share/r2d2/ghidra-projects"

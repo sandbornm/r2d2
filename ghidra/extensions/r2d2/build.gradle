@@ -1,0 +1,27 @@
+plugins {
+    id 'java'
+}
+
+ext.GHIDRA_INSTALL_DIR = project.findProperty('GHIDRA_INSTALL_DIR') ?: System.getenv('GHIDRA_INSTALL_DIR') ?: ""
+if (!GHIDRA_INSTALL_DIR) {
+    throw new GradleException('Set GHIDRA_INSTALL_DIR or pass -PGHIDRA_INSTALL_DIR=/path/to/ghidra')
+}
+
+apply from: new File(GHIDRA_INSTALL_DIR, 'support/gradle/BaseExtension.gradle')
+
+sourceCompatibility = JavaVersion.VERSION_11
+targetCompatibility = JavaVersion.VERSION_11
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation fileTree(dir: new File(GHIDRA_INSTALL_DIR, 'Ghidra/Framework/Generic/lib'), include: ['*.jar'])
+}
+
+jar {
+    manifest {
+        attributes 'Extension-Name': 'r2d2', 'Extension-Version': '0.1.0'
+    }
+}

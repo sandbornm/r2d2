@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+.venv/
+.env
+.mypy_cache/
+.pytest_cache/
+coverage/
+.DS_Store
+web/frontend/node_modules/
+web/frontend/dist/
+web/frontend/.vite/
+uv.lock
+
+# Ghidra build outputs
+*.log
+output/
