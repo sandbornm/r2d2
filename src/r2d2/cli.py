@@ -11,7 +11,7 @@ from rich.console import Console
 from rich.json import JSON
 from rich.table import Table
 
-from .llm import OpenAIClient
+from .llm import ChatMessage as LLMChatMessage, LLMBridge
 from .state import AppState, build_state
 from .utils import to_json
 
@@ -44,19 +44,29 @@ def analyze(
         _render_result(result)
 
     if ask:
+        bridge = LLMBridge(state.config)
+        summary = {
+            "quick": result.quick_scan,
+            "deep": result.deep_scan,
+            "notes": result.notes,
+            "issues": result.issues,
+        }
+        messages = [
+            LLMChatMessage(
+                role="system",
+                content="You are assisting with ELF reverse engineering. Use the supplied context to answer clearly.",
+            ),
+            LLMChatMessage(
+                role="user",
+                content=f"Question: {ask}\n\nContext:\n{json.dumps(summary, indent=2)}",
+            ),
+        ]
         try:
-            client = OpenAIClient(state.config)
-        except Exception as exc:
+            response = bridge.chat(messages)
+        except RuntimeError as exc:
             console.print(f"[red]LLM unavailable: {exc}")
         else:
-            summary = {
-                "quick": result.quick_scan,
-                "deep": result.deep_scan,
-                "notes": result.notes,
-                "issues": result.issues,
-            }
-            response = client.summarize_analysis({"question": ask, "analysis": summary})
-            console.rule("LLM Response")
+            console.rule(f"LLM Response ({bridge.last_provider or bridge.providers[0]})")
             console.print(response)
 
 

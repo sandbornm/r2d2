@@ -2,6 +2,10 @@
 provider = "openai"
 model = "gpt-5-mini-2025-08-07"
 api_key_env = "OPENAI_API_KEY"
+fallback_provider = "anthropic"
+fallback_model = "claude-3-sonnet-20240229"
+fallback_api_key_env = "ANTHROPIC_API_KEY"
+enable_fallback = true
 max_tokens = 4096
 temperature = 0.1
 
@@ -10,7 +14,9 @@ auto_analyze = true
 max_binary_size = "5MB"
 timeout_quick = 5
 timeout_deep = 60
-enable_angr = false
+enable_angr = true
+enable_ghidra = false
+require_elf = true
 
 default_radare_profile = "analysis.quick"
 

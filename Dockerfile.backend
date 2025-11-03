@@ -1,0 +1,51 @@
+# syntax=docker/dockerfile:1.6
+
+################################################################################
+# Frontend build stage
+################################################################################
+FROM node:20-bullseye-slim AS frontend-builder
+WORKDIR /frontend
+
+COPY web/frontend/package*.json ./
+RUN npm install
+COPY web/frontend/ .
+RUN npm run build
+
+################################################################################
+# Backend stage
+################################################################################
+FROM python:3.11-slim AS runtime
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    UV_LINK_MODE=copy \
+    R2D2_WEB_HOST=0.0.0.0 \
+    R2D2_WEB_PORT=5050
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        build-essential \
+        git \
+        libmagic-dev \
+        libmagic1 \
+        python3-dev \
+        radare2 \
+        curl && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir uv
+
+WORKDIR /app
+
+COPY pyproject.toml uv.lock ./
+RUN uv sync --no-dev --frozen
+
+COPY src ./src
+COPY config ./config
+COPY scripts ./scripts
+COPY ghidra ./ghidra
+COPY web ./web
+COPY --from=frontend-builder /frontend/dist ./web/frontend/dist
+
+EXPOSE 5050
+
+CMD ["uv", "run", "r2d2-web"]

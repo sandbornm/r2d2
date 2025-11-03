@@ -1,53 +1,35 @@
+import { Grid, Paper, Typography } from '@mui/material';
 import { FC } from 'react';
+import AnalysisDetails from './AnalysisDetails';
+import AnalysisSummary from './AnalysisSummary';
+import type { AnalysisResultPayload, ComplexityLevel } from '../types';
 
 interface ResultViewerProps {
-  result: Record<string, unknown> | null;
+  result: AnalysisResultPayload | null;
+  complexity: ComplexityLevel;
 }
 
-const ResultViewer: FC<ResultViewerProps> = ({ result }) => {
+const ResultViewer: FC<ResultViewerProps> = ({ result, complexity }) => {
   if (!result) {
     return (
-      <div className="empty-state">
-        <strong>No analysis yet</strong>
-        <span>Results will appear here once the job completes.</span>
-      </div>
+      <Paper variant="outlined" sx={{ p: 4, textAlign: 'center', color: 'text.secondary' }}>
+        <Typography variant="h6" gutterBottom>
+          Awaiting analysis
+        </Typography>
+        <Typography variant="body2">Results will appear once the pipeline completes.</Typography>
+      </Paper>
     );
   }
 
-  const quick = (result.quick_scan ?? {}) as Record<string, unknown>;
-  const deep = (result.deep_scan ?? {}) as Record<string, unknown>;
-  const notes = (result.notes ?? []) as string[];
-  const issues = (result.issues ?? []) as string[];
-
   return (
-    <div className="result-grid">
-      <section className="result-section">
-        <h3>Quick scan</h3>
-        <pre>{JSON.stringify(quick, null, 2)}</pre>
-      </section>
-
-      <section className="result-section">
-        <h3>Deep scan</h3>
-        <pre>{JSON.stringify(deep, null, 2)}</pre>
-      </section>
-
-      <section className="result-section">
-        <h3>Notes & Issues</h3>
-        <div className="badges">
-          {issues.map((issue) => (
-            <span key={issue} className="badge" data-tone="warn">
-              ⚠ {issue}
-            </span>
-          ))}
-          {notes.map((note) => (
-            <span key={note} className="badge" data-tone="info">
-              ℹ {note}
-            </span>
-          ))}
-          {!notes.length && !issues.length && <span>No notes recorded.</span>}
-        </div>
-      </section>
-    </div>
+    <Grid container spacing={2}>
+      <Grid item xs={12}>
+        <AnalysisSummary analysis={result} complexity={complexity} />
+      </Grid>
+      <Grid item xs={12}>
+        <AnalysisDetails analysis={result} complexity={complexity} />
+      </Grid>
+    </Grid>
   );
 };
 

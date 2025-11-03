@@ -42,6 +42,8 @@ _COMMANDS: dict[str, list[str]] = {
     "radare2": ["radare2", "r2"],
     "ghidra": ["ghidraRun", "analyzeHeadless"],
     "docker": ["docker"],
+    "qemu": ["qemu-system-x86_64", "qemu-system-aarch64"],
+    "frida": ["frida-server", "frida"],
 }
 
 
@@ -84,15 +86,27 @@ def detect_environment(config: AppConfig) -> EnvironmentReport:
     report.tools.append(_check_python_module("capstone"))
     if config.analysis.enable_angr:
         report.tools.append(_check_python_module("angr"))
+    if config.llm.provider.lower() in {"anthropic", "claude"} or (
+        config.llm.enable_fallback and (config.llm.fallback_provider or "").lower() in {"anthropic", "claude"}
+    ):
+        report.tools.append(_check_python_module("anthropic"))
+
+    # Optional runtime tools helpful for replay/debugging.
+    report.tools.append(_check_command("qemu", _COMMANDS["qemu"]))
+    report.tools.append(_check_command("frida", _COMMANDS["frida"]))
 
     ghidra_detection = detect_ghidra(config)
     report.ghidra = ghidra_detection
     report.notes.extend(ghidra_detection.notes)
     report.issues.extend(ghidra_detection.issues)
 
+    optional_tools = {"qemu", "frida"}
     for tool in report.tools:
         if not tool.available:
-            report.issues.append(f"Missing dependency: {tool.name}")
+            if tool.name in optional_tools:
+                report.notes.append(f"Optional tool missing: {tool.name}")
+            else:
+                report.issues.append(f"Missing dependency: {tool.name}")
 
     if not report.uv_available:
         report.issues.append("uv package manager not found on PATH.")
@@ -101,6 +115,11 @@ def detect_environment(config: AppConfig) -> EnvironmentReport:
         report.notes.append(
             f"Environment variable {config.llm.api_key_env} not detected; LLM calls will fail until set."
         )
+    if config.llm.enable_fallback and config.llm.fallback_api_key_env:
+        if config.llm.fallback_api_key_env not in os.environ:
+            report.notes.append(
+                f"Fallback LLM key {config.llm.fallback_api_key_env} not detected; fallback provider disabled."
+            )
 
     return report
 

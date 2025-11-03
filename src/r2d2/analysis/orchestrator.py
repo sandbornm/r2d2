@@ -36,6 +36,7 @@ class AnalysisPlan:
 class AnalysisResult:
     binary: Path
     plan: AnalysisPlan
+    trajectory_id: str | None = None
     resource_tree: Resource | None = None
     quick_scan: dict[str, Any] = field(default_factory=dict)
     deep_scan: dict[str, Any] = field(default_factory=dict)
@@ -62,7 +63,7 @@ class AnalysisOrchestrator:
             CapstoneAdapter(),
         ]
 
-        if env.ghidra:
+        if config.analysis.enable_ghidra and env.ghidra:
             adapters.append(GhidraAdapter(env.ghidra, config.ghidra.project_dir))
         if config.analysis.enable_angr:
             adapters.append(AngrAdapter())
@@ -87,6 +88,8 @@ class AnalysisOrchestrator:
     ) -> AnalysisResult:
         plan = plan or self.create_plan()
         binary = binary.resolve()
+        if self._config.analysis.require_elf:
+            self._ensure_elf(binary)
         result = AnalysisResult(binary=binary, plan=plan)
 
         self._emit_progress(
@@ -98,6 +101,7 @@ class AnalysisOrchestrator:
         trajectory: AnalysisTrajectory | None = None
         if plan.persist_trajectory and self._trajectory_dao:
             trajectory = self._trajectory_dao.start_trajectory(binary)
+            result.trajectory_id = trajectory.trajectory_id
             _LOGGER.debug("Trajectory %s started", trajectory.trajectory_id)
 
         try:
@@ -349,3 +353,17 @@ class AnalysisOrchestrator:
             callback(event, payload or {})
         except Exception:  # pragma: no cover - defensive hook
             _LOGGER.exception("Progress callback failed for event %s", event)
+
+    def _ensure_elf(self, binary: Path) -> None:
+        try:
+            with binary.open("rb") as handle:
+                magic = handle.read(4)
+        except FileNotFoundError as exc:
+            raise FileNotFoundError(f"Binary not found: {binary}") from exc
+        except OSError as exc:  # pragma: no cover - unexpected IO error
+            raise RuntimeError(f"Unable to read binary {binary}: {exc}") from exc
+
+        if magic != b"\x7fELF":
+            raise ValueError(
+                f"{binary} is not an ELF binary (expected 0x7f454c46 header, got {magic!r})"
+            )

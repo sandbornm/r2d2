@@ -2,35 +2,57 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$PROJECT_ROOT"
 
-if ! command -v uv >/dev/null 2>&1; then
-  echo "[!] uv is required. Install from https://github.com/astral-sh/uv" >&2
-  exit 1
+BACKEND=true
+FRONTEND=true
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/setup.sh [--backend-only|--frontend-only]
+
+Orchestrates full project bootstrap:
+  1. Backend environment via scripts/setup_backend.sh
+  2. Frontend dependencies via scripts/setup_frontend.sh
+
+Options:
+  --backend-only   Only run backend setup
+  --frontend-only  Only run frontend setup
+  -h, --help       Show this help message
+EOF
+}
+
+for arg in "$@"; do
+  case "$arg" in
+    --backend-only)
+      FRONTEND=false
+      ;;
+    --frontend-only)
+      BACKEND=false
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "[!] Unknown option: $arg" >&2
+      usage
+      exit 1
+      ;;
+  esac
+done
+
+if $BACKEND; then
+  echo "[*] Running backend setup"
+  "$PROJECT_ROOT/scripts/setup_backend.sh"
+else
+  echo "[*] Skipping backend setup"
 fi
 
-PYTHON_VERSION="3.11"
-
-if ! uv python list | grep -q "$PYTHON_VERSION"; then
-  echo "[*] Installing Python $PYTHON_VERSION via uv"
-  uv python install "$PYTHON_VERSION"
+if $FRONTEND; then
+  echo "[*] Running frontend setup"
+  "$PROJECT_ROOT/scripts/setup_frontend.sh"
+else
+  echo "[*] Skipping frontend setup"
 fi
-
-echo "[*] Synchronising dependencies"
-uv sync --python "$PYTHON_VERSION"
-
-echo "[*] Installing analyzer extras (radare2 bindings, capstone, angr)"
-uv sync --python "$PYTHON_VERSION" --extra analyzers || echo "[!] Analyzer extras failed; install manually"
-
-echo "[*] Installing Ghidra extras"
-uv sync --python "$PYTHON_VERSION" --extra ghidra || echo "[!] Ghidra extras optional; skipping"
-
-mkdir -p "$HOME/.config/r2d2" "$HOME/.local/share/r2d2"
-if [ ! -f "$HOME/.config/r2d2/config.toml" ]; then
-  cp "$PROJECT_ROOT/config/default_config.toml" "$HOME/.config/r2d2/config.toml"
-fi
-
-echo "[*] Running environment diagnostics"
-uv run scripts/detect_env.py || true
 
 echo "[*] Setup complete"

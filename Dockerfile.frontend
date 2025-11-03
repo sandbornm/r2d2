@@ -1,0 +1,16 @@
+# syntax=docker/dockerfile:1.6
+FROM node:20-bullseye-slim
+
+WORKDIR /app
+
+COPY web/frontend/package*.json ./
+RUN npm install
+
+COPY web/frontend/ .
+
+ENV VITE_PORT=5173 \
+    HOST=0.0.0.0
+
+EXPOSE 5173
+
+CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0", "--port", "5173"]

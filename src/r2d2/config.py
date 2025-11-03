@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent.parent / "config" / "default_config.toml"
@@ -16,6 +17,10 @@ class LLMSettings(BaseModel):
     provider: str = "openai"
     model: str = "gpt-5-mini-2025-08-07"
     api_key_env: str = "OPENAI_API_KEY"
+    fallback_provider: str | None = "anthropic"
+    fallback_model: str | None = "claude-3-sonnet-20240229"
+    fallback_api_key_env: str | None = "ANTHROPIC_API_KEY"
+    enable_fallback: bool = True
     max_tokens: int = 4096
     temperature: float = 0.1
 
@@ -25,7 +30,9 @@ class AnalysisSettings(BaseModel):
     max_binary_size: str = "5MB"
     timeout_quick: int = 5
     timeout_deep: int = 60
-    enable_angr: bool = False
+    enable_angr: bool = True
+    enable_ghidra: bool = False
+    require_elf: bool = True
     default_radare_profile: str = "analysis.quick"
     enable_trajectory_recording: bool = True
 
@@ -88,6 +95,8 @@ def _merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
 
 def load_config(config_path: Path | None = None) -> AppConfig:
     """Load configuration from defaults and optional user overrides."""
+
+    load_dotenv()
 
     data: dict[str, Any] = {}
     if DEFAULT_CONFIG_PATH.exists():
