@@ -158,3 +158,13 @@ Backend image pulls `radare2`, `libmagic`, and installs Python dependencies via 
 - Add textual terminal UI using the `tui` extra (Textual).
 - Extend trajectory schema to capture diffable artifacts and caching metadata.
 - Integrate angr selectively (per function) once performance budgets are profiled.
+
+## TODO - left off 2025-11-28
+
+- [ ] Improve UI components
+- [ ] Add discrete analysis phases
+- [ ] Add task description metadata for uploaded binaries
+- [ ] Add visuals with angr CFG and disassembly views
+- [ ] Highlight CFG/disassembly panels to hand off questions to the AI
+- [ ] Record trajectory replay (generate equivalent Python script for each run)
+- [ ] Improve logging, performance, and support additional LLM providers

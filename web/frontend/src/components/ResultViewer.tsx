@@ -1,3 +1,12 @@
+import AutoGraphIcon from '@mui/icons-material/AutoGraph';
+import BugReportIcon from '@mui/icons-material/BugReport';
+import ContentCopyIcon from '@mui/icons-material/ContentCopy';
+import InsightsIcon from '@mui/icons-material/Insights';
+import MemoryIcon from '@mui/icons-material/Memory';
+import PsychologyIcon from '@mui/icons-material/Psychology';
+import RadarIcon from '@mui/icons-material/Radar';
+import TextSnippetIcon from '@mui/icons-material/TextSnippet';
+import WarningAmberIcon from '@mui/icons-material/WarningAmber';
 import {
   alpha,
   Badge,
@@ -16,15 +25,6 @@ import {
   Typography,
   useTheme,
 } from '@mui/material';
-import MemoryIcon from '@mui/icons-material/Memory';
-import RadarIcon from '@mui/icons-material/Radar';
-import AutoGraphIcon from '@mui/icons-material/AutoGraph';
-import TextSnippetIcon from '@mui/icons-material/TextSnippet';
-import WarningAmberIcon from '@mui/icons-material/WarningAmber';
-import PsychologyIcon from '@mui/icons-material/Psychology';
-import BugReportIcon from '@mui/icons-material/BugReport';
-import InsightsIcon from '@mui/icons-material/Insights';
-import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import { FC, useMemo, useState } from 'react';
 import type { AnalysisResultPayload } from '../types';
 

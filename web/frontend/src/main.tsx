@@ -1,9 +1,9 @@
-import React, { createContext, useContext, useMemo, useState, useEffect } from 'react';
+import { CssBaseline, PaletteMode, ThemeProvider } from '@mui/material';
+import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import ReactDOM from 'react-dom/client';
-import { CssBaseline, ThemeProvider, PaletteMode } from '@mui/material';
 import App from './App';
-import { createAppTheme } from './theme';
 import './styles.css';
+import { createAppTheme } from './theme';
 
 // Theme context
 interface ThemeContextType {

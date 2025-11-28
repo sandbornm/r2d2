@@ -1,6 +1,12 @@
+import CheckIcon from '@mui/icons-material/Check';
+import ContentCopyIcon from '@mui/icons-material/ContentCopy';
+import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
+import PersonIcon from '@mui/icons-material/Person';
+import SendIcon from '@mui/icons-material/Send';
+import SmartToyIcon from '@mui/icons-material/SmartToy';
 import {
-  alpha,
   Alert,
+  alpha,
   Box,
   Button,
   Chip,
@@ -14,12 +20,6 @@ import {
   Typography,
   useTheme,
 } from '@mui/material';
-import SendIcon from '@mui/icons-material/Send';
-import SmartToyIcon from '@mui/icons-material/SmartToy';
-import PersonIcon from '@mui/icons-material/Person';
-import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
-import ContentCopyIcon from '@mui/icons-material/ContentCopy';
-import CheckIcon from '@mui/icons-material/Check';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
 import { FC, FormEvent, useEffect, useLayoutEffect, useRef, useState } from 'react';
