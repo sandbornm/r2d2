@@ -37,9 +37,20 @@ describe('ChatPanel', () => {
     );
 
     await user.type(screen.getByPlaceholderText(/ask about the binary/i), 'What does main do?');
-    await user.click(screen.getByLabelText(/Ask LLM for a response/i));
     await user.click(screen.getByRole('button', { name: /send/i }));
 
-    expect(handleSend).toHaveBeenCalledWith('What does main do?', { callLLM: false });
+    expect(handleSend).toHaveBeenCalledWith('What does main do?', { callLLM: true });
+  });
+
+  it('shows empty state when no session', () => {
+    render(
+      <ChatPanel
+        session={null}
+        messages={[]}
+        onSend={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText(/no session selected/i)).toBeInTheDocument();
   });
 });

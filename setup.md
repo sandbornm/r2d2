@@ -35,7 +35,7 @@ Edit `~/.config/r2d2/config.toml` as needed:
 ```toml
 [llm]
 api_key_env = "OPENAI_API_KEY"
-model = "gpt-5-mini-2025-08-07"
+model = "gpt-5.1-2025-11-13"
 
 [analysis]
 # enable angr after verifying dependencies

@@ -4,9 +4,6 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$PROJECT_ROOT"
 
-# Ensure local src/ is importable for Python entrypoints
-export PYTHONPATH="$PROJECT_ROOT/src:${PYTHONPATH:-}"
-
 if ! command -v uv >/dev/null 2>&1; then
   echo "[!] uv not found. Run scripts/setup.sh first." >&2
   exit 1

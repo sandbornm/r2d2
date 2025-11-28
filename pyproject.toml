@@ -8,7 +8,7 @@ authors = [
   { name = "r2d2 Team", email = "eng@r2d2.invalid" }
 ]
 dependencies = [
-  "typer>=0.12.3,<0.13",
+  "typer>=0.15,<1",
   "rich>=13.7,<14",
   "pydantic>=2.7,<3",
   "pydantic-settings>=2.3,<3",
@@ -44,6 +44,16 @@ repository = "https://github.com/your-org/r2d2"
 [project.scripts]
 r2d2 = "r2d2.cli:run"
 r2d2-web = "r2d2.web.server:run"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/r2d2"]
 
 [tool.uv]
 dev-dependencies = [

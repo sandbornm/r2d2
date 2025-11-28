@@ -206,6 +206,37 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
         response_payload["message"] = _message_to_dict(user_message)
         return jsonify(response_payload)
 
+    # Ensure uploads directory exists
+    uploads_dir = Path(state.config.output.artifacts_dir).expanduser() / "uploads"
+    uploads_dir.mkdir(parents=True, exist_ok=True)
+
+    @app.post("/api/upload")
+    def upload_binary() -> Any:
+        """Handle binary file uploads and return the server path."""
+        if "file" not in request.files:
+            return jsonify({"error": "No file provided"}), 400
+
+        file = request.files["file"]
+        if not file.filename:
+            return jsonify({"error": "No filename provided"}), 400
+
+        # Sanitize filename and save
+        from werkzeug.utils import secure_filename
+        filename = secure_filename(file.filename)
+        if not filename:
+            filename = f"binary_{uuid.uuid4().hex[:8]}"
+
+        save_path = uploads_dir / filename
+        # Add suffix if file exists
+        counter = 1
+        original_stem = save_path.stem
+        while save_path.exists():
+            save_path = uploads_dir / f"{original_stem}_{counter}{save_path.suffix}"
+            counter += 1
+
+        file.save(str(save_path))
+        return jsonify({"path": str(save_path), "filename": save_path.name})
+
     @app.post("/api/analyze")
     def analyze() -> Any:
         body = request.get_json(silent=True) or {}
@@ -352,13 +383,41 @@ def _build_llm_messages(
     history: list[StoredChatMessage],
     analysis_attachment: dict[str, Any] | None,
 ) -> list[LLMChatMessage]:
-    messages: list[LLMChatMessage] = [
-        LLMChatMessage(
-            role="system",
-            content="You are assisting with reverse engineering of ELF binaries. "
-            "Use provided analysis context, point out suspicious patterns, and suggest next steps.",
-        )
-    ]
+    pipeline_hint = ""
+    if analysis_attachment:
+        plan = analysis_attachment.get("plan") or {}
+        quick_enabled = plan.get("quick")
+        deep_enabled = plan.get("deep")
+        run_angr = plan.get("run_angr")
+        enabled_segments: list[str] = []
+        if quick_enabled:
+            enabled_segments.append("quick scan (libmagic, radare2 metadata, strings)")
+        if deep_enabled:
+            enabled_segments.append("deep analysis (radare2 analysis, capstone disassembly)")
+        if deep_enabled and run_angr:
+            enabled_segments.append("symbolic pivots with angr")
+        if enabled_segments:
+            pipeline_hint = (
+                "This run executed "
+                + ", ".join(enabled_segments[:-1])
+                + (" and " if len(enabled_segments) > 1 else "")
+                + enabled_segments[-1]
+                + ". "
+            )
+
+    system_prompt = (
+        "You are r2d2, a binary analysis copilot. "
+        "Respond as a senior reverse engineer who references the pipeline stages explicitly. "
+        "Explain what the quick stage (libmagic + radare2) reveals, "
+        "what the deep stage (radare2 analysis, capstone disassembly, optional angr) contributes, "
+        "and highlight risky findings or missing data. "
+        "Offer practical next steps (radare2/ghidra/angr commands, dynamic analysis ideas) and be concise. "
+        + pipeline_hint
+        + "If the user is still waiting for results, explain what the current stage is likely doing and why it takes time. "
+        "When the user asks for clarification, translate the findings into plain language but keep technical accuracy."
+    )
+
+    messages: list[LLMChatMessage] = [LLMChatMessage(role="system", content=system_prompt)]
 
     include_analysis = False
     if analysis_attachment:

@@ -1,5 +1,3 @@
-export type ComplexityLevel = 'beginner' | 'intermediate' | 'expert';
-
 export type ProgressEventName =
   | 'analysis_started'
   | 'job_started'

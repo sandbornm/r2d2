@@ -1,33 +1,31 @@
-import ArticleIcon from '@mui/icons-material/Article';
-import BoltIcon from '@mui/icons-material/Bolt';
-import PersonIcon from '@mui/icons-material/Person';
-import SmartToyIcon from '@mui/icons-material/SmartToy';
-import WarningAmberIcon from '@mui/icons-material/WarningAmber';
 import {
-  Accordion,
-  AccordionDetails,
-  AccordionSummary,
+  alpha,
   Alert,
   Box,
   Button,
   Chip,
-  Divider,
-  FormControlLabel,
-  List,
-  ListItem,
-  ListItemAvatar,
-  ListItemText,
+  CircularProgress,
+  IconButton,
   Paper,
   Stack,
   Switch,
   TextField,
+  Tooltip,
   Typography,
+  useTheme,
 } from '@mui/material';
-import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import SendIcon from '@mui/icons-material/Send';
+import SmartToyIcon from '@mui/icons-material/SmartToy';
+import PersonIcon from '@mui/icons-material/Person';
+import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
+import ContentCopyIcon from '@mui/icons-material/ContentCopy';
+import CheckIcon from '@mui/icons-material/Check';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
-import { FC, FormEvent, useState } from 'react';
+import { FC, FormEvent, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { ChatAttachment, ChatMessageItem, ChatSessionSummary } from '../types';
+
+dayjs.extend(relativeTime);
 
 interface ChatPanelProps {
   session: ChatSessionSummary | null;
@@ -37,189 +35,396 @@ interface ChatPanelProps {
   error?: string | null;
 }
 
-dayjs.extend(relativeTime);
+const CopyButton: FC<{ text: string }> = ({ text }) => {
+  const [copied, setCopied] = useState(false);
 
-const roleIcon = (role: ChatMessageItem['role']) => {
-  switch (role) {
-    case 'assistant':
-      return <SmartToyIcon color="secondary" />;
-    case 'system':
-      return <WarningAmberIcon color="warning" />;
-    default:
-      return <PersonIcon color="primary" />;
-  }
+  const handleCopy = () => {
+    navigator.clipboard.writeText(text);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  return (
+    <Tooltip title={copied ? 'Copied!' : 'Copy'}>
+      <IconButton size="small" onClick={handleCopy}>
+        {copied ? (
+          <CheckIcon sx={{ fontSize: 14, color: 'success.main' }} />
+        ) : (
+          <ContentCopyIcon sx={{ fontSize: 14 }} />
+        )}
+      </IconButton>
+    </Tooltip>
+  );
 };
 
-const AttachmentView: FC<{ attachment: ChatAttachment }> = ({ attachment }) => {
-  if (attachment.type === 'analysis_result') {
-    const issues = Array.isArray(attachment.issues) ? attachment.issues : [];
-    const notes = Array.isArray(attachment.notes) ? attachment.notes : [];
+const MessageBubble: FC<{ message: ChatMessageItem }> = ({ message }) => {
+  const theme = useTheme();
+  const isUser = message.role === 'user';
+  const isSystem = message.role === 'system';
+  const isAssistant = message.role === 'assistant';
+  const isPending = message.message_id.startsWith('pending-');
+
+  // Extract analysis info from attachments
+  const analysisAttachment = message.attachments.find(
+    (a) => a.type === 'analysis_result'
+  ) as ChatAttachment | undefined;
+
+  if (isSystem && analysisAttachment) {
     return (
-      <Accordion disableGutters sx={{ bgcolor: 'background.default' }}>
-        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-          <Stack direction="row" spacing={1} alignItems="center">
-            <ArticleIcon color="primary" fontSize="small" />
-            <Typography variant="body2">Analysis snapshot</Typography>
-          </Stack>
-        </AccordionSummary>
-        <AccordionDetails>
-          <Stack spacing={1}>
-            <Typography variant="body2" color="text.secondary">
-              Binary: {attachment.binary as string}
+      <Paper
+        variant="outlined"
+        sx={{
+          p: 2,
+          bgcolor: alpha(theme.palette.info.main, 0.1),
+          borderColor: alpha(theme.palette.info.main, 0.3),
+          borderLeft: `3px solid ${theme.palette.info.main}`,
+        }}
+      >
+        <Stack direction="row" spacing={1.5} alignItems="flex-start">
+          <InfoOutlinedIcon sx={{ color: 'info.main', fontSize: 20, mt: 0.25 }} />
+          <Box sx={{ flex: 1 }}>
+            <Typography variant="body2" fontWeight={600} color="info.main">
+              Analysis completed
             </Typography>
-            {issues.length > 0 && (
-              <Stack direction="row" spacing={1} flexWrap="wrap">
-                {issues.map((issue) => (
-                  <Chip key={issue} label={issue} color="warning" size="small" />
-                ))}
-              </Stack>
-            )}
-            {notes.length > 0 && (
-              <Stack direction="row" spacing={1} flexWrap="wrap">
-                {notes.map((note) => (
-                  <Chip key={note} label={note} color="info" size="small" />
-                ))}
-              </Stack>
-            )}
-            <Typography component="pre" variant="body2" sx={{ fontFamily: 'monospace', whiteSpace: 'pre-wrap' }}>
-              {JSON.stringify({ quick: attachment.quick_scan, deep: attachment.deep_scan }, null, 2)}
+            <Typography variant="caption" color="text.secondary" sx={{ fontFamily: 'monospace' }}>
+              {analysisAttachment.binary as string}
             </Typography>
-          </Stack>
-        </AccordionDetails>
-      </Accordion>
+          </Box>
+          <Typography variant="caption" color="text.secondary">
+            {dayjs(message.created_at).format('HH:mm')}
+          </Typography>
+        </Stack>
+      </Paper>
     );
   }
 
-  if (attachment.type === 'llm_response_meta') {
+  if (isSystem) {
     return (
-      <Chip
-        size="small"
-        color="secondary"
-        variant="outlined"
-        icon={<BoltIcon />}
-        label={`LLM provider: ${(attachment.provider as string) ?? 'unknown'}`}
-      />
+      <Box sx={{ textAlign: 'center', py: 1.5 }}>
+        <Typography variant="caption" color="text.secondary" sx={{ fontStyle: 'italic' }}>
+          {message.content}
+        </Typography>
+      </Box>
     );
   }
 
   return (
-    <Chip size="small" variant="outlined" label={`${attachment.type}`} />
+    <Stack
+      direction="row"
+      spacing={1.5}
+      sx={{
+        justifyContent: isUser ? 'flex-end' : 'flex-start',
+      }}
+    >
+      {!isUser && (
+        <Box
+          sx={{
+            width: 36,
+            height: 36,
+            borderRadius: 2,
+            bgcolor: alpha(theme.palette.primary.main, 0.15),
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            flexShrink: 0,
+          }}
+        >
+          <SmartToyIcon sx={{ fontSize: 20, color: 'primary.main' }} />
+        </Box>
+      )}
+
+      <Paper
+        elevation={0}
+        sx={{
+          maxWidth: '80%',
+          p: 2,
+          bgcolor: isUser 
+            ? alpha(theme.palette.primary.main, 0.15) 
+            : alpha(theme.palette.background.paper, 0.8),
+          border: 1,
+          borderColor: isUser 
+            ? alpha(theme.palette.primary.main, 0.3) 
+            : 'divider',
+          borderRadius: 2,
+          borderTopRightRadius: isUser ? 4 : 16,
+          borderTopLeftRadius: isUser ? 16 : 4,
+        }}
+      >
+        <Stack spacing={1}>
+          <Stack direction="row" alignItems="center" spacing={1}>
+            <Typography variant="caption" color="text.secondary" fontWeight={600}>
+              {isUser ? 'You' : 'r2d2'}
+            </Typography>
+            <Typography variant="caption" color="text.secondary">
+              {dayjs(message.created_at).format('HH:mm')}
+            </Typography>
+            {isPending && (
+              <Chip
+                size="small"
+                label="sending"
+                sx={{
+                  height: 18,
+                  fontSize: '0.65rem',
+                  bgcolor: alpha(theme.palette.warning.main, 0.15),
+                  color: theme.palette.warning.main,
+                }}
+              />
+            )}
+            {isAssistant && !isPending && (
+              <Box sx={{ ml: 'auto' }}>
+                <CopyButton text={message.content} />
+              </Box>
+            )}
+          </Stack>
+          <Typography
+            variant="body2"
+            sx={{
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word',
+              lineHeight: 1.7,
+              '& code': {
+                bgcolor: alpha(theme.palette.primary.main, 0.1),
+                px: 0.75,
+                py: 0.25,
+                borderRadius: 0.5,
+                fontFamily: 'monospace',
+                fontSize: '0.85em',
+              },
+              '& pre': {
+                bgcolor: alpha('#000', 0.3),
+                p: 1.5,
+                borderRadius: 1,
+                overflow: 'auto',
+                fontFamily: 'monospace',
+                fontSize: '0.8rem',
+                my: 1,
+              },
+            }}
+          >
+            {message.content}
+          </Typography>
+          {message.attachments
+            .filter((a) => a.type === 'llm_response_meta')
+            .map((a, i) => (
+              <Chip
+                key={i}
+                size="small"
+                label={`via ${a.provider}`}
+                variant="outlined"
+                sx={{ alignSelf: 'flex-start', fontSize: '0.7rem', height: 20 }}
+              />
+            ))}
+        </Stack>
+      </Paper>
+
+      {isUser && (
+        <Box
+          sx={{
+            width: 36,
+            height: 36,
+            borderRadius: 2,
+            bgcolor: alpha(theme.palette.secondary.main, 0.15),
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            flexShrink: 0,
+          }}
+        >
+          <PersonIcon sx={{ fontSize: 20, color: 'secondary.main' }} />
+        </Box>
+      )}
+    </Stack>
   );
 };
 
-export const ChatPanel: FC<ChatPanelProps> = ({ session, messages, onSend, sending = false, error }) => {
+export const ChatPanel: FC<ChatPanelProps> = ({
+  session,
+  messages,
+  onSend,
+  sending = false,
+  error,
+}) => {
+  const theme = useTheme();
   const [content, setContent] = useState('');
   const [callLLM, setCallLLM] = useState(true);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [shouldAutoScroll, setShouldAutoScroll] = useState(true);
+
+  // Check if user is near bottom
+  const handleScroll = () => {
+    const container = scrollContainerRef.current;
+    if (!container) return;
+    
+    const { scrollTop, scrollHeight, clientHeight } = container;
+    const isNearBottom = scrollHeight - scrollTop - clientHeight < 100;
+    setShouldAutoScroll(isNearBottom);
+  };
+
+  // Auto-scroll to bottom when messages change
+  useLayoutEffect(() => {
+    if (shouldAutoScroll && messagesEndRef.current) {
+      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [messages, shouldAutoScroll]);
+
+  // Scroll to bottom on initial load
+  useEffect(() => {
+    if (messagesEndRef.current) {
+      messagesEndRef.current.scrollIntoView({ behavior: 'auto' });
+    }
+  }, [session?.session_id]);
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
-    if (!content.trim() || !session) {
-      return;
-    }
+    if (!content.trim() || !session) return;
+    setShouldAutoScroll(true);
     await onSend(content, { callLLM });
     setContent('');
   };
 
   if (!session) {
     return (
-      <Paper variant="outlined" sx={{ p: 4, textAlign: 'center', color: 'text.secondary' }}>
-        <Typography variant="h6" gutterBottom>
-          No chat selected
+      <Box
+        sx={{
+          height: '100%',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          color: 'text.secondary',
+        }}
+      >
+        <SmartToyIcon sx={{ fontSize: 56, mb: 2, opacity: 0.3 }} />
+        <Typography variant="h6" fontWeight={600}>
+          No session selected
         </Typography>
-        <Typography variant="body2">Start an analysis or select an existing session to view chat history.</Typography>
-      </Paper>
+        <Typography variant="body2" sx={{ mt: 1, textAlign: 'center', maxWidth: 300 }}>
+          Run an analysis or select a session from the sidebar to start chatting
+        </Typography>
+      </Box>
     );
   }
 
-  return (
-    <Paper variant="outlined" sx={{ p: 2.5, display: 'flex', flexDirection: 'column', height: '100%' }}>
-      <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1.5 }}>
-        <SmartToyIcon color="secondary" />
-        <Typography variant="h6">Analysis Companion</Typography>
-        <Chip label={`Messages: ${messages.length}`} size="small" />
-      </Stack>
-      <Typography variant="caption" color="text.secondary" sx={{ mb: 1 }}>
-        Session updated {dayjs(session.updated_at).fromNow()}
-      </Typography>
+  // Filter out system messages that aren't analysis completions
+  const visibleMessages = messages.filter(msg => {
+    if (msg.role === 'system') {
+      return msg.attachments.some(a => a.type === 'analysis_result');
+    }
+    return true;
+  });
 
-      <Box sx={{ flex: 1, overflowY: 'auto', mb: 2 }}>
-        <List sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-          {messages.map((message) => (
-            <Paper key={message.message_id} variant="outlined" sx={{ p: 1.5, bgcolor: 'background.default' }}>
-              <ListItem alignItems="flex-start" disableGutters>
-                <ListItemAvatar sx={{ minWidth: 48 }}>{roleIcon(message.role)}</ListItemAvatar>
-                <ListItemText
-                  primary={
-                    <Stack direction="row" spacing={1} alignItems="center">
-                      <Typography variant="subtitle2" color="text.secondary">
-                        {message.role.toUpperCase()}
-                      </Typography>
-                      <Typography variant="caption" color="text.secondary">
-                        {dayjs(message.created_at).format('YYYY-MM-DD HH:mm:ss')}
-                      </Typography>
-                    </Stack>
-                  }
-                  secondary={
-                    <Stack spacing={1} sx={{ mt: 1 }}>
-                      <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
-                        {message.content}
-                      </Typography>
-                      {message.attachments.map((attachment, idx) => (
-                        <AttachmentView key={`${message.message_id}-att-${idx}`} attachment={attachment} />
-                      ))}
-                    </Stack>
-                  }
-                />
-              </ListItem>
-            </Paper>
-          ))}
-          {messages.length === 0 && (
-            <ListItem>
-              <ListItemText
-                primary={<Typography color="text.secondary">No messages yet</Typography>}
-                secondary="The companion will capture analysis milestones and LLM answers here."
-              />
-            </ListItem>
+  return (
+    <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+      {/* Messages */}
+      <Box
+        ref={scrollContainerRef}
+        onScroll={handleScroll}
+        sx={{
+          flex: 1,
+          overflow: 'auto',
+          mb: 2,
+          pr: 1,
+        }}
+      >
+        <Stack spacing={2} sx={{ py: 1 }}>
+          {visibleMessages.length === 0 && (
+            <Box sx={{ textAlign: 'center', py: 4 }}>
+              <Typography variant="body2" color="text.secondary">
+                Analysis complete! Ask me anything about the binary.
+              </Typography>
+              <Stack spacing={1} sx={{ mt: 2 }}>
+                <Typography variant="caption" color="text.secondary">
+                  Try asking:
+                </Typography>
+                {[
+                  "What does this binary do?",
+                  "Are there any security concerns?",
+                  "Explain the main function",
+                  "What libraries does it use?",
+                ].map((q, i) => (
+                  <Chip
+                    key={i}
+                    label={q}
+                    size="small"
+                    variant="outlined"
+                    onClick={() => setContent(q)}
+                    sx={{ cursor: 'pointer' }}
+                  />
+                ))}
+              </Stack>
+            </Box>
           )}
-        </List>
+          {visibleMessages.map((msg) => (
+            <MessageBubble key={msg.message_id} message={msg} />
+          ))}
+          <div ref={messagesEndRef} />
+        </Stack>
       </Box>
 
-      <Divider sx={{ my: 1.5 }} />
+      {error && (
+        <Alert severity="error" sx={{ mb: 2 }}>
+          {error}
+        </Alert>
+      )}
 
-      {error && <Alert severity="error" sx={{ mb: 1 }}>{error}</Alert>}
-
-      <Box component="form" onSubmit={handleSubmit} sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+      {/* Input */}
+      <Paper
+        component="form"
+        onSubmit={handleSubmit}
+        elevation={0}
+        sx={{
+          p: 2,
+          bgcolor: alpha(theme.palette.background.paper, 0.8),
+          border: 1,
+          borderColor: 'divider',
+          borderRadius: 2,
+        }}
+      >
         <TextField
-          multiline
-          minRows={3}
-          value={content}
-          onChange={(event) => setContent(event.target.value)}
-          placeholder="Ask about the binary, request deeper dives, or add notes..."
           fullWidth
-        />
-        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} alignItems={{ xs: 'stretch', sm: 'center' }}>
-          <FormControlLabel
-            control={
-              <Switch
-                checked={callLLM}
-                onChange={(event) => setCallLLM(event.target.checked)}
-                color="secondary"
-              />
+          multiline
+          maxRows={4}
+          size="small"
+          placeholder="Ask about the binary..."
+          value={content}
+          onChange={(e) => setContent(e.target.value)}
+          disabled={sending}
+          sx={{ mb: 1.5 }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault();
+              if (content.trim()) handleSubmit(e);
             }
-            label="Ask LLM for a response"
-          />
-          <Box sx={{ flexGrow: 1 }} />
+          }}
+        />
+        <Stack direction="row" alignItems="center" spacing={2}>
+          <Stack direction="row" alignItems="center" spacing={1}>
+            <Switch
+              size="small"
+              checked={callLLM}
+              onChange={(e) => setCallLLM(e.target.checked)}
+              color="primary"
+            />
+            <Typography variant="caption" color="text.secondary">
+              AI response
+            </Typography>
+          </Stack>
+          <Box sx={{ flex: 1 }} />
           <Button
             type="submit"
             variant="contained"
-            color="secondary"
+            color="primary"
+            size="small"
             disabled={sending || !content.trim()}
+            endIcon={sending ? <CircularProgress size={14} color="inherit" /> : <SendIcon />}
+            sx={{ minWidth: 100 }}
           >
-            Send
+            {sending ? 'Sending' : 'Send'}
           </Button>
         </Stack>
-      </Box>
-    </Paper>
+      </Paper>
+    </Box>
   );
 };
 

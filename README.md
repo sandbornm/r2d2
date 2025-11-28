@@ -16,6 +16,21 @@ Binary analysis copilot that pairs fast local tooling with LLM insights. Drop in
 - `ghidra/extensions/r2d2/` – Gradle project + scripts for a minimal R2D2 headless extension.
 - `PRD.md` – product requirements source of truth.
 
+## Prerequisites
+
+Install system dependencies before running the Python setup:
+
+```bash
+# macOS (Homebrew)
+brew install radare2 libmagic
+
+# Ubuntu/Debian
+sudo apt-get install radare2 libmagic-dev
+
+# Fedora
+sudo dnf install radare2 file-devel
+```
+
 ## Setup
 ```bash
 # 1. Provide LLM credentials (optional but recommended)
@@ -24,35 +39,52 @@ cp .env.example .env && $EDITOR .env
 # 2. Install uv once (https://github.com/astral-sh/uv) then bootstrap
 scripts/setup.sh
 
-# 2b. Run individual setup stages when needed
+# 2b. Or run individual setup stages when needed
 scripts/setup_backend.sh
 scripts/setup_frontend.sh
 
-# 3. Check your environment (JSON output saved to .dry_run_env.json)
+# 3. Sync dependencies with uv (includes analyzer extras)
+uv sync --extra analyzers
+
+# 4. Run diagnostics (writes .dry_run_env.json)
 scripts/dry_run.sh
 
-# 4. Verify tooling + LLM wiring
+# 5. Verify backend wiring + adapters
 uv run scripts/check_setup.py
+
+# 6. Run backend unit tests
+uv run pytest -q
+
+# 7. (Optional) Run frontend unit tests
+cd web/frontend && npm test
 ```
 > **Tip:** place a sample binary at `./sample.bin` to let `scripts/dry_run.sh` exercise the pipeline automatically.
 
+After the checks succeed you can launch the backend with `uv run r2d2-web` and bring up the React UI via `npm run dev` inside `web/frontend` (see [Web UI](#web-ui)).
+
 ## Quick start
 ```bash
-# Run a quick analysis
-uv run r2d2 path/to/binary --quick
+# Run a quick analysis on sample.bin
+uv run r2d2 analyze sample.bin --quick
 
-# Deep analysis with angr enabled by default
-uv run r2d2 path/to/binary
+# Full analysis (quick + deep stages)
+uv run r2d2 analyze path/to/binary
+
+# Emit JSON output
+uv run r2d2 analyze sample.bin --quick --json
 
 # Ask the LLM (OpenAI with Claude fallback)
-uv run r2d2 path/to/binary --ask "what does this do?"
+uv run r2d2 analyze path/to/binary --ask "what does this do?"
+
+# Check environment and tool availability
+uv run r2d2 env
 ```
 
 ## Commands
-- `r2d2 <binary>` – full pipeline (quick + deep)
-- `r2d2 <binary> --quick` – skip deep stage (no Ghidra/angr)
-- `r2d2 <binary> --json` – emit JSON payload
-- `r2d2 <binary> --ask "question"` – run analysis then ask the LLM
+- `r2d2 analyze <binary>` – full pipeline (quick + deep)
+- `r2d2 analyze <binary> --quick` – skip deep stage (no Ghidra/angr)
+- `r2d2 analyze <binary> --json` – emit JSON payload
+- `r2d2 analyze <binary> --ask "question"` – run analysis then ask the LLM
 - `r2d2 env` – environment diagnostics, including dependency status and Ghidra readiness
 - `r2d2 trajectories` – list persisted analysis runs (requires SQLite enabled)
 
@@ -78,17 +110,30 @@ uv run r2d2 path/to/binary --ask "what does this do?"
 - Future replay tooling can iterate actions from the DB and reapply against similar binaries.
 
 ## Web UI
-1. Start the Flask backend (serves API + static assets once built):
-   ```bash
-   uv run r2d2-web
-   ```
-2. In another shell start the React frontend:
-   ```bash
-   cd web/frontend
-   npm run dev
-   ```
-   Vite proxies `/api` calls to the Flask server at `http://127.0.0.1:5050`.
-3. For a production bundle run `npm run build` then restart `r2d2-web` (it will serve `web/frontend/dist`).
+
+### Running manually (development mode)
+
+**Terminal 1 – Backend (Flask API on :5050):**
+```bash
+cd /path/to/r2d2
+uv run r2d2-web
+```
+
+**Terminal 2 – Frontend (Vite dev server on :5173):**
+```bash
+cd /path/to/r2d2/web/frontend
+npm install   # first time only
+npm run dev
+```
+
+Open http://localhost:5173 in your browser. Vite proxies `/api` calls to Flask at `http://127.0.0.1:5050`.
+
+### Production bundle
+```bash
+cd web/frontend && npm run build
+uv run r2d2-web  # serves static assets from web/frontend/dist
+```
+Open http://localhost:5050 directly.
 
 Highlights:
 - Complexity slider reveals progressively richer panes—from beginner summaries to expert-level CFG/function dumps.

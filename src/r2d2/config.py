@@ -15,7 +15,7 @@ USER_CONFIG_PATH = Path("~/.config/r2d2/config.toml").expanduser()
 
 class LLMSettings(BaseModel):
     provider: str = "openai"
-    model: str = "gpt-5-mini-2025-08-07"
+    model: str = "gpt-5.1-2025-11-13"
     api_key_env: str = "OPENAI_API_KEY"
     fallback_provider: str | None = "anthropic"
     fallback_model: str | None = "claude-3-sonnet-20240229"

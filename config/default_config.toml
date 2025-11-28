@@ -1,9 +1,9 @@
 [llm]
 provider = "openai"
-model = "gpt-5-mini-2025-08-07"
+model = "gpt-5.1-2025-11-13"
 api_key_env = "OPENAI_API_KEY"
 fallback_provider = "anthropic"
-fallback_model = "claude-3-sonnet-20240229"
+fallback_model = "claude-3-5-sonnet-20241022"
 fallback_api_key_env = "ANTHROPIC_API_KEY"
 enable_fallback = true
 max_tokens = 4096

@@ -73,6 +73,22 @@ class Radare2Adapter:
             functions = session.cmdj("aflj")
             xrefs = session.cmdj("axj")
             cfg = session.cmdj("agj")
+            disassembly = session.cmd("pd 256")
+
+            entry_disassembly = None
+            entry_function = None
+            if functions:
+                preferred_names = {"main", "entry0", "sym.main"}
+                entry_function = next(
+                    (fn for fn in functions if fn.get("name") in preferred_names),
+                    functions[0],
+                )
+                entry_offset = entry_function.get("offset")
+                if entry_offset is not None:
+                    try:
+                        entry_disassembly = session.cmd(f"pdf @ {entry_offset}")
+                    except Exception:  # pragma: no cover - best effort
+                        entry_disassembly = None
         except Exception as exc:  # pragma: no cover - runtime guard
             _LOGGER.exception("radare2 deep scan failed: %s", exc)
             raise AdapterUnavailable(f"radare2 deep scan failed: {exc}") from exc
@@ -83,4 +99,7 @@ class Radare2Adapter:
             "functions": functions,
             "xrefs": xrefs,
             "cfg": cfg,
+            "disassembly": disassembly,
+            "entry_disassembly": entry_disassembly,
+            "entry_function": entry_function,
         }

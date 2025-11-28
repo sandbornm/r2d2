@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Iterable
 
 from ..config import AppConfig
-from .claude_client import ClaudeClient
-from .openai_client import ChatMessage, OpenAIClient
+from .claude_client import ClaudeClient, ClaudeError
+from .openai_client import ChatMessage, OpenAIClient, OpenAIError
+
+_LOGGER = logging.getLogger(__name__)
+
+
+class LLMError(Exception):
+    """High-level error for LLM operations."""
+    pass
 
 
 class LLMBridge:
@@ -16,7 +24,7 @@ class LLMBridge:
         self._config = config
         self._order: list[str] = []
         self._clients: dict[str, object] = {}
-        self._errors: dict[str, Exception] = {}
+        self._errors: dict[str, str] = {}
         self._last_provider: str | None = None
 
         primary = config.llm.provider
@@ -32,7 +40,9 @@ class LLMBridge:
             self._order.append(fallback)
 
     def chat(self, messages: Iterable[ChatMessage] | Iterable[dict[str, str]]) -> str:
+        """Send messages to configured LLM providers with automatic fallback."""
         errors: list[str] = []
+
         for provider in self._order:
             client = self._get_client(provider)
             if client is None:
@@ -40,19 +50,35 @@ class LLMBridge:
                 if error:
                     errors.append(f"{provider}: {error}")
                 continue
+
             try:
-                response = client.chat(messages)  # type: ignore[no-any-return]
+                response = client.chat(messages)  # type: ignore[union-attr]
                 self._last_provider = provider
                 return response
-            except Exception as exc:  # pragma: no cover - upstream failures
-                self._errors[provider] = exc
-                errors.append(f"{provider}: {exc}")
-        raise RuntimeError(
-            "All configured LLM providers failed: " + "; ".join(errors) if errors else "No LLM providers available"
-        )
+            except (OpenAIError, ClaudeError) as exc:
+                # Clean error message from client
+                error_msg = str(exc)
+                self._errors[provider] = error_msg
+                errors.append(f"{provider}: {error_msg}")
+                _LOGGER.warning("LLM provider %s failed: %s", provider, error_msg)
+            except Exception as exc:
+                # Unexpected error
+                error_msg = f"Unexpected error: {type(exc).__name__}"
+                self._errors[provider] = error_msg
+                errors.append(f"{provider}: {error_msg}")
+                _LOGGER.exception("Unexpected LLM error from %s", provider)
+
+        # All providers failed
+        if errors:
+            raise LLMError(
+                "LLM request failed. " + " | ".join(errors)
+            )
+        raise LLMError("No LLM providers configured. Set OPENAI_API_KEY or ANTHROPIC_API_KEY.")
 
     def summarize_analysis(self, summary: dict[str, object]) -> str:
+        """Generate an analysis summary using the LLM."""
         errors: list[str] = []
+
         for provider in self._order:
             client = self._get_client(provider)
             if client is None:
@@ -60,46 +86,75 @@ class LLMBridge:
                 if error:
                     errors.append(f"{provider}: {error}")
                 continue
+
             try:
-                response = client.summarize_analysis(summary)  # type: ignore[no-any-return]
+                response = client.summarize_analysis(summary)  # type: ignore[union-attr]
                 self._last_provider = provider
                 return response
-            except Exception as exc:  # pragma: no cover - upstream failures
-                self._errors[provider] = exc
-                errors.append(f"{provider}: {exc}")
-        raise RuntimeError(
-            "All configured LLM providers failed: " + "; ".join(errors) if errors else "No LLM providers available"
-        )
+            except (OpenAIError, ClaudeError) as exc:
+                error_msg = str(exc)
+                self._errors[provider] = error_msg
+                errors.append(f"{provider}: {error_msg}")
+                _LOGGER.warning("LLM provider %s failed: %s", provider, error_msg)
+            except Exception as exc:
+                error_msg = f"Unexpected error: {type(exc).__name__}"
+                self._errors[provider] = error_msg
+                errors.append(f"{provider}: {error_msg}")
+                _LOGGER.exception("Unexpected LLM error from %s", provider)
 
-    def _get_client(self, provider: str) -> object | None:
+        if errors:
+            raise LLMError(
+                "LLM request failed. " + " | ".join(errors)
+            )
+        raise LLMError("No LLM providers configured. Set OPENAI_API_KEY or ANTHROPIC_API_KEY.")
+
+    def _get_client(self, provider: str) -> OpenAIClient | ClaudeClient | None:
+        """Get or create a client for the specified provider."""
         if provider in self._clients:
-            return self._clients[provider]
+            return self._clients[provider]  # type: ignore[return-value]
 
         try:
-            if provider.lower() in {"openai"}:
-                client: object = OpenAIClient(self._config)
+            client: OpenAIClient | ClaudeClient
+            if provider.lower() == "openai":
+                client = OpenAIClient(self._config)
             elif provider.lower() in {"anthropic", "claude"}:
                 client = ClaudeClient(self._config)
             else:
-                raise ValueError(f"Unsupported LLM provider: {provider}")
-        except Exception as exc:  # pragma: no cover - initialization guard
-            self._errors[provider] = exc
+                self._errors[provider] = f"Unknown provider: {provider}"
+                return None
+        except (OpenAIError, ClaudeError) as exc:
+            self._errors[provider] = str(exc)
+            _LOGGER.debug("Failed to initialize %s client: %s", provider, exc)
+            return None
+        except Exception as exc:
+            self._errors[provider] = f"Initialization failed: {type(exc).__name__}"
+            _LOGGER.exception("Failed to initialize %s client", provider)
             return None
 
         self._clients[provider] = client
         return client
 
     @property
-    def errors(self) -> dict[str, Exception]:
+    def errors(self) -> dict[str, str]:
+        """Return copy of accumulated errors by provider."""
         return self._errors.copy()
 
     @property
     def providers(self) -> list[str]:
+        """Return list of configured providers in priority order."""
         return list(self._order)
 
     @property
     def last_provider(self) -> str | None:
+        """Return the provider used for the last successful request."""
         return self._last_provider
 
+    def is_available(self) -> bool:
+        """Check if at least one provider is available."""
+        for provider in self._order:
+            if self._get_client(provider) is not None:
+                return True
+        return False
 
-__all__ = ["LLMBridge"]
+
+__all__ = ["LLMBridge", "LLMError", "ChatMessage"]

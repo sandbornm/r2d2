@@ -1,15 +1,63 @@
-import React from 'react';
+import React, { createContext, useContext, useMemo, useState, useEffect } from 'react';
 import ReactDOM from 'react-dom/client';
-import { CssBaseline, ThemeProvider } from '@mui/material';
+import { CssBaseline, ThemeProvider, PaletteMode } from '@mui/material';
 import App from './App';
-import { theme } from './theme';
+import { createAppTheme } from './theme';
 import './styles.css';
+
+// Theme context
+interface ThemeContextType {
+  mode: PaletteMode;
+  toggleTheme: () => void;
+}
+
+export const ThemeContext = createContext<ThemeContextType>({
+  mode: 'dark',
+  toggleTheme: () => {},
+});
+
+export const useThemeMode = () => useContext(ThemeContext);
+
+const Root = () => {
+  // Check localStorage and system preference
+  const getInitialMode = (): PaletteMode => {
+    const stored = localStorage.getItem('r2d2-theme');
+    if (stored === 'light' || stored === 'dark') return stored;
+    // Default to dark
+    return 'dark';
+  };
+
+  const [mode, setMode] = useState<PaletteMode>(getInitialMode);
+
+  useEffect(() => {
+    localStorage.setItem('r2d2-theme', mode);
+    // Update CSS color scheme
+    document.documentElement.style.colorScheme = mode;
+  }, [mode]);
+
+  const toggleTheme = () => {
+    setMode((prev) => (prev === 'dark' ? 'light' : 'dark'));
+  };
+
+  const theme = useMemo(() => createAppTheme(mode), [mode]);
+
+  useEffect(() => {
+    document.body.style.backgroundColor = theme.palette.background.default;
+    document.body.style.color = theme.palette.text.primary;
+  }, [theme]);
+
+  return (
+    <ThemeContext.Provider value={{ mode, toggleTheme }}>
+      <ThemeProvider theme={theme}>
+        <CssBaseline />
+        <App />
+      </ThemeProvider>
+    </ThemeContext.Provider>
+  );
+};
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <ThemeProvider theme={theme}>
-      <CssBaseline />
-      <App />
-    </ThemeProvider>
+    <Root />
   </React.StrictMode>,
 );

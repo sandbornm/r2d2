@@ -18,15 +18,18 @@ class LibmagicAdapter:
     def is_available(self) -> bool:
         try:
             import magic  # noqa: F401
-        except ModuleNotFoundError:
+        except (ModuleNotFoundError, ImportError):
             return False
         return True
 
     def _magic(self) -> "module":
         try:
             import magic
-        except ModuleNotFoundError as exc:  # pragma: no cover - import guard
-            raise AdapterUnavailable("python-magic is not installed") from exc
+        except (ModuleNotFoundError, ImportError) as exc:  # pragma: no cover - import guard
+            raise AdapterUnavailable(
+                "python-magic is not installed or libmagic native library is missing. "
+                "On macOS: brew install libmagic"
+            ) from exc
         return magic
 
     def quick_scan(self, binary: Path) -> dict[str, str]:

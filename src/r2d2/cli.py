@@ -11,6 +11,7 @@ from rich.console import Console
 from rich.json import JSON
 from rich.table import Table
 
+from .environment import EnvironmentReport
 from .llm import ChatMessage as LLMChatMessage, LLMBridge
 from .state import AppState, build_state
 from .utils import to_json
@@ -51,10 +52,37 @@ def analyze(
             "notes": result.notes,
             "issues": result.issues,
         }
+        plan = result.plan if hasattr(result, "plan") else None
+        pipeline_hint = ""
+        if plan:
+            enabled_segments: list[str] = []
+            if getattr(plan, "quick", False):
+                enabled_segments.append("quick scan (libmagic, radare2 metadata, strings)")
+            if getattr(plan, "deep", False):
+                enabled_segments.append("deep analysis (radare2 analysis, capstone disassembly)")
+            if getattr(plan, "run_angr", False):
+                enabled_segments.append("symbolic pivots with angr")
+            if enabled_segments:
+                pipeline_hint = (
+                    "This run executed "
+                    + ", ".join(enabled_segments[:-1])
+                    + (" and " if len(enabled_segments) > 1 else "")
+                    + enabled_segments[-1]
+                    + ". "
+                )
+
         messages = [
             LLMChatMessage(
                 role="system",
-                content="You are assisting with ELF reverse engineering. Use the supplied context to answer clearly.",
+                content=(
+                    "You are r2d2, a binary analysis copilot. "
+                    "Respond as a senior reverse engineer who references pipeline stages explicitly. "
+                    "Explain what the quick stage (libmagic + radare2) reveals, what the deep stage "
+                    "(radare2 analysis, capstone disassembly, optional angr) contributes, and highlight risks. "
+                    "Offer practical next steps (commands, dynamic analysis ideas) while staying concise. "
+                    + pipeline_hint
+                    + "If something is still running, describe what the current stage is doing and why it matters."
+                ),
             ),
             LLMChatMessage(
                 role="user",
