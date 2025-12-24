@@ -78,6 +78,23 @@ class Database:
                 )
                 """
             )
+            
+            # Annotations for disassembly lines
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS annotations (
+                    annotation_id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    binary_path TEXT NOT NULL,
+                    address TEXT NOT NULL,
+                    note TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (session_id) REFERENCES chat_sessions (session_id) ON DELETE CASCADE,
+                    UNIQUE (session_id, address)
+                )
+                """
+            )
 
     def iter_actions(self, trajectory_id: str) -> Iterator[sqlite3.Row]:
         with self.connect() as conn:

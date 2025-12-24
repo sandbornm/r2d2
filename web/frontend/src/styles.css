@@ -1,8 +1,8 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap');
 
 :root {
-  --accent-blue: #60a5fa;
-  --accent-green: #34d399;
+  --font-mono: 'IBM Plex Mono', 'SF Mono', 'Monaco', 'Consolas', monospace;
+  --font-sans: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, sans-serif;
 }
 
 *, *::before, *::after {
@@ -10,7 +10,7 @@
 }
 
 html {
-  font-size: 16px;
+  font-size: 14px;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -22,34 +22,16 @@ html, body, #root {
 }
 
 body {
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-family: var(--font-mono);
   line-height: 1.5;
-  transition: background-color 0.2s, color 0.2s;
 }
 
-/* Custom scrollbar for webkit browsers */
-::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
-
-::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-::-webkit-scrollbar-thumb {
-  border-radius: 4px;
-}
-
-/* Selection color */
 ::selection {
-  background: rgba(96, 165, 250, 0.3);
-  color: inherit;
+  background: rgba(59, 130, 246, 0.2);
 }
 
-/* Links */
 a {
-  color: var(--accent-blue);
+  color: #3b82f6;
   text-decoration: none;
 }
 
@@ -57,83 +39,110 @@ a:hover {
   text-decoration: underline;
 }
 
-/* Code blocks */
 code, pre {
-  font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
 }
 
 pre {
-  border-radius: 6px;
-  padding: 12px 16px;
+  border-radius: 4px;
+  padding: 12px;
   overflow-x: auto;
-  font-size: 0.8125rem;
-  line-height: 1.6;
+  line-height: 1.5;
+  margin: 0;
 }
 
-/* Status indicator animations */
-@keyframes pulse {
-  0%, 100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.5;
-  }
-}
-
-.status-running {
-  animation: pulse 2s ease-in-out infinite;
-}
-
-/* Focus visible styles */
 :focus-visible {
-  outline: 2px solid var(--accent-blue);
-  outline-offset: 2px;
+  outline: 2px solid #3b82f6;
+  outline-offset: 1px;
 }
 
-/* Remove default button styles */
 button {
   font-family: inherit;
 }
 
-/* Monospace text utility */
+/* Utility classes */
 .mono {
-  font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  font-family: var(--font-mono);
 }
 
-/* Gradient text for headers */
-.gradient-text {
-  background: linear-gradient(135deg, #60a5fa 0%, #34d399 100%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
+.sans {
+  font-family: var(--font-sans);
 }
 
-/* Fade in animation */
+/* Smooth animations */
 @keyframes fadeIn {
-  from {
-    opacity: 0;
-    transform: translateY(8px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes slideIn {
+  from { opacity: 0; transform: translateX(-8px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
 }
 
 .fade-in {
-  animation: fadeIn 0.3s ease-out;
+  animation: fadeIn 0.2s ease-out;
 }
 
-/* Drop zone pulse animation */
-@keyframes dropPulse {
-  0%, 100% {
-    transform: scale(1);
-  }
-  50% {
-    transform: scale(1.02);
-  }
+.fade-in-up {
+  animation: fadeInUp 0.25s ease-out;
 }
 
-.drop-active {
-  animation: dropPulse 1s ease-in-out infinite;
+.slide-in {
+  animation: slideIn 0.2s ease-out;
+}
+
+/* Smooth transitions for interactive elements */
+.MuiButton-root,
+.MuiIconButton-root,
+.MuiTab-root,
+.MuiChip-root,
+.MuiSelect-root {
+  transition: all 0.15s ease !important;
+}
+
+.MuiPaper-root {
+  transition: box-shadow 0.2s ease, background-color 0.2s ease !important;
+}
+
+.MuiDrawer-paper {
+  transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+
+.MuiPopover-paper {
+  animation: fadeInUp 0.15s ease-out;
+}
+
+.MuiTooltip-tooltip {
+  animation: fadeIn 0.1s ease-out;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(128, 128, 128, 0.3);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(128, 128, 128, 0.5);
 }

@@ -1,23 +1,22 @@
-import AssessmentIcon from '@mui/icons-material/Assessment';
-import ChatIcon from '@mui/icons-material/Chat';
 import CloudUploadIcon from '@mui/icons-material/CloudUpload';
-import HistoryIcon from '@mui/icons-material/History';
-import InsertDriveFileIcon from '@mui/icons-material/InsertDriveFile';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
-import RefreshIcon from '@mui/icons-material/Refresh';
 import SettingsIcon from '@mui/icons-material/Settings';
-import TerminalIcon from '@mui/icons-material/Terminal';
+import DarkModeIcon from '@mui/icons-material/DarkMode';
+import LightModeIcon from '@mui/icons-material/LightMode';
 import {
   Alert,
-  alpha,
   Box,
   Button,
-  Chip,
   CircularProgress,
+  FormControl,
   IconButton,
+  MenuItem,
+  Select,
+  SelectChangeEvent,
   Stack,
   Tab,
   Tabs,
+  TextField,
   Tooltip,
   Typography,
   useTheme,
@@ -36,7 +35,7 @@ import ChatPanel from './components/ChatPanel';
 import ProgressLog from './components/ProgressLog';
 import ResultViewer from './components/ResultViewer';
 import SessionList from './components/SessionList';
-import SettingsDrawer, { AnalysisSettings } from './components/SettingsDrawer';
+import SettingsDrawer, { AI_MODELS, AnalysisSettings, ModelId } from './components/SettingsDrawer';
 import { useThemeMode } from './main';
 import type {
   AnalysisResultPayload,
@@ -75,6 +74,7 @@ const DEFAULT_SETTINGS: AnalysisSettings = {
   quickScanOnly: false,
   enableAngr: true,
   autoAskLLM: false,
+  selectedModel: 'claude-sonnet-4-5',
 };
 
 const loadSettings = (): AnalysisSettings => {
@@ -94,6 +94,7 @@ const App = () => {
 
   const [binaryPath, setBinaryPath] = useState('');
   const [fileName, setFileName] = useState<string | null>(null);
+  const [userGoal, setUserGoal] = useState('');
   const [status, setStatus] = useState<JobStatus>('idle');
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [events, setEvents] = useState<ProgressEventEntry[]>([]);
@@ -124,7 +125,6 @@ const App = () => {
     activeSessionIdRef.current = activeSessionId;
   }, [activeSessionId]);
 
-  // Save settings when changed
   useEffect(() => {
     localStorage.setItem('r2d2-settings', JSON.stringify(settings));
   }, [settings]);
@@ -148,7 +148,23 @@ const App = () => {
       setHealth(data);
     } catch (error) {
       console.error('Failed to fetch health', error);
-      setHealth({ status: 'error', model: 'unknown', ghidra_ready: false });
+      setHealth({ status: 'error', model: 'unknown', ghidra_ready: false, available_models: [] });
+    }
+  }, []);
+
+  const handleModelChange = useCallback(async (event: SelectChangeEvent<string>) => {
+    const newModel = event.target.value;
+    try {
+      const response = await fetch('/api/models', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: newModel }),
+      });
+      if (response.ok) {
+        setHealth((prev) => prev ? { ...prev, model: newModel } : null);
+      }
+    } catch (error) {
+      console.error('Failed to change model', error);
     }
   }, []);
 
@@ -247,17 +263,16 @@ const App = () => {
 
       source.onerror = () => {
         setStatus('error');
-        setStatusMessage('Connection lost. Try again.');
+        setStatusMessage('Connection lost');
         closeSource();
       };
     },
     [recordEvent]
   );
 
-  // File upload handler
   const handleFileUpload = async (file: File) => {
     setUploading(true);
-    setStatusMessage('Uploading file...');
+    setStatusMessage('Uploading...');
     setStatus('running');
 
     try {
@@ -289,7 +304,6 @@ const App = () => {
     }
   };
 
-  // Drag and drop handlers
   const handleDragOver = (e: DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -329,13 +343,13 @@ const App = () => {
     event.preventDefault();
     if (!binaryPath.trim()) {
       setStatus('error');
-      setStatusMessage('Upload a binary file first');
+      setStatusMessage('Upload a binary first');
       return;
     }
 
     closeSource();
     setStatus('running');
-    setStatusMessage('Starting analysis...');
+    setStatusMessage('Analyzing...');
     setEvents([]);
     setResult(null);
     setActiveTab('logs');
@@ -348,16 +362,16 @@ const App = () => {
           binary: binaryPath,
           quick_only: settings.quickScanOnly,
           enable_angr: settings.enableAngr,
+          user_goal: userGoal.trim() || undefined,
         }),
       });
 
       if (!response.ok) {
         const errorBody = await response.json();
-        throw new Error(errorBody.error ?? 'Analysis request failed');
+        throw new Error(errorBody.error ?? 'Analysis failed');
       }
 
       const data: ApiAnalysisResponse = await response.json();
-      setStatusMessage('Analyzing...');
 
       if (data.session_id) {
         lastSyncedSessionIdRef.current = null;
@@ -376,17 +390,16 @@ const App = () => {
           setStatusMessage(`Analyzing ${payload.binary ?? fileName ?? 'binary'}`);
         },
         stage_started: (payload) => {
-          if (payload.stage) setStatusMessage(`Running ${payload.stage} stage...`);
+          if (payload.stage) setStatusMessage(`${payload.stage} stage...`);
         },
         job_failed: (payload) => {
           setStatus('error');
-          setStatusMessage(payload.error ?? 'Analysis failed');
+          setStatusMessage(payload.error ?? 'Failed');
           closeSource();
         },
         job_completed: (payload) => {
           setStatus('done');
-          setStatusMessage('Analysis complete');
-          setActiveTab('results');
+          setStatusMessage('Done');
           if (payload.session_id) {
             lastSyncedSessionIdRef.current = null;
             setActiveSessionId(payload.session_id);
@@ -395,13 +408,6 @@ const App = () => {
             loadSessionMessages(payload.session_id).catch(console.error);
           }
           closeSource();
-          
-          // Auto-ask LLM if enabled
-          if (settings.autoAskLLM && payload.session_id) {
-            setTimeout(() => {
-              handleAutoAskLLM(payload.session_id!);
-            }, 500);
-          }
         },
         analysis_result: (payload) => {
           const analysis = payload as unknown as AnalysisResponseEvent;
@@ -412,6 +418,11 @@ const App = () => {
             activeSessionIdRef.current = analysis.session_id;
             refreshSessions();
             loadSessionMessages(analysis.session_id).catch(console.error);
+            
+            // Auto-ask with the actual analysis data for context
+            setTimeout(() => {
+              handleAutoAskLLM(analysis.session_id!, analysis);
+            }, 300);
           }
         },
       };
@@ -420,27 +431,60 @@ const App = () => {
     } catch (error) {
       console.error(error);
       setStatus('error');
-      setStatusMessage(error instanceof Error ? error.message : 'Failed to start analysis');
+      setStatusMessage(error instanceof Error ? error.message : 'Failed');
     }
   };
 
-  const handleAutoAskLLM = async (sessionId: string) => {
+  const handleAutoAskLLM = async (sessionId: string, analysisResult?: AnalysisResultPayload) => {
+    setActiveTab('chat');
+    setSendingMessage(true);
+    
+    // Extract key info from analysis if available
+    const quickScan = analysisResult?.quick_scan ?? result?.quick_scan ?? {};
+    const deepScan = analysisResult?.deep_scan ?? result?.deep_scan ?? {};
+    const r2Quick = (quickScan.radare2 ?? {}) as Record<string, any>;
+    const r2Deep = (deepScan.radare2 ?? {}) as Record<string, any>;
+    const binInfo = (r2Quick.info?.bin ?? {}) as Record<string, any>;
+    
+    const arch = binInfo.arch ?? 'unknown';
+    const bits = binInfo.bits ?? '?';
+    const funcCount = Array.isArray(r2Deep.functions) ? r2Deep.functions.length : 0;
+    const importCount = Array.isArray(r2Quick.imports) ? r2Quick.imports.length : 0;
+    const fileName = analysisResult?.binary?.split('/').pop() ?? 'this binary';
+    
+    // Build a simple, friendly intro prompt
+    let prompt: string;
+    
+    if (userGoal.trim()) {
+      // User has a specific goal
+      prompt = `My goal: ${userGoal.trim()}
+
+What can you tell me about ${fileName}? Keep it brief.`;
+    } else {
+      // Simple intro - just ask for a quick summary
+      prompt = `Give me a quick intro to ${fileName}.
+
+In 2-3 sentences: what is it and what does it do? I'm ${funcCount > 0 ? 'seeing ' + funcCount + ' functions' : 'just getting started'}.`;
+    }
+    
     try {
-      await fetch(`/api/chats/${sessionId}/messages`, {
+      const response = await fetch(`/api/chats/${sessionId}/messages`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          content: 'Provide a brief summary of this binary: what it does, notable functions, and any security concerns.',
+          content: prompt,
           call_llm: true,
         }),
       });
-      setActiveSessionId(sessionId);
-      activeSessionIdRef.current = sessionId;
-      lastSyncedSessionIdRef.current = null;
-      loadSessionMessages(sessionId);
-      setActiveTab('chat');
+      
+      if (response.ok) {
+        const data = await response.json();
+        setMessages(data.messages);
+      }
     } catch (error) {
-      console.error('Auto-ask LLM failed:', error);
+      console.error('Auto-ask failed:', error);
+    } finally {
+      setSendingMessage(false);
     }
   };
 
@@ -450,6 +494,30 @@ const App = () => {
     setBinaryPath(session.binary_path);
     setFileName(session.title ?? session.binary_path.split('/').pop() ?? null);
     lastSyncedSessionIdRef.current = session.session_id;
+  };
+
+  const handleDeleteSession = async (sessionId: string) => {
+    try {
+      const response = await fetch(`/api/chats/${sessionId}`, {
+        method: 'DELETE',
+      });
+      if (response.ok) {
+        // Remove from local state
+        setSessions((prev) => prev.filter((s) => s.session_id !== sessionId));
+        // If we deleted the active session, select the next one
+        if (activeSessionId === sessionId) {
+          const remaining = sessions.filter((s) => s.session_id !== sessionId);
+          if (remaining.length > 0) {
+            setActiveSessionId(remaining[0].session_id);
+          } else {
+            setActiveSessionId(null);
+            setResult(null);
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Delete failed:', error);
+    }
   };
 
   const handleSendMessage = async (content: string, options: { callLLM: boolean }) => {
@@ -477,7 +545,7 @@ const App = () => {
       if (!response.ok) {
         setMessages((prev) => prev.filter((msg) => msg.message_id !== optimisticId));
         const errorBody = await response.json();
-        throw new Error(errorBody.error ?? 'Failed to send message');
+        throw new Error(errorBody.error ?? 'Failed');
       }
       const data: ChatPostResponse = await response.json();
       setActiveSessionId(data.session.session_id);
@@ -490,7 +558,7 @@ const App = () => {
       if (data.error) setChatError(data.error);
     } catch (error) {
       console.error(error);
-      setChatError(error instanceof Error ? error.message : 'Failed to send message');
+      setChatError(error instanceof Error ? error.message : 'Failed');
       setMessages((prev) => prev.filter((msg) => msg.message_id !== optimisticId));
     } finally {
       setSendingMessage(false);
@@ -504,6 +572,11 @@ const App = () => {
   const clearFile = () => {
     setBinaryPath('');
     setFileName(null);
+    setUserGoal('');
+    setResult(null);
+    setEvents([]);
+    setStatus('idle');
+    setStatusMessage(null);
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
@@ -513,7 +586,6 @@ const App = () => {
         height: '100vh',
         display: 'flex',
         flexDirection: 'column',
-        overflow: 'hidden',
         bgcolor: 'background.default',
         color: 'text.primary',
       }}
@@ -522,52 +594,67 @@ const App = () => {
       <Box
         component="header"
         sx={{
-          px: 3,
-          py: 2,
+          px: 2,
+          py: 1,
           borderBottom: 1,
           borderColor: 'divider',
           display: 'flex',
           alignItems: 'center',
           gap: 2,
-          flexShrink: 0,
-          bgcolor: alpha(theme.palette.background.paper, 0.9),
-          backdropFilter: 'blur(12px)',
-          borderBottomLeftRadius: 16,
-          borderBottomRightRadius: 16,
-          boxShadow: `0 6px 18px -12px ${alpha(theme.palette.primary.main, 0.6)}`,
+          bgcolor: 'background.paper',
         }}
       >
-        <Stack direction="row" alignItems="center" spacing={1.5}>
-          <TerminalIcon sx={{ color: 'secondary.main', fontSize: 28 }} />
-          <Typography variant="h5" fontWeight={700} sx={{ letterSpacing: '-0.02em' }}>
-            r2d2
-          </Typography>
-        </Stack>
+        <Typography variant="h6" fontWeight={600} sx={{ fontFamily: 'var(--font-sans)' }}>
+          r2d2
+        </Typography>
 
         <Box sx={{ flex: 1 }} />
 
-        {health && (
-          <Chip
-            size="small"
-            label={health.model}
-            sx={{
-              bgcolor: health.status === 'ok' 
-                ? alpha(theme.palette.secondary.main, 0.15) 
-                : alpha(theme.palette.error.main, 0.15),
-              color: health.status === 'ok' ? 'secondary.main' : 'error.main',
-              fontWeight: 500,
-            }}
-          />
+        {health && health.available_models && health.available_models.length > 0 && (
+          <FormControl size="small" sx={{ minWidth: 180 }}>
+            <Select
+              value={health.model}
+              onChange={handleModelChange}
+              sx={{
+                fontSize: '0.8rem',
+                transition: 'all 0.2s ease',
+                '& .MuiSelect-select': {
+                  py: 0.75,
+                  px: 1.5,
+                },
+                '&:hover': {
+                  bgcolor: 'action.hover',
+                },
+              }}
+            >
+              {health.available_models.map((modelId) => (
+                <MenuItem key={modelId} value={modelId} sx={{ fontSize: '0.8rem' }}>
+                  {health.model_names?.[modelId] || modelId}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
         )}
 
+        {health && (!health.available_models || health.available_models.length === 0) && (
+          <Typography variant="caption" color="text.secondary">
+            {health.model_names?.[health.model] || health.model}
+          </Typography>
+        )}
+
+        <Tooltip title={isDark ? 'Light mode' : 'Dark mode'}>
+          <IconButton size="small" onClick={toggleTheme}>
+            {isDark ? <LightModeIcon sx={{ fontSize: 18 }} /> : <DarkModeIcon sx={{ fontSize: 18 }} />}
+          </IconButton>
+        </Tooltip>
+
         <Tooltip title="Settings">
-          <IconButton onClick={() => setSettingsOpen(true)} size="small">
-            <SettingsIcon />
+          <IconButton size="small" onClick={() => setSettingsOpen(true)}>
+            <SettingsIcon sx={{ fontSize: 18 }} />
           </IconButton>
         </Tooltip>
       </Box>
 
-      {/* Settings Drawer */}
       <SettingsDrawer
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
@@ -577,239 +664,192 @@ const App = () => {
         onSettingsChange={setSettings}
       />
 
-      {/* Main content */}
+      {/* Main */}
       <Box sx={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
         {/* Sidebar */}
         <Box
           component="aside"
           sx={{
-            width: 280,
+            width: 240,
             borderRight: 1,
             borderColor: 'divider',
             display: 'flex',
             flexDirection: 'column',
-            flexShrink: 0,
-            bgcolor: alpha(theme.palette.background.paper, 0.75),
-            backdropFilter: 'blur(10px)',
+            bgcolor: 'background.paper',
           }}
         >
-          <Box sx={{ p: 2, borderBottom: 1, borderColor: 'divider' }}>
-            <Stack direction="row" alignItems="center" justifyContent="space-between">
-              <Stack direction="row" alignItems="center" spacing={1}>
-                <HistoryIcon sx={{ fontSize: 18, color: 'text.secondary' }} />
-                <Typography variant="body2" fontWeight={600} color="text.secondary">
-                  Sessions
-                </Typography>
-              </Stack>
-              <Tooltip title="Refresh">
-                <IconButton size="small" onClick={refreshSessions}>
-                  <RefreshIcon sx={{ fontSize: 16 }} />
-                </IconButton>
-              </Tooltip>
-            </Stack>
+          <Box sx={{ p: 1.5, borderBottom: 1, borderColor: 'divider' }}>
+            <Typography variant="caption" color="text.secondary" fontWeight={500}>
+              Sessions
+            </Typography>
           </Box>
           <Box sx={{ flex: 1, overflow: 'auto' }}>
             <SessionList
               sessions={sessions}
               activeSessionId={activeSessionId}
               onSelect={handleSessionSelect}
+              onDelete={handleDeleteSession}
             />
           </Box>
         </Box>
 
         {/* Main panel */}
-        <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-          {/* Upload / Analyze area */}
-          <Box
-            component="form"
-            onSubmit={handleAnalyze}
-            onDragOver={handleDragOver}
-            onDragEnter={handleDragEnter}
-            onDragLeave={handleDragLeave}
-            onDrop={handleDrop}
-            sx={{
-              p: 3,
-              borderBottom: 1,
-              borderColor: alpha(theme.palette.primary.main, 0.15),
-              bgcolor: isDragging
-                ? alpha(theme.palette.primary.main, 0.12)
-                : alpha(theme.palette.background.paper, 0.92),
-              transition: 'background-color 0.2s, border-color 0.2s',
-            }}
-          >
-            <input
-              ref={fileInputRef}
-              type="file"
-              onChange={handleFileInputChange}
-              style={{ display: 'none' }}
-              accept="*/*"
-            />
+        <Box
+          sx={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
+          onDragOver={handleDragOver}
+          onDragEnter={handleDragEnter}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+        >
+          <input
+            ref={fileInputRef}
+            type="file"
+            onChange={handleFileInputChange}
+            style={{ display: 'none' }}
+            accept="*/*"
+          />
 
-            {!fileName ? (
-              // Drop zone
+          {/* No file selected - show full drop zone */}
+          {!fileName && !result ? (
+            <Box
+              onClick={() => fileInputRef.current?.click()}
+              sx={{
+                flex: 1,
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                cursor: 'pointer',
+                bgcolor: isDragging ? 'action.hover' : 'transparent',
+                border: isDragging ? 2 : 0,
+                borderStyle: 'dashed',
+                borderColor: 'primary.main',
+                m: isDragging ? 2 : 0,
+                borderRadius: isDragging ? 2 : 0,
+                transition: 'all 0.2s',
+              }}
+            >
+              <CloudUploadIcon sx={{ fontSize: 56, color: 'text.disabled', mb: 2 }} />
+              <Typography variant="body1" color="text.secondary" fontWeight={500}>
+                {isDragging ? 'Drop binary here' : 'Drop a binary file to analyze'}
+              </Typography>
+              <Typography variant="caption" color="text.disabled" sx={{ mt: 0.5 }}>
+                or click anywhere to browse
+              </Typography>
+            </Box>
+          ) : (
+            <>
+              {/* File selected - show controls */}
               <Box
-                onClick={() => fileInputRef.current?.click()}
+                component="form"
+                onSubmit={handleAnalyze}
                 sx={{
-                  border: 2,
-                  borderStyle: 'dashed',
-                  borderColor: isDragging ? 'secondary.main' : 'divider',
-                  borderRadius: 2,
-                  p: 4,
-                  textAlign: 'center',
-                  cursor: 'pointer',
-                  transition: 'all 0.2s',
-                  '&:hover': {
-                    borderColor: 'primary.main',
-                    bgcolor: alpha(theme.palette.primary.main, 0.04),
-                  },
+                  p: 2,
+                  borderBottom: 1,
+                  borderColor: 'divider',
+                  bgcolor: 'background.paper',
                 }}
               >
-                <CloudUploadIcon
-                  sx={{
-                    fontSize: 48,
-                    color: isDragging ? 'secondary.main' : 'text.secondary',
-                    mb: 1,
-                  }}
-                />
-                <Typography variant="body1" fontWeight={500}>
-                  {isDragging ? 'Drop binary here' : 'Drag & drop a binary file'}
-                </Typography>
-                <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-                  or click to browse
-                </Typography>
-              </Box>
-            ) : (
-              // File selected
-              <Stack spacing={2}>
-                <Stack direction="row" spacing={2} alignItems="center">
-                  <Box
-                    sx={{
-                      width: 48,
-                      height: 48,
-                      borderRadius: 1.5,
-                      bgcolor: alpha(theme.palette.primary.main, 0.1),
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                    }}
-                  >
-                    <InsertDriveFileIcon sx={{ color: 'primary.main' }} />
-                  </Box>
-                  <Box sx={{ flex: 1, minWidth: 0 }}>
-                    <Typography
-                      variant="body1"
-                      fontWeight={600}
-                      sx={{
-                        fontFamily: 'monospace',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        whiteSpace: 'nowrap',
-                      }}
-                    >
-                      {fileName}
-                    </Typography>
-                    <Stack direction="row" spacing={1} alignItems="center">
-                      <Typography
-                        variant="caption"
-                        color="text.secondary"
-                        sx={{ fontFamily: 'monospace' }}
-                      >
-                        {settings.quickScanOnly ? 'Quick scan' : 'Full analysis'}
-                        {!settings.quickScanOnly && settings.enableAngr && ' + angr'}
+                <Stack spacing={1.5}>
+                  <Stack direction="row" spacing={2} alignItems="center">
+                    <Box sx={{ flex: 1, minWidth: 0 }}>
+                      <Typography variant="body2" fontWeight={600} sx={{ fontFamily: 'monospace' }}>
+                        {fileName || result?.binary.split('/').pop()}
                       </Typography>
-                    </Stack>
-                  </Box>
-                  <Button
-                    variant="outlined"
-                    size="small"
-                    onClick={clearFile}
-                    disabled={status === 'running'}
-                  >
-                    Change
-                  </Button>
-                  <Button
-                    type="submit"
-                    variant="contained"
-                    color="secondary"
-                    disabled={status === 'running' || uploading}
-                    startIcon={
-                      status === 'running' ? (
-                        <CircularProgress size={16} color="inherit" />
-                      ) : (
-                        <PlayArrowIcon />
-                      )
-                    }
-                    sx={{ minWidth: 120 }}
-                  >
-                    {status === 'running' ? 'Running' : 'Analyze'}
-                  </Button>
-                </Stack>
-
-                {statusMessage && (
-                  <Alert
-                    severity={status === 'error' ? 'error' : status === 'done' ? 'success' : 'info'}
-                    icon={false}
-                  >
-                    {statusMessage}
-                  </Alert>
-                )}
-              </Stack>
-            )}
-          </Box>
-
-          {/* Tabs */}
-          <Box sx={{ borderBottom: 1, borderColor: 'divider', px: 2 }}>
-            <Tabs value={activeTab} onChange={handleTabChange}>
-              <Tab
-                value="results"
-                label="Results"
-                icon={<AssessmentIcon sx={{ fontSize: 18 }} />}
-                iconPosition="start"
-              />
-              <Tab
-                value="chat"
-                label="Chat"
-                icon={<ChatIcon sx={{ fontSize: 18 }} />}
-                iconPosition="start"
-              />
-              <Tab
-                value="logs"
-                label={
-                  <Stack direction="row" alignItems="center" spacing={1}>
-                    <span>Logs</span>
-                    {events.length > 0 && (
-                      <Chip
-                        size="small"
-                        label={events.length}
-                        sx={{
-                          height: 18,
-                          fontSize: '0.7rem',
-                          '& .MuiChip-label': { px: 0.75 },
-                        }}
-                      />
-                    )}
+                      <Typography variant="caption" color="text.secondary">
+                        {settings.quickScanOnly ? 'Quick scan' : 'Full analysis'}
+                        {settings.enableAngr && ' + angr'}
+                      </Typography>
+                    </Box>
+                    <Button variant="text" size="small" onClick={clearFile} disabled={status === 'running'}>
+                      Clear
+                    </Button>
+                    <Button
+                      type="submit"
+                      variant="contained"
+                      size="small"
+                      disabled={status === 'running' || uploading || !fileName}
+                      startIcon={status === 'running' ? <CircularProgress size={14} color="inherit" /> : <PlayArrowIcon />}
+                    >
+                      {status === 'running' ? 'Running' : 'Analyze'}
+                    </Button>
                   </Stack>
-                }
-                icon={<TerminalIcon sx={{ fontSize: 18 }} />}
-                iconPosition="start"
-              />
-            </Tabs>
-          </Box>
 
-          {/* Tab content */}
-          <Box sx={{ flex: 1, overflow: 'auto', p: 3 }}>
-            {activeTab === 'results' && <ResultViewer result={result} />}
-            {activeTab === 'chat' && (
-              <ChatPanel
-                session={activeSession}
-                messages={messages}
-                onSend={handleSendMessage}
-                sending={sendingMessage}
-                error={chatError}
-              />
-            )}
-            {activeTab === 'logs' && <ProgressLog entries={events} />}
-          </Box>
+                  {/* User goal input */}
+                  <TextField
+                    size="small"
+                    placeholder="What are you looking for? (e.g., find C2 callbacks, identify crypto)"
+                    value={userGoal}
+                    onChange={(e) => setUserGoal(e.target.value)}
+                    fullWidth
+                    sx={{
+                      '& .MuiOutlinedInput-root': {
+                        fontSize: '0.8125rem',
+                      },
+                    }}
+                  />
+
+                  {statusMessage && (
+                    <Alert
+                      severity={status === 'error' ? 'error' : status === 'done' ? 'success' : 'info'}
+                      sx={{ py: 0.5 }}
+                    >
+                      {statusMessage}
+                    </Alert>
+                  )}
+                </Stack>
+              </Box>
+
+              {/* Tabs */}
+              <Box sx={{ borderBottom: 1, borderColor: 'divider', px: 2 }}>
+                <Tabs value={activeTab} onChange={handleTabChange}>
+                  <Tab value="results" label="Results" />
+                  <Tab value="chat" label="Chat" />
+                  <Tab value="logs" label={`Logs${events.length ? ` (${events.length})` : ''}`} />
+                </Tabs>
+              </Box>
+
+              {/* Content */}
+              <Box sx={{ flex: 1, overflow: 'auto', p: 2 }}>
+                {activeTab === 'results' && (
+                  <ResultViewer 
+                    result={result} 
+                    sessionId={activeSessionId}
+                    onAskAboutCode={(codeOrQuestion) => {
+                      // Switch to chat tab and send the code/question
+                      setActiveTab('chat');
+                      
+                      // Check if the input already contains a user question (has text before the code block)
+                      const hasUserQuestion = codeOrQuestion.includes('```') && 
+                        codeOrQuestion.indexOf('```') > 10; // User wrote something before the code block
+                      
+                      let prompt: string;
+                      if (hasUserQuestion) {
+                        // User provided their own question with the code
+                        prompt = codeOrQuestion;
+                      } else {
+                        // Just code, use boilerplate analysis
+                        const archName = (result?.quick_scan?.radare2 as any)?.info?.bin?.arch || 'assembly';
+                        prompt = `Explain this ${archName} code:\n\n\`\`\`asm\n${codeOrQuestion}\n\`\`\`\n\nWhat does it do? Walk me through each instruction. Are there any security concerns or interesting patterns?`;
+                      }
+                      
+                      handleSendMessage(prompt, { callLLM: true });
+                    }}
+                  />
+                )}
+                {activeTab === 'chat' && (
+                  <ChatPanel
+                    session={activeSession}
+                    messages={messages}
+                    onSend={handleSendMessage}
+                    sending={sendingMessage}
+                    error={chatError}
+                  />
+                )}
+                {activeTab === 'logs' && <ProgressLog entries={events} />}
+              </Box>
+            </>
+          )}
         </Box>
       </Box>
     </Box>

@@ -24,6 +24,7 @@ import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
 import { FC, FormEvent, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { ChatAttachment, ChatMessageItem, ChatSessionSummary } from '../types';
+import MarkdownRenderer from './MarkdownRenderer';
 
 dayjs.extend(relativeTime);
 
@@ -176,33 +177,20 @@ const MessageBubble: FC<{ message: ChatMessageItem }> = ({ message }) => {
               </Box>
             )}
           </Stack>
-          <Typography
-            variant="body2"
-            sx={{
-              whiteSpace: 'pre-wrap',
-              wordBreak: 'break-word',
-              lineHeight: 1.7,
-              '& code': {
-                bgcolor: alpha(theme.palette.primary.main, 0.1),
-                px: 0.75,
-                py: 0.25,
-                borderRadius: 0.5,
-                fontFamily: 'monospace',
-                fontSize: '0.85em',
-              },
-              '& pre': {
-                bgcolor: alpha('#000', 0.3),
-                p: 1.5,
-                borderRadius: 1,
-                overflow: 'auto',
-                fontFamily: 'monospace',
-                fontSize: '0.8rem',
-                my: 1,
-              },
-            }}
-          >
-            {message.content}
-          </Typography>
+          {isAssistant ? (
+            <MarkdownRenderer content={message.content} />
+          ) : (
+            <Typography
+              variant="body2"
+              sx={{
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word',
+                lineHeight: 1.7,
+              }}
+            >
+              {message.content}
+            </Typography>
+          )}
           {message.attachments
             .filter((a) => a.type === 'llm_response_meta')
             .map((a, i) => (

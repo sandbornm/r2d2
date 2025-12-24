@@ -3,8 +3,11 @@ import {
   Box,
   Divider,
   Drawer,
+  FormControl,
   FormControlLabel,
   IconButton,
+  MenuItem,
+  Select,
   Stack,
   Switch,
   Typography,
@@ -17,12 +20,23 @@ import LightModeIcon from '@mui/icons-material/LightMode';
 import SpeedIcon from '@mui/icons-material/Speed';
 import PsychologyIcon from '@mui/icons-material/Psychology';
 import BugReportIcon from '@mui/icons-material/BugReport';
+import SmartToyIcon from '@mui/icons-material/SmartToy';
 import { FC } from 'react';
+
+// Available AI models - must match backend LLMBridge.AVAILABLE_MODELS
+export const AI_MODELS = [
+  { id: 'claude-sonnet-4-5', name: 'Claude Sonnet 4', provider: 'Anthropic' },
+  { id: 'claude-opus-4-5', name: 'Claude Opus 4', provider: 'Anthropic' },
+  { id: 'gpt-5.2-2025-12-11', name: 'GPT-5.2', provider: 'OpenAI' },
+] as const;
+
+export type ModelId = typeof AI_MODELS[number]['id'];
 
 export interface AnalysisSettings {
   quickScanOnly: boolean;
   enableAngr: boolean;
   autoAskLLM: boolean;
+  selectedModel: ModelId;
 }
 
 interface SettingsDrawerProps {
@@ -260,7 +274,62 @@ export const SettingsDrawer: FC<SettingsDrawerProps> = ({
           <Typography variant="overline" color="text.secondary" sx={{ px: 1 }}>
             AI Assistant
           </Typography>
-          <Stack spacing={1} sx={{ mt: 1 }}>
+          <Stack spacing={1.5} sx={{ mt: 1 }}>
+            {/* Model selector */}
+            <Box
+              sx={{
+                p: 2,
+                borderRadius: 1.5,
+                bgcolor: alpha(theme.palette.primary.main, 0.08),
+                border: `1px solid ${alpha(theme.palette.primary.main, 0.2)}`,
+              }}
+            >
+              <Stack direction="row" spacing={1.5} alignItems="center" sx={{ mb: 1.5 }}>
+                <Box
+                  sx={{
+                    color: 'primary.main',
+                    display: 'flex',
+                    bgcolor: alpha(theme.palette.primary.main, 0.15),
+                    borderRadius: 1,
+                    p: 0.75,
+                  }}
+                >
+                  <SmartToyIcon sx={{ fontSize: 20 }} />
+                </Box>
+                <Box>
+                  <Typography variant="body2" fontWeight={500}>
+                    AI Model
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    Choose your preferred AI assistant
+                  </Typography>
+                </Box>
+              </Stack>
+              <FormControl fullWidth size="small">
+                <Select
+                  value={settings.selectedModel}
+                  onChange={(e) => updateSetting('selectedModel', e.target.value as ModelId)}
+                  sx={{
+                    bgcolor: 'background.paper',
+                    '& .MuiSelect-select': {
+                      py: 1,
+                    },
+                  }}
+                >
+                  {AI_MODELS.map((model) => (
+                    <MenuItem key={model.id} value={model.id}>
+                      <Stack direction="row" spacing={1} alignItems="center">
+                        <Typography variant="body2">{model.name}</Typography>
+                        <Typography variant="caption" color="text.secondary">
+                          ({model.provider})
+                        </Typography>
+                      </Stack>
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+            </Box>
+
             <SettingRow
               icon={<PsychologyIcon sx={{ fontSize: 20 }} />}
               label="Auto-analyze with AI"

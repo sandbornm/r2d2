@@ -110,13 +110,25 @@ uv run r2d2 trajectories
 3. **Docker images** – integrate later; PRD outlines multi-arch target.
 
 ## 8. Web dashboard
+
+Run backend and frontend in separate terminals:
+
 ```bash
-uv run r2d2-web                          # serves the Flask API + static assets
-cd web/frontend && npm install           # once, install React/Vite toolchain
-npm run dev                              # local dev mode (proxy to Flask)
-npm run build                            # produce static bundle in web/frontend/dist
+# Terminal 1 - Backend (Flask API on :5050)
+scripts/run_backend.sh
+
+# Terminal 2 - Frontend (Vite dev server on :5173)
+scripts/run_frontend.sh
 ```
-The Flask app auto-serves the `dist` folder when present, so a production build + reload exposes the React UI without additional configuration.
+
+Open http://localhost:5173 in your browser.
+
+### Production bundle
+```bash
+cd web/frontend && npm run build
+uv run r2d2-web  # serves static assets from web/frontend/dist
+```
+The Flask app auto-serves the `dist` folder when present, so a production build exposes the React UI at http://localhost:5050 without additional configuration.
 
 ## Troubleshooting
 - `radare2 quick scan failed`: ensure `r2pipe` Python module is installed (`uv sync --extra analyzers`).

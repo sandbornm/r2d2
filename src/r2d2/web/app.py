@@ -104,11 +104,42 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
 
     @app.get("/api/health")
     def health() -> Any:
-        active_model = llm_bridge.providers[0] if llm_bridge.providers else state.config.llm.model
         return jsonify({
             "status": "ok",
-            "model": active_model,
+            "model": llm_bridge.model,
+            "provider": llm_bridge.providers[0] if llm_bridge.providers else "anthropic",
+            "available_models": llm_bridge.available_models,
+            "model_names": llm_bridge.model_display_names,
             "ghidra_ready": bool(state.env.ghidra and state.env.ghidra.is_ready),
+        })
+
+    @app.get("/api/models")
+    def list_models() -> Any:
+        """List available Claude models."""
+        return jsonify({
+            "models": llm_bridge.available_models,
+            "current": llm_bridge.model,
+        })
+
+    @app.post("/api/models")
+    def set_model() -> Any:
+        """Set the active Claude model."""
+        body = request.get_json(silent=True) or {}
+        model = body.get("model", "").strip()
+        
+        if not model:
+            return jsonify({"error": "model is required"}), 400
+        
+        if model not in llm_bridge.available_models:
+            return jsonify({
+                "error": f"Unknown model: {model}",
+                "available": llm_bridge.available_models,
+            }), 400
+        
+        llm_bridge.set_model(model)
+        return jsonify({
+            "model": llm_bridge.model,
+            "available": llm_bridge.available_models,
         })
 
     @app.get("/api/environment")
@@ -129,6 +160,15 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
         else:
             sessions = chat_dao.list_sessions(limit=limit)
         return jsonify([_session_to_dict(session) for session in sessions])
+
+    @app.delete("/api/chats/<session_id>")
+    def delete_chat(session_id: str) -> Any:
+        session = chat_dao.get_session(session_id)
+        if not session:
+            return jsonify({"error": "session not found"}), 404
+        
+        chat_dao.delete_session(session_id)
+        return jsonify({"success": True, "session_id": session_id})
 
     @app.get("/api/chats/<session_id>")
     def chat_detail(session_id: str) -> Any:
@@ -206,6 +246,110 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
         response_payload["message"] = _message_to_dict(user_message)
         return jsonify(response_payload)
 
+    # ──────────────────────────────────────────────────────────────────────────
+    # Annotation endpoints
+    # ──────────────────────────────────────────────────────────────────────────
+    
+    @app.get("/api/chats/<session_id>/annotations")
+    def list_annotations(session_id: str) -> Any:
+        """List all annotations for a session."""
+        if not state.db:
+            return jsonify({"annotations": []})  # No database configured
+            
+        session = chat_dao.get_session(session_id)
+        if not session:
+            return jsonify({"error": "session not found"}), 404
+        
+        with state.db.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT annotation_id, address, note, created_at, updated_at
+                FROM annotations
+                WHERE session_id = ?
+                ORDER BY address
+                """,
+                (session_id,),
+            ).fetchall()
+        
+        annotations = [
+            {
+                "id": row["annotation_id"],
+                "address": row["address"],
+                "note": row["note"],
+                "createdAt": row["created_at"],
+                "updatedAt": row["updated_at"],
+            }
+            for row in rows
+        ]
+        return jsonify({"annotations": annotations})
+
+    @app.post("/api/chats/<session_id>/annotations")
+    def upsert_annotation(session_id: str) -> Any:
+        """Create or update an annotation for a session."""
+        if not state.db:
+            return jsonify({"error": "database not configured"}), 503
+            
+        session = chat_dao.get_session(session_id)
+        if not session:
+            return jsonify({"error": "session not found"}), 404
+        
+        body = request.get_json(silent=True) or {}
+        address = body.get("address", "").strip()
+        note = body.get("note", "").strip()
+        
+        if not address:
+            return jsonify({"error": "address is required"}), 400
+        
+        from datetime import datetime
+        now = datetime.utcnow().isoformat()
+        
+        with state.db.connect() as conn:
+            if note:
+                # Upsert annotation
+                annotation_id = f"{session_id}-{address}"
+                conn.execute(
+                    """
+                    INSERT INTO annotations (annotation_id, session_id, binary_path, address, note, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT (session_id, address) DO UPDATE SET
+                        note = excluded.note,
+                        updated_at = excluded.updated_at
+                    """,
+                    (annotation_id, session_id, session.binary_path, address, note, now, now),
+                )
+                return jsonify({
+                    "id": annotation_id,
+                    "address": address,
+                    "note": note,
+                    "createdAt": now,
+                    "updatedAt": now,
+                })
+            else:
+                # Delete annotation if note is empty
+                conn.execute(
+                    "DELETE FROM annotations WHERE session_id = ? AND address = ?",
+                    (session_id, address),
+                )
+                return jsonify({"deleted": True, "address": address})
+
+    @app.delete("/api/chats/<session_id>/annotations/<address>")
+    def delete_annotation(session_id: str, address: str) -> Any:
+        """Delete an annotation."""
+        if not state.db:
+            return jsonify({"error": "database not configured"}), 503
+            
+        session = chat_dao.get_session(session_id)
+        if not session:
+            return jsonify({"error": "session not found"}), 404
+        
+        with state.db.connect() as conn:
+            conn.execute(
+                "DELETE FROM annotations WHERE session_id = ? AND address = ?",
+                (session_id, address),
+            )
+        
+        return jsonify({"deleted": True, "address": address})
+
     # Ensure uploads directory exists
     uploads_dir = Path(state.config.output.artifacts_dir).expanduser() / "uploads"
     uploads_dir.mkdir(parents=True, exist_ok=True)
@@ -241,6 +385,8 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
     def analyze() -> Any:
         body = request.get_json(silent=True) or {}
         binary_path = body.get("binary")
+        user_goal = body.get("user_goal", "").strip()
+        
         if not binary_path:
             return jsonify({"error": "Missing 'binary' in request body"}), 400
 
@@ -249,6 +395,15 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
             return jsonify({"error": f"Binary path does not exist: {binary_path}"}), 404
 
         session = chat_dao.get_or_create_session(str(path), title=path.name)
+        
+        # Store user goal in session metadata
+        if user_goal:
+            chat_dao.append_message(
+                session.session_id,
+                "system",
+                f"User goal: {user_goal}",
+                attachments=[{"type": "user_goal", "goal": user_goal}],
+            )
 
         job = jobs.create()
         job.status = "running"
@@ -276,6 +431,9 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
                 )
                 job.session_id = updated_session.session_id
 
+                # Extract snippets from analysis results for session persistence
+                snippets = _extract_snippets(result.deep_scan)
+                
                 analysis_attachment = {
                     "type": "analysis_result",
                     "binary": str(result.binary),
@@ -285,6 +443,8 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
                     "notes": result.notes,
                     "issues": result.issues,
                     "trajectory_id": result.trajectory_id,
+                    "snippets": snippets,
+                    "snippet_count": len(snippets),
                 }
                 chat_dao.append_message(
                     updated_session.session_id,
@@ -379,63 +539,216 @@ def _extract_latest_analysis(messages: list[StoredChatMessage]) -> dict[str, Any
     return None
 
 
+def _extract_user_goal(history: list[StoredChatMessage]) -> str | None:
+    """Extract user's stated goal from session history."""
+    for message in history:
+        for attachment in message.attachments or []:
+            if isinstance(attachment, dict) and attachment.get("type") == "user_goal":
+                return attachment.get("goal")
+    return None
+
+
 def _build_llm_messages(
     history: list[StoredChatMessage],
     analysis_attachment: dict[str, Any] | None,
 ) -> list[LLMChatMessage]:
-    pipeline_hint = ""
+    """Build focused LLM messages with FULL analysis context for every message.
+    
+    The analysis context is ALWAYS included in the system prompt to ensure
+    the LLM has consistent access to binary information throughout the conversation.
+    """
+    
+    user_goal = _extract_user_goal(history)
+    
+    # Build system prompt - friendly but technical
+    system_parts = [
+        """You are r2d2, a friendly reverse engineering assistant built for learning ARM assembly and binary analysis.
+
+## Your Role
+Help users understand binaries at their level. Start simple, go deeper when asked.
+
+## Frontend Tools (mention these naturally when helpful)
+- **Summary**: Quick view of binary info, functions, imports, strings
+- **Disassembly**: Hover any ARM/x86 instruction for docs • Drag to select code • "Ask Claude" to explain
+- **CFG**: Control flow graph with function list
+- **Annotations**: Click 📝 or drag-select to add notes that persist
+
+## Style
+- First response: 2-3 sentences max. What is it? What stands out?
+- Follow-ups: Go as deep as needed
+- Use code blocks for assembly snippets
+- Reference addresses like `0x1234` and function names
+- If binary looks packed/encrypted/unusual, say so upfront""",
+    ]
+    
+    if user_goal:
+        system_parts.append(f"\n## User's Goal\n{user_goal}")
+    
+    # ALWAYS include the full analysis context - this is critical for coherent responses
     if analysis_attachment:
-        plan = analysis_attachment.get("plan") or {}
-        quick_enabled = plan.get("quick")
-        deep_enabled = plan.get("deep")
-        run_angr = plan.get("run_angr")
-        enabled_segments: list[str] = []
-        if quick_enabled:
-            enabled_segments.append("quick scan (libmagic, radare2 metadata, strings)")
-        if deep_enabled:
-            enabled_segments.append("deep analysis (radare2 analysis, capstone disassembly)")
-        if deep_enabled and run_angr:
-            enabled_segments.append("symbolic pivots with angr")
-        if enabled_segments:
-            pipeline_hint = (
-                "This run executed "
-                + ", ".join(enabled_segments[:-1])
-                + (" and " if len(enabled_segments) > 1 else "")
-                + enabled_segments[-1]
-                + ". "
-            )
-
-    system_prompt = (
-        "You are r2d2, a binary analysis copilot. "
-        "Respond as a senior reverse engineer who references the pipeline stages explicitly. "
-        "Explain what the quick stage (libmagic + radare2) reveals, "
-        "what the deep stage (radare2 analysis, capstone disassembly, optional angr) contributes, "
-        "and highlight risky findings or missing data. "
-        "Offer practical next steps (radare2/ghidra/angr commands, dynamic analysis ideas) and be concise. "
-        + pipeline_hint
-        + "If the user is still waiting for results, explain what the current stage is likely doing and why it takes time. "
-        "When the user asks for clarification, translate the findings into plain language but keep technical accuracy."
-    )
-
+        ctx = _build_analysis_context(analysis_attachment)
+        system_parts.append(ctx)
+    else:
+        # Even without attachment, look for analysis in history
+        for msg in history:
+            if msg.role == "system":
+                for att in (msg.attachments or []):
+                    if isinstance(att, dict) and att.get("type") == "analysis_result":
+                        ctx = _build_analysis_context(att)
+                        system_parts.append(ctx)
+                        break
+    
+    system_prompt = "\n\n".join(system_parts)
     messages: list[LLMChatMessage] = [LLMChatMessage(role="system", content=system_prompt)]
 
-    include_analysis = False
-    if analysis_attachment:
-        summary_text = _render_analysis_summary(analysis_attachment)
-        messages.append(LLMChatMessage(role="system", content=summary_text))
-        include_analysis = True
-
-    for item in history:
+    # Add conversation history - keep last 15 exchanges for context continuity
+    user_messages = [m for m in history if m.role in ("user", "assistant")]
+    for item in user_messages[-15:]:
         messages.append(
             LLMChatMessage(
                 role=item.role,
-                content=_format_message_for_llm(item),
+                content=item.content,
             )
         )
-    conversational_start = 1 + (1 if include_analysis else 0)
-    conversational_history = messages[conversational_start:]
-    trimmed_history = conversational_history[-40:]
-    return messages[:conversational_start] + trimmed_history
+    
+    return messages
+
+
+def _build_analysis_context(analysis: dict[str, Any]) -> str:
+    """Build a compact analysis context for the LLM including actual disassembly."""
+    quick = analysis.get("quick_scan") or {}
+    deep = analysis.get("deep_scan") or {}
+    
+    lines = ["## Analysis Results"]
+    
+    # Binary info
+    r2_quick = quick.get("radare2", {}) if isinstance(quick, dict) else {}
+    arch_info = "unknown"
+    if isinstance(r2_quick, dict):
+        bin_info = r2_quick.get("info", {})
+        if isinstance(bin_info, dict):
+            core = bin_info.get("core", {})
+            bin_meta = bin_info.get("bin", {})
+            if isinstance(core, dict):
+                lines.append(f"File: {core.get('file', 'unknown')}")
+                lines.append(f"Format: {core.get('format', 'unknown')}")
+            if isinstance(bin_meta, dict):
+                arch = bin_meta.get('arch', '?')
+                bits = bin_meta.get('bits', '?')
+                arch_info = f"{arch}/{bits}-bit"
+                # Provide clearer arch description for ARM Thumb
+                if arch == "arm" and bits == 16:
+                    arch_info = "ARM32 (Thumb mode, 16-bit instructions)"
+                elif arch == "arm" and bits == 32:
+                    arch_info = "ARM32"
+                elif arch == "arm" and bits == 64:
+                    arch_info = "ARM64 (AArch64)"
+                lines.append(f"Arch: {arch_info}")
+                lines.append(f"OS: {bin_meta.get('os', '?')}")
+                if bin_meta.get('compiler'):
+                    lines.append(f"Compiler: {bin_meta.get('compiler')}")
+    
+    # Counts
+    r2_deep = deep.get("radare2", {}) if isinstance(deep, dict) else {}
+    functions = r2_deep.get("functions", []) if isinstance(r2_deep, dict) else []
+    func_count = len(functions) if isinstance(functions, list) else 0
+    
+    imports = r2_quick.get("imports", []) if isinstance(r2_quick, dict) else []
+    import_count = len(imports) if isinstance(imports, list) else 0
+    
+    strings = r2_quick.get("strings", []) if isinstance(r2_quick, dict) else []
+    string_count = len(strings) if isinstance(strings, list) else 0
+    
+    lines.append(f"\nFunctions: {func_count}")
+    lines.append(f"Imports: {import_count}")
+    lines.append(f"Strings: {string_count}")
+    
+    # Top functions with addresses
+    if isinstance(functions, list) and functions:
+        lines.append("\nTop functions:")
+        for fn in functions[:8]:
+            if isinstance(fn, dict):
+                name = fn.get("name", "?")
+                offset = fn.get("offset")
+                size = fn.get("size", 0)
+                addr_str = f"0x{offset:x}" if isinstance(offset, int) else "?"
+                lines.append(f"  - {name} @ {addr_str} ({size} bytes)")
+    
+    # Top imports
+    if isinstance(imports, list) and imports:
+        lines.append("\nKey imports:")
+        for imp in imports[:10]:
+            if isinstance(imp, dict):
+                name = imp.get("name", "?")
+                lines.append(f"  - {name}")
+    
+    # Entry point disassembly - THIS IS CRITICAL for answering ASM questions
+    entry_disasm = r2_deep.get("entry_disassembly") if isinstance(r2_deep, dict) else None
+    if isinstance(entry_disasm, str) and entry_disasm.strip():
+        # Limit to reasonable size but include enough for context
+        disasm_lines = entry_disasm.strip().split('\n')[:80]
+        lines.append("\n## Entry Point Disassembly")
+        lines.append("```asm")
+        lines.extend(disasm_lines)
+        lines.append("```")
+    
+    # Also include general disassembly if entry is not available
+    if not entry_disasm:
+        general_disasm = r2_deep.get("disassembly") if isinstance(r2_deep, dict) else None
+        if isinstance(general_disasm, str) and general_disasm.strip():
+            disasm_lines = general_disasm.strip().split('\n')[:60]
+            lines.append("\n## Disassembly (first 60 lines)")
+            lines.append("```asm")
+            lines.extend(disasm_lines)
+            lines.append("```")
+    
+    # Include function CFG snippets for richer context
+    func_cfgs = r2_deep.get("function_cfgs", []) if isinstance(r2_deep, dict) else []
+    if isinstance(func_cfgs, list) and func_cfgs:
+        lines.append("\n## Function Details")
+        for cfg in func_cfgs[:5]:  # Top 5 functions with CFG
+            if isinstance(cfg, dict):
+                name = cfg.get("name", "unknown")
+                offset = cfg.get("offset", "?")
+                block_count = cfg.get("block_count", 0)
+                lines.append(f"\n### {name} @ {offset}")
+                lines.append(f"Blocks: {block_count}")
+                
+                # Include block disassembly
+                blocks = cfg.get("blocks", [])
+                for block in blocks[:3]:  # First 3 blocks per function
+                    if isinstance(block, dict):
+                        block_offset = block.get("offset", "?")
+                        block_disasm = block.get("disassembly", [])
+                        if block_disasm:
+                            lines.append(f"\nBlock @ {block_offset}:")
+                            lines.append("```asm")
+                            for instr in block_disasm[:15]:
+                                if isinstance(instr, dict):
+                                    addr = instr.get("addr", "")
+                                    opcode = instr.get("opcode", "")
+                                    lines.append(f"  {addr}  {opcode}")
+                            lines.append("```")
+    
+    # Sample strings
+    if isinstance(strings, list) and strings:
+        interesting = []
+        for s in strings[:50]:
+            if isinstance(s, dict):
+                val = s.get("string", "")
+                if isinstance(val, str) and len(val) >= 6 and len(val) <= 100:
+                    interesting.append(val)
+        if interesting:
+            lines.append("\nNotable strings:")
+            for s in interesting[:8]:
+                lines.append(f"  - {s}")
+    
+    # Issues/notes
+    issues = analysis.get("issues", [])
+    if issues:
+        lines.append(f"\nIssues: {', '.join(str(i) for i in issues[:3])}")
+    
+    return "\n".join(lines)
 
 
 def _format_message_for_llm(message: StoredChatMessage) -> str:
@@ -454,6 +767,44 @@ def _format_message_for_llm(message: StoredChatMessage) -> str:
     if attachment_segments:
         payload += "\n\nAttachments:\n" + "\n".join(attachment_segments)
     return payload
+
+
+def _extract_snippets(deep_scan: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Extract code snippets from deep scan results for session persistence."""
+    snippets: list[dict[str, Any]] = []
+    
+    if not deep_scan:
+        return snippets
+    
+    # Extract from angr if available
+    angr_data = deep_scan.get("angr", {})
+    if isinstance(angr_data, dict):
+        angr_snippets = angr_data.get("snippets", [])
+        for snippet in angr_snippets[:100]:
+            if isinstance(snippet, dict) and snippet.get("instructions"):
+                snippets.append({
+                    "source": "angr",
+                    "address": snippet.get("addr", "0x0"),
+                    "function": snippet.get("function_name") or snippet.get("function"),
+                    "instructions": snippet.get("instructions", [])[:20],
+                })
+    
+    # Extract from radare2 if available
+    r2_data = deep_scan.get("radare2", {})
+    if isinstance(r2_data, dict):
+        r2_snippets = r2_data.get("snippets", [])
+        for snippet in r2_snippets[:100]:
+            if isinstance(snippet, dict):
+                for block in snippet.get("blocks", [])[:10]:
+                    if block.get("disassembly"):
+                        snippets.append({
+                            "source": "radare2",
+                            "address": block.get("offset", "0x0"),
+                            "function": snippet.get("function"),
+                            "instructions": block.get("disassembly", [])[:20],
+                        })
+    
+    return snippets[:200]  # Limit total snippets
 
 
 def _render_analysis_summary(analysis: dict[str, Any]) -> str:

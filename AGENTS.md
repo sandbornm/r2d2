@@ -2,6 +2,8 @@
 
 Overview of autonomous components inside r2d2 and how they cooperate to deliver analysis + LLM conversations.
 
+> **Note**: r2d2 is designed as a production service for learning ARM reverse engineering. All components prioritize beginner-friendly explanations while maintaining technical depth.
+
 ## Analyzer Orchestrator (Python)
 - **Entry point**: `r2d2.analysis.orchestrator.AnalysisOrchestrator`
 - **Inputs**: file path, analysis plan, environment report, trajectory DAO
@@ -50,11 +52,45 @@ Adapters raise `AdapterUnavailable` when prerequisites are missing to keep the o
 
 ## LLM Companion
 - **Module**: `r2d2.llm.manager.LLMBridge`
-- **Role**: orchestrates OpenAI (primary) with Anthropic Claude fallback for chat/summarize workloads.
-- **Invocation**: CLI `--ask` option, web chat endpoint (`POST /api/chats/<id>/messages`), and post-analysis summarizers.
+- **Role**: orchestrates Anthropic Claude (primary) with OpenAI fallback for chat/summarize workloads.
+- **Context Management**:
+  - Full analysis context (binary info, disassembly, functions) is included in every LLM message
+  - Last 15 conversation exchanges are maintained for continuity
+  - User goals (e.g., "find C2 callbacks") are persisted and included in system prompt
+- **Invocation**: CLI `--ask` option, web chat endpoint (`POST /api/chats/<id>/messages`), auto-analysis on upload, and "Ask Claude" from disassembly selection.
+- **ARM Specialization**: When ARM binaries are detected, prompts emphasize ARM instruction explanation and reference official docs.
 - **Extensibility**: add providers by implementing `chat/summarize_analysis` (see `openai_client.py`, `claude_client.py`) and wiring via config.
+
+## Annotation Agent
+- **Storage**: SQLite via `annotations` table, synced with chat sessions
+- **Frontend**: `DisassemblyViewer` component with drag-select and inline annotation popover
+- **API Endpoints**:
+  - `GET /api/chats/<session_id>/annotations` - list annotations
+  - `POST /api/chats/<session_id>/annotations` - create/update annotation
+  - `DELETE /api/chats/<session_id>/annotations/<address>` - delete annotation
+- **Persistence**: Annotations are saved to both localStorage (client backup) and SQLite (portable/sync)
+- **Integration**: Selected code + annotations can be sent directly to Claude for explanation
+
+## CFG Viewer Agent
+- **Module**: `web/frontend/src/components/CFGViewer.tsx`
+- **Data Sources**: 
+  - angr CFG nodes/edges (symbolic execution)
+  - radare2 function CFGs with block-level disassembly
+- **Debug Features**: When CFG data is missing, displays diagnostic checklist:
+  - angr installation status
+  - Analysis mode (full vs quick)
+  - Binary validity
+  - Node/edge/function counts
+- **Navigation**: OFRAK-style function list → block navigation → inline disassembly
+
+## ARM Instruction Documentation
+- **Reference**: [ARM Developer DUI0489](https://developer.arm.com/documentation/dui0489/h/arm-and-thumb-instructions/instruction-summary)
+- **Implementation**: `DisassemblyViewer` provides hover tooltips for ARM32/64 and x86 instructions
+- **Coverage**: 100+ instructions with descriptions (MOV, LDR, BL, PUSH, etc.)
+- **Fallback**: Search link to ARM Developer site for unknown instructions
 
 ## Future Agents (placeholders)
 - Pattern detector pipeline (`r2d2.analysis.pipelines`) for signature-based hints and heuristics.
 - UI agent (Textual) to provide event-loop-driven workspace for interactive triage.
 - Replay agent that applies saved trajectories to new binaries and reports divergences.
+- Recompilation agent for patching and rebuilding binaries.

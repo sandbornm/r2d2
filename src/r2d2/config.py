@@ -14,14 +14,14 @@ USER_CONFIG_PATH = Path("~/.config/r2d2/config.toml").expanduser()
 
 
 class LLMSettings(BaseModel):
-    provider: str = "openai"
-    model: str = "gpt-5.1-2025-11-13"
-    api_key_env: str = "OPENAI_API_KEY"
-    fallback_provider: str | None = "anthropic"
-    fallback_model: str | None = "claude-3-sonnet-20240229"
-    fallback_api_key_env: str | None = "ANTHROPIC_API_KEY"
+    provider: str = "anthropic"
+    model: str = "claude-sonnet-4-20250514"
+    api_key_env: str = "ANTHROPIC_API_KEY"
+    fallback_provider: str | None = "openai"
+    fallback_model: str | None = "gpt-4o"
+    fallback_api_key_env: str | None = "OPENAI_API_KEY"
     enable_fallback: bool = True
-    max_tokens: int = 4096
+    max_tokens: int = 8192
     temperature: float = 0.1
 
 

@@ -1,0 +1,68 @@
+# r2d2 Cloud Deployment Configuration
+# ─────────────────────────────────────────────────────────────────────────────
+# Copy this file and customize for your cloud environment
+# Environment variables override these settings
+
+[llm]
+# Claude is the primary LLM provider for binary analysis
+provider = "anthropic"
+model = "claude-sonnet-4-20250514"
+api_key_env = "ANTHROPIC_API_KEY"
+
+# OpenAI as fallback when Claude is unavailable
+fallback_provider = "openai"
+fallback_model = "gpt-4o"
+fallback_api_key_env = "OPENAI_API_KEY"
+enable_fallback = true
+
+# Token limits - increase for larger binaries
+max_tokens = 8192
+temperature = 0.1
+
+[analysis]
+auto_analyze = true
+max_binary_size = "10MB"  # Increase for cloud deployments
+timeout_quick = 10
+timeout_deep = 120  # More time for cloud servers
+enable_angr = true
+enable_ghidra = false  # Set true if Ghidra is installed
+require_elf = true
+enable_trajectory_recording = true
+
+[output]
+format = "terminal"
+verbosity = "normal"
+save_artifacts = true
+# Use Docker volume path for cloud deployment
+artifacts_dir = "/app/artifacts"
+
+[performance]
+parallel_functions = 8  # Increase based on server cores
+cache_results = true
+
+[storage]
+# Use Docker volume path for cloud deployment
+database_path = "/app/data/r2d2.db"
+auto_migrate = true
+
+[ghidra]
+use_bridge = false
+bridge_host = "127.0.0.1"
+bridge_port = 13100
+install_dir = ""
+project_dir = "/app/data/ghidra-projects"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Environment Variables for Cloud Deployment
+# ─────────────────────────────────────────────────────────────────────────────
+# Set these in your cloud provider or docker-compose:
+#
+# Required:
+#   ANTHROPIC_API_KEY=sk-ant-...   (for Claude)
+#   OPENAI_API_KEY=sk-...          (for GPT fallback)
+#
+# Optional:
+#   R2D2_WEB_PORT=5050             (API server port)
+#   R2D2_FRONTEND_PORT=5173        (Frontend port)
+#   R2D2_CONFIG_PATH=/path/to/config.toml
+

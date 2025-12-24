@@ -1,30 +1,32 @@
-import { createTheme, alpha, PaletteMode } from '@mui/material/styles';
+import { alpha, createTheme, PaletteMode } from '@mui/material/styles';
 
-// Vibrant color palette
+// Clean, minimal color palette - inspired by technical documentation
 const colors = {
-  // Vibrant accents
-  cyan: '#00d4ff',
-  lime: '#39ff14',
-  magenta: '#ff00ff',
-  orange: '#ff6b35',
-  yellow: '#ffd60a',
-  red: '#ff3366',
-  purple: '#a855f7',
-  blue: '#3b82f6',
-  green: '#22c55e',
+  // Neutral grays - the foundation
+  gray50: '#fafafa',
+  gray100: '#f4f4f5',
+  gray200: '#e4e4e7',
+  gray300: '#d4d4d8',
+  gray400: '#a1a1aa',
+  gray500: '#71717a',
+  gray600: '#52525b',
+  gray700: '#3f3f46',
+  gray800: '#27272a',
+  gray900: '#18181b',
+  gray950: '#09090b',
   
-  // Dark backgrounds
-  darkBg: '#0a0a0a',
-  darkSurface: '#141414',
-  darkElevated: '#1c1c1c',
+  // Accent - subtle blue for actions (not neon)
+  blue500: '#3b82f6',
+  blue600: '#2563eb',
+  blue700: '#1d4ed8',
   
-  // Light backgrounds
-  lightBg: '#fafafa',
-  lightSurface: '#ffffff',
-  lightElevated: '#f5f5f5',
+  // Semantic - muted tones
+  green600: '#16a34a',
+  amber600: '#d97706',
+  red600: '#dc2626',
+  slate500: '#64748b',
 };
 
-// Create theme based on mode
 export const createAppTheme = (mode: PaletteMode) => {
   const isDark = mode === 'dark';
 
@@ -32,124 +34,120 @@ export const createAppTheme = (mode: PaletteMode) => {
     palette: {
       mode,
       primary: {
-        main: colors.cyan,
-        light: '#66e5ff',
-        dark: '#00a8cc',
+        main: colors.blue600,
+        light: colors.blue500,
+        dark: colors.blue700,
       },
       secondary: {
-        main: colors.lime,
-        light: '#80ff6b',
-        dark: '#2ecc10',
+        main: colors.amber600,
       },
       error: {
-        main: colors.red,
-        light: '#ff6b8a',
-        dark: '#cc2952',
+        main: colors.red600,
       },
       warning: {
-        main: colors.orange,
-        light: '#ff9a75',
-        dark: '#cc5529',
-      },
-      info: {
-        main: colors.purple,
-        light: '#c084fc',
-        dark: '#8b5cf6',
+        main: colors.amber600,
       },
       success: {
-        main: colors.green,
-        light: '#4ade80',
-        dark: '#16a34a',
+        main: colors.green600,
+      },
+      info: {
+        main: colors.slate500,
       },
       background: {
-        default: isDark ? colors.darkBg : colors.lightBg,
-        paper: isDark ? colors.darkSurface : colors.lightSurface,
+        default: isDark ? colors.gray950 : colors.gray50,
+        paper: isDark ? colors.gray900 : '#ffffff',
       },
       text: {
-        primary: isDark ? '#f4f4f5' : '#18181b',
-        secondary: isDark ? '#a1a1aa' : '#71717a',
+        primary: isDark ? colors.gray100 : colors.gray900,
+        secondary: isDark ? colors.gray400 : colors.gray500,
       },
-      divider: isDark ? alpha('#ffffff', 0.1) : alpha('#000000', 0.1),
+      divider: isDark ? colors.gray800 : colors.gray200,
     },
     typography: {
-      fontFamily: '"JetBrains Mono", "SF Mono", "Fira Code", "Consolas", monospace',
+      fontFamily: '"IBM Plex Mono", "SF Mono", monospace',
+      fontSize: 13,
       h1: {
-        fontFamily: '"Inter", -apple-system, BlinkMacSystemFont, sans-serif',
-        fontWeight: 700,
+        fontFamily: '"IBM Plex Sans", -apple-system, sans-serif',
+        fontWeight: 600,
+        fontSize: '1.75rem',
       },
       h2: {
-        fontFamily: '"Inter", -apple-system, BlinkMacSystemFont, sans-serif',
-        fontWeight: 700,
+        fontFamily: '"IBM Plex Sans", -apple-system, sans-serif',
+        fontWeight: 600,
+        fontSize: '1.5rem',
       },
       h3: {
-        fontFamily: '"Inter", -apple-system, BlinkMacSystemFont, sans-serif',
+        fontFamily: '"IBM Plex Sans", -apple-system, sans-serif',
         fontWeight: 600,
+        fontSize: '1.25rem',
       },
       h4: {
-        fontFamily: '"Inter", -apple-system, BlinkMacSystemFont, sans-serif',
+        fontFamily: '"IBM Plex Sans", -apple-system, sans-serif',
         fontWeight: 600,
+        fontSize: '1.125rem',
       },
       h5: {
-        fontFamily: '"Inter", -apple-system, BlinkMacSystemFont, sans-serif',
+        fontFamily: '"IBM Plex Sans", -apple-system, sans-serif',
         fontWeight: 600,
+        fontSize: '1rem',
       },
       h6: {
-        fontFamily: '"Inter", -apple-system, BlinkMacSystemFont, sans-serif',
+        fontFamily: '"IBM Plex Sans", -apple-system, sans-serif',
         fontWeight: 600,
+        fontSize: '0.875rem',
       },
       body1: {
-        fontSize: '0.9375rem',
+        fontSize: '0.875rem',
         lineHeight: 1.6,
       },
       body2: {
-        fontSize: '0.875rem',
+        fontSize: '0.8125rem',
         lineHeight: 1.5,
+      },
+      caption: {
+        fontSize: '0.75rem',
       },
       button: {
         textTransform: 'none',
-        fontWeight: 600,
+        fontWeight: 500,
+        fontSize: '0.8125rem',
       },
     },
     shape: {
-      borderRadius: 8,
+      borderRadius: 4,
     },
     components: {
       MuiCssBaseline: {
         styleOverrides: {
           body: {
             scrollbarWidth: 'thin',
-            scrollbarColor: isDark ? '#3f3f46 transparent' : '#d4d4d8 transparent',
-            '&::-webkit-scrollbar': {
-              width: 8,
-              height: 8,
-            },
-            '&::-webkit-scrollbar-track': {
-              background: 'transparent',
-            },
-            '&::-webkit-scrollbar-thumb': {
-              background: isDark ? '#3f3f46' : '#d4d4d8',
-              borderRadius: 4,
-            },
+            scrollbarColor: isDark ? `${colors.gray700} transparent` : `${colors.gray300} transparent`,
           },
         },
       },
       MuiButton: {
         styleOverrides: {
           root: {
-            borderRadius: 8,
-            padding: '10px 20px',
-            fontWeight: 600,
+            borderRadius: 4,
+            padding: '6px 14px',
+            boxShadow: 'none',
+            transition: 'all 0.15s ease',
+            '&:hover': {
+              boxShadow: 'none',
+              transform: 'translateY(-1px)',
+            },
+            '&:active': {
+              transform: 'translateY(0)',
+            },
           },
           contained: {
-            boxShadow: 'none',
             '&:hover': {
-              boxShadow: `0 0 20px ${alpha(colors.cyan, 0.4)}`,
+              boxShadow: 'none',
             },
           },
-          containedSecondary: {
-            '&:hover': {
-              boxShadow: `0 0 20px ${alpha(colors.lime, 0.4)}`,
-            },
+          sizeSmall: {
+            padding: '4px 10px',
+            fontSize: '0.75rem',
           },
         },
       },
@@ -159,7 +157,7 @@ export const createAppTheme = (mode: PaletteMode) => {
             backgroundImage: 'none',
           },
           outlined: {
-            borderColor: isDark ? alpha('#ffffff', 0.12) : alpha('#000000', 0.12),
+            borderColor: isDark ? colors.gray800 : colors.gray200,
           },
         },
       },
@@ -167,16 +165,9 @@ export const createAppTheme = (mode: PaletteMode) => {
         styleOverrides: {
           root: {
             '& .MuiOutlinedInput-root': {
-              backgroundColor: isDark ? alpha('#000000', 0.4) : alpha('#000000', 0.02),
+              fontSize: '0.875rem',
               '& fieldset': {
-                borderColor: isDark ? alpha('#ffffff', 0.15) : alpha('#000000', 0.15),
-              },
-              '&:hover fieldset': {
-                borderColor: colors.cyan,
-              },
-              '&.Mui-focused fieldset': {
-                borderColor: colors.cyan,
-                borderWidth: 2,
+                borderColor: isDark ? colors.gray700 : colors.gray300,
               },
             },
           },
@@ -186,67 +177,83 @@ export const createAppTheme = (mode: PaletteMode) => {
         styleOverrides: {
           root: {
             textTransform: 'none',
-            fontWeight: 600,
-            minHeight: 48,
-            '&.Mui-selected': {
-              color: colors.cyan,
-            },
+            fontWeight: 500,
+            fontSize: '0.8125rem',
+            minHeight: 40,
+            padding: '8px 14px',
           },
         },
       },
       MuiTabs: {
         styleOverrides: {
+          root: {
+            minHeight: 40,
+          },
           indicator: {
-            height: 3,
-            borderRadius: 3,
-            backgroundColor: colors.cyan,
+            height: 2,
           },
         },
       },
       MuiChip: {
         styleOverrides: {
           root: {
-            borderRadius: 6,
-            fontWeight: 600,
+            borderRadius: 4,
+            fontWeight: 500,
+            fontSize: '0.6875rem',
+            height: 22,
+          },
+          sizeSmall: {
+            height: 18,
+            fontSize: '0.625rem',
           },
         },
       },
       MuiListItemButton: {
         styleOverrides: {
           root: {
-            borderRadius: 8,
+            borderRadius: 4,
+            transition: 'background-color 0.15s ease',
             '&.Mui-selected': {
-              backgroundColor: alpha(colors.cyan, 0.15),
-              borderLeft: `3px solid ${colors.cyan}`,
-              '&:hover': {
-                backgroundColor: alpha(colors.cyan, 0.2),
-              },
+              backgroundColor: alpha(colors.blue600, isDark ? 0.15 : 0.08),
             },
+          },
+        },
+      },
+      MuiSelect: {
+        styleOverrides: {
+          root: {
+            transition: 'all 0.15s ease',
+          },
+        },
+      },
+      MuiPopover: {
+        styleOverrides: {
+          paper: {
+            boxShadow: isDark 
+              ? '0 4px 20px rgba(0, 0, 0, 0.4)' 
+              : '0 4px 20px rgba(0, 0, 0, 0.12)',
+          },
+        },
+      },
+      MuiDrawer: {
+        styleOverrides: {
+          paper: {
+            transition: 'transform 0.25s cubic-bezier(0.4, 0, 0.2, 1) !important',
           },
         },
       },
       MuiAlert: {
         styleOverrides: {
-          standardInfo: {
-            backgroundColor: alpha(colors.cyan, 0.15),
-            color: isDark ? colors.cyan : '#0891b2',
-            '& .MuiAlert-icon': {
-              color: colors.cyan,
-            },
+          root: {
+            borderRadius: 4,
+            fontSize: '0.8125rem',
           },
-          standardSuccess: {
-            backgroundColor: alpha(colors.lime, 0.15),
-            color: isDark ? colors.lime : '#15803d',
-            '& .MuiAlert-icon': {
-              color: colors.lime,
-            },
-          },
-          standardError: {
-            backgroundColor: alpha(colors.red, 0.15),
-            color: isDark ? colors.red : '#dc2626',
-            '& .MuiAlert-icon': {
-              color: colors.red,
-            },
+        },
+      },
+      MuiIconButton: {
+        styleOverrides: {
+          sizeSmall: {
+            padding: 4,
           },
         },
       },
@@ -254,5 +261,4 @@ export const createAppTheme = (mode: PaletteMode) => {
   });
 };
 
-// Default dark theme for backwards compatibility
 export const theme = createAppTheme('dark');

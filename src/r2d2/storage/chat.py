@@ -112,6 +112,21 @@ class ChatDAO:
             ).fetchall()
         return [self._row_to_session(row) for row in rows]
 
+    def delete_session(self, session_id: str) -> bool:
+        """Delete a session and all its messages."""
+        with self._db.connect() as conn:
+            # Delete messages first
+            conn.execute(
+                "DELETE FROM chat_messages WHERE session_id = ?",
+                (session_id,),
+            )
+            # Delete session
+            result = conn.execute(
+                "DELETE FROM chat_sessions WHERE session_id = ?",
+                (session_id,),
+            )
+            return result.rowcount > 0
+
     # Message management -------------------------------------------------
     def append_message(
         self,

@@ -1,13 +1,14 @@
 # r2d2
 
-Binary analysis copilot that pairs fast local tooling with LLM insights. Drop in an ELF, stream structured results, replay the trajectory later.
+**Learn ARM Reverse Engineering with AI** — A production-ready binary analysis copilot that pairs fast local tooling with Claude-powered insights. Perfect for learning ARM assembly, CTF challenges, and malware analysis.
 
 ## Why r2d2?
-- **Multi-arch first**: radare2, capstone, and angr power both quick and deep stages across x86_64, arm64 (Apple M2, Raspberry Pi), and armv7.
-- **Explainable automation**: every adapter emission is persisted to SQLite with a replayable trajectory and linked chat history.
-- **LLM resilience**: OpenAI is the primary assistant with automatic Claude fallback when credentials or connectivity are missing.
-- **Sleek browser cockpit**: the React dashboard exposes a complexity slider (beginner → expert), progressive UI windows, and an analysis-aware chat panel.
-- **Ship-anywhere**: uv-managed Python, pinned Node build, and new Dockerfiles make local dev or container deployment painless.
+- **ARM-first design**: Full support for ARM32 (Thumb mode), ARM64, and x86. Built for learning ARM reverse engineering on Raspberry Pi, Apple Silicon, or cloud servers.
+- **Interactive disassembly**: Drag to select assembly, annotate instructions, and ask Claude about specific code blocks. Hover for instant ARM/x86 instruction documentation with links to [official ARM docs](https://developer.arm.com/documentation/dui0489/h/arm-and-thumb-instructions/instruction-summary).
+- **Claude-powered analysis**: Anthropic Claude is the primary LLM with OpenAI fallback. Context is maintained throughout conversations for coherent analysis sessions.
+- **Explainable automation**: Every adapter emission is persisted to SQLite with replayable trajectories and linked chat history.
+- **Sleek browser cockpit**: React dashboard with CFG viewer, annotatable disassembly, and analysis-aware chat panel.
+- **Ship-anywhere**: Docker multi-arch (arm64/amd64), uv-managed Python, ready for cloud deployment.
 
 ## Repository layout
 - `src/r2d2/` – Python package with CLI, orchestrator, adapters, storage, utilities.
@@ -111,7 +112,21 @@ uv run r2d2 env
 
 ## Web UI
 
-### Running manually (development mode)
+### Quick Start
+
+Run backend and frontend in separate terminals:
+
+```bash
+# Terminal 1 - Backend
+scripts/run_backend.sh
+
+# Terminal 2 - Frontend  
+scripts/run_frontend.sh
+```
+
+Open http://localhost:5173 in your browser.
+
+### Alternative: Single command
 
 **Terminal 1 – Backend (Flask API on :5050):**
 ```bash
@@ -126,7 +141,7 @@ npm install   # first time only
 npm run dev
 ```
 
-Open http://localhost:5173 in your browser. Vite proxies `/api` calls to Flask at `http://127.0.0.1:5050`.
+Vite proxies `/api` calls to Flask at `http://127.0.0.1:5050`.
 
 ### Production bundle
 ```bash
@@ -135,10 +150,22 @@ uv run r2d2-web  # serves static assets from web/frontend/dist
 ```
 Open http://localhost:5050 directly.
 
-Highlights:
-- Complexity slider reveals progressively richer panes—from beginner summaries to expert-level CFG/function dumps.
-- Chat panel keeps trajectory-aware conversation history (LLM fallback aware) with analysis snapshots attached to each run.
-- Progress log now uses Material UI components with timestamps, adapter chips, and status icons.
+### Features
+
+- **Interactive Disassembly**:
+  - Syntax highlighting for ARM32/64 and x86
+  - Hover tooltips with instruction documentation
+  - Click-through to [ARM Developer docs](https://developer.arm.com/documentation/dui0489/h/arm-and-thumb-instructions/instruction-summary)
+  - **Annotation**: Click 📝 to annotate any instruction, or drag to select a range
+  - **Ask Claude**: Select code → "Ask Claude" to explain selected assembly
+
+- **CFG Explorer**: OFRAK-style navigation through functions and basic blocks with disassembly views. Debug panel shows why CFG data may be missing.
+
+- **Analysis Persistence**: Annotations and code snippets are saved to SQLite and sync across sessions.
+
+- **Chat Panel**: Claude-powered conversation with full analysis context maintained throughout.
+
+- **Progress Log**: Real-time SSE events with timestamps and adapter status.
 
 ## Containerized deployment
 Multi-arch Dockerfiles are provided for back-end and front-end workloads.

@@ -9,7 +9,11 @@ from typing import Any, Iterable
 from pydantic import BaseModel
 
 from ..config import AppConfig
-from .openai_client import ChatMessage
+
+
+class ChatMessage(BaseModel):
+    role: str
+    content: str
 
 try:  # pragma: no cover - optional dependency
     from anthropic import Anthropic, APIError, AuthenticationError, RateLimitError
@@ -47,7 +51,11 @@ class ClaudeClient:
 
         self._client = Anthropic(api_key=api_key)
         self._config = config
-        self._model = config.llm.fallback_model or "claude-3-5-sonnet-20241022"
+        # Support both primary and fallback model configuration
+        if config.llm.provider and config.llm.provider.lower() in {"anthropic", "claude"}:
+            self._model = config.llm.model or "claude-sonnet-4-20250514"
+        else:
+            self._model = config.llm.fallback_model or "claude-sonnet-4-20250514"
 
     def chat(self, messages: Iterable[ChatMessage] | Iterable[dict[str, str]]) -> str:
         """Send a chat conversation to Claude and return the assistant reply."""
@@ -115,4 +123,4 @@ class ClaudeClient:
         return self.chat(messages)
 
 
-__all__ = ["ClaudeClient", "ClaudeError"]
+__all__ = ["ChatMessage", "ClaudeClient", "ClaudeError"]

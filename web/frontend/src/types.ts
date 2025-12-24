@@ -52,6 +52,9 @@ export interface AnalysisResultPayload {
 export interface HealthStatus {
   status: 'ok' | 'error';
   model: string;
+  provider?: string;
+  available_models?: string[];
+  model_names?: Record<string, string>;
   ghidra_ready: boolean;
 }
 
@@ -96,4 +99,11 @@ export interface ChatPostResponse {
   assistant?: ChatMessageItem;
   provider?: string | null;
   error?: string;
+}
+
+// Assembly annotation for persisting notes on disassembly lines
+export interface AssemblyAnnotation {
+  address: string;
+  note: string;
+  createdAt: string;
 }

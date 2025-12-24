@@ -20,6 +20,7 @@ class AppState:
     dao: TrajectoryDAO | None
     chat_dao: ChatDAO | None
     orchestrator: AnalysisOrchestrator
+    db: Database | None = None  # Direct database access for annotations, etc.
 
 
 def build_state(config_path: Optional[Path]) -> AppState:
@@ -36,10 +37,11 @@ def build_state(config_path: Optional[Path]) -> AppState:
 
     dao: TrajectoryDAO | None = None
     chat_dao: ChatDAO | None = None
+    database: Database | None = None
     if config.storage.auto_migrate:
         database = Database(config.storage.database_path)
         dao = TrajectoryDAO(database)
         chat_dao = ChatDAO(database)
 
     orchestrator = AnalysisOrchestrator(config, env, trajectory_dao=dao)
-    return AppState(config=config, env=env, dao=dao, chat_dao=chat_dao, orchestrator=orchestrator)
+    return AppState(config=config, env=env, dao=dao, chat_dao=chat_dao, orchestrator=orchestrator, db=database)
