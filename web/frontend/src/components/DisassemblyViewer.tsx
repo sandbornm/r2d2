@@ -14,113 +14,284 @@ interface DisassemblyViewerProps {
   onAskAbout?: (selectedCode: string) => void;  // For asking Claude about selected code
 }
 
-// ARM instruction documentation (Thumb/ARM32/ARM64)
-const ARM_DOCS: Record<string, string> = {
+// Instruction category for grouping in search
+type InstructionCategory = 'data' | 'load_store' | 'branch' | 'system' | 'simd' | 'crypto' | 'atomic';
+
+interface InstructionDoc {
+  desc: string;
+  category: InstructionCategory;
+  syntax?: string;
+  flags?: string;
+  example?: string;
+}
+
+// ARM instruction documentation (Thumb/ARM32/ARM64) - Enhanced version
+const ARM_DOCS_EXTENDED: Record<string, InstructionDoc> = {
   // Data processing
-  'mov': 'Move: Copy value to register. MOV Rd, Op2',
-  'movs': 'Move with flags update: Copy value and update condition flags',
-  'movw': 'Move wide: Load 16-bit immediate into lower halfword',
-  'movt': 'Move top: Load 16-bit immediate into upper halfword',
-  'mvn': 'Move NOT: Copy bitwise complement to register',
-  'add': 'Add: Rd = Rn + Op2',
-  'adds': 'Add with flags: Rd = Rn + Op2, update NZCV flags',
-  'adc': 'Add with carry: Rd = Rn + Op2 + Carry',
-  'sub': 'Subtract: Rd = Rn - Op2',
-  'subs': 'Subtract with flags: Rd = Rn - Op2, update NZCV flags',
-  'sbc': 'Subtract with carry: Rd = Rn - Op2 - NOT(Carry)',
-  'rsb': 'Reverse subtract: Rd = Op2 - Rn',
-  'mul': 'Multiply: Rd = Rm × Rs (32-bit result)',
-  'mla': 'Multiply-accumulate: Rd = (Rm × Rs) + Rn',
-  'umull': 'Unsigned multiply long: 64-bit = Rm × Rs',
-  'smull': 'Signed multiply long: 64-bit = Rm × Rs',
-  'sdiv': 'Signed divide: Rd = Rn / Rm',
-  'udiv': 'Unsigned divide: Rd = Rn / Rm',
-  'and': 'Bitwise AND: Rd = Rn & Op2',
-  'ands': 'Bitwise AND with flags update',
-  'orr': 'Bitwise OR: Rd = Rn | Op2',
-  'eor': 'Bitwise XOR: Rd = Rn ^ Op2',
-  'bic': 'Bit clear: Rd = Rn & ~Op2',
-  'lsl': 'Logical shift left: Rd = Rm << n',
-  'lsr': 'Logical shift right: Rd = Rm >> n (zero fill)',
-  'asr': 'Arithmetic shift right: Rd = Rm >> n (sign extend)',
-  'ror': 'Rotate right: circular shift',
-  'cmp': 'Compare: Update flags based on Rn - Op2',
-  'cmn': 'Compare negative: Update flags based on Rn + Op2',
-  'tst': 'Test bits: Update flags based on Rn & Op2',
-  'teq': 'Test equivalence: Update flags based on Rn ^ Op2',
-  'neg': 'Negate: Rd = 0 - Rm',
-  'adr': 'Address: Load PC-relative address into register',
+  'mov': { desc: 'Move: Copy value to register', category: 'data', syntax: 'MOV Rd, Op2', example: 'mov r0, #1' },
+  'movs': { desc: 'Move with flags update: Copy value and update condition flags', category: 'data', flags: 'NZCV' },
+  'movw': { desc: 'Move wide: Load 16-bit immediate into lower halfword', category: 'data', syntax: 'MOVW Rd, #imm16' },
+  'movt': { desc: 'Move top: Load 16-bit immediate into upper halfword', category: 'data', syntax: 'MOVT Rd, #imm16' },
+  'movk': { desc: 'Move keep: Move 16-bit immediate with optional shift, keeping other bits', category: 'data', syntax: 'MOVK Xd, #imm16, LSL #shift' },
+  'movz': { desc: 'Move zero: Move 16-bit immediate with optional shift, zeroing other bits', category: 'data', syntax: 'MOVZ Xd, #imm16, LSL #shift' },
+  'movn': { desc: 'Move inverted: Move inverted 16-bit immediate', category: 'data', syntax: 'MOVN Xd, #imm16' },
+  'mvn': { desc: 'Move NOT: Copy bitwise complement to register', category: 'data' },
+  'add': { desc: 'Add: Rd = Rn + Op2', category: 'data', flags: 'none (use ADDS for flags)', example: 'add x0, x1, x2' },
+  'adds': { desc: 'Add with flags: Rd = Rn + Op2, update NZCV flags', category: 'data', flags: 'NZCV' },
+  'adc': { desc: 'Add with carry: Rd = Rn + Op2 + Carry', category: 'data' },
+  'adcs': { desc: 'Add with carry and set flags', category: 'data', flags: 'NZCV' },
+  'sub': { desc: 'Subtract: Rd = Rn - Op2', category: 'data', example: 'sub sp, sp, #16' },
+  'subs': { desc: 'Subtract with flags: Rd = Rn - Op2, update NZCV flags', category: 'data', flags: 'NZCV' },
+  'sbc': { desc: 'Subtract with carry: Rd = Rn - Op2 - NOT(Carry)', category: 'data' },
+  'sbcs': { desc: 'Subtract with carry and set flags', category: 'data', flags: 'NZCV' },
+  'rsb': { desc: 'Reverse subtract: Rd = Op2 - Rn', category: 'data' },
+  'mul': { desc: 'Multiply: Rd = Rm × Rs (32-bit result)', category: 'data', example: 'mul w0, w1, w2' },
+  'madd': { desc: 'Multiply-add: Rd = Ra + (Rn × Rm)', category: 'data', syntax: 'MADD Xd, Xn, Xm, Xa' },
+  'msub': { desc: 'Multiply-subtract: Rd = Ra - (Rn × Rm)', category: 'data', syntax: 'MSUB Xd, Xn, Xm, Xa' },
+  'mla': { desc: 'Multiply-accumulate: Rd = (Rm × Rs) + Rn', category: 'data' },
+  'mls': { desc: 'Multiply-subtract: Rd = Rn - (Rm × Rs)', category: 'data' },
+  'umull': { desc: 'Unsigned multiply long: 64-bit = Rm × Rs', category: 'data', syntax: 'UMULL RdLo, RdHi, Rn, Rm' },
+  'smull': { desc: 'Signed multiply long: 64-bit = Rm × Rs', category: 'data', syntax: 'SMULL RdLo, RdHi, Rn, Rm' },
+  'umulh': { desc: 'Unsigned multiply high: Get high 64 bits of 128-bit multiply', category: 'data' },
+  'smulh': { desc: 'Signed multiply high: Get high 64 bits of 128-bit multiply', category: 'data' },
+  'sdiv': { desc: 'Signed divide: Rd = Rn / Rm', category: 'data', example: 'sdiv w0, w1, w2' },
+  'udiv': { desc: 'Unsigned divide: Rd = Rn / Rm', category: 'data' },
+  'and': { desc: 'Bitwise AND: Rd = Rn & Op2', category: 'data', example: 'and x0, x1, #0xff' },
+  'ands': { desc: 'Bitwise AND with flags update', category: 'data', flags: 'NZC' },
+  'orr': { desc: 'Bitwise OR: Rd = Rn | Op2', category: 'data' },
+  'orn': { desc: 'Bitwise OR NOT: Rd = Rn | ~Op2', category: 'data' },
+  'eor': { desc: 'Bitwise XOR: Rd = Rn ^ Op2', category: 'data' },
+  'eon': { desc: 'Bitwise XOR NOT: Rd = Rn ^ ~Op2', category: 'data' },
+  'bic': { desc: 'Bit clear: Rd = Rn & ~Op2', category: 'data' },
+  'bics': { desc: 'Bit clear with flags', category: 'data', flags: 'NZC' },
+  'lsl': { desc: 'Logical shift left: Rd = Rm << n', category: 'data', example: 'lsl x0, x1, #2' },
+  'lslv': { desc: 'Logical shift left variable: Rd = Rn << Rm', category: 'data' },
+  'lsr': { desc: 'Logical shift right: Rd = Rm >> n (zero fill)', category: 'data' },
+  'lsrv': { desc: 'Logical shift right variable: Rd = Rn >> Rm', category: 'data' },
+  'asr': { desc: 'Arithmetic shift right: Rd = Rm >> n (sign extend)', category: 'data' },
+  'asrv': { desc: 'Arithmetic shift right variable', category: 'data' },
+  'ror': { desc: 'Rotate right: circular shift', category: 'data' },
+  'rorv': { desc: 'Rotate right variable', category: 'data' },
+  'extr': { desc: 'Extract: Extract register from pair of registers', category: 'data' },
+  'cmp': { desc: 'Compare: Update flags based on Rn - Op2 (alias for SUBS with ZR)', category: 'data', flags: 'NZCV' },
+  'cmn': { desc: 'Compare negative: Update flags based on Rn + Op2', category: 'data', flags: 'NZCV' },
+  'tst': { desc: 'Test bits: Update flags based on Rn & Op2 (alias for ANDS)', category: 'data', flags: 'NZC' },
+  'teq': { desc: 'Test equivalence: Update flags based on Rn ^ Op2', category: 'data', flags: 'NZC' },
+  'neg': { desc: 'Negate: Rd = 0 - Rm (alias for SUB)', category: 'data' },
+  'negs': { desc: 'Negate with flags', category: 'data', flags: 'NZCV' },
+  'ngc': { desc: 'Negate with carry: Rd = ~Rm + C', category: 'data' },
+  'adr': { desc: 'Address: Load PC-relative address into register (±1MB)', category: 'data' },
+  'adrp': { desc: 'Address page: Load PC-relative page address (±4GB)', category: 'data', syntax: 'ADRP Xd, label' },
+  'cls': { desc: 'Count leading sign bits', category: 'data' },
+  'clz': { desc: 'Count leading zeros', category: 'data' },
+  'rbit': { desc: 'Reverse bits', category: 'data' },
+  'rev': { desc: 'Reverse bytes (byte swap)', category: 'data' },
+  'rev16': { desc: 'Reverse bytes in halfwords', category: 'data' },
+  'rev32': { desc: 'Reverse bytes in words (ARM64)', category: 'data' },
+  'rev64': { desc: 'Reverse bytes in doubleword', category: 'data' },
+  'sxtb': { desc: 'Sign extend byte to 32/64 bits', category: 'data' },
+  'sxth': { desc: 'Sign extend halfword to 32/64 bits', category: 'data' },
+  'sxtw': { desc: 'Sign extend word to 64 bits', category: 'data' },
+  'uxtb': { desc: 'Zero extend byte to 32/64 bits', category: 'data' },
+  'uxth': { desc: 'Zero extend halfword to 32/64 bits', category: 'data' },
+  'ubfx': { desc: 'Unsigned bitfield extract', category: 'data', syntax: 'UBFX Xd, Xn, #lsb, #width' },
+  'sbfx': { desc: 'Signed bitfield extract', category: 'data' },
+  'bfi': { desc: 'Bitfield insert', category: 'data', syntax: 'BFI Xd, Xn, #lsb, #width' },
+  'bfxil': { desc: 'Bitfield extract and insert low', category: 'data' },
+  'csel': { desc: 'Conditional select: Rd = cond ? Rn : Rm', category: 'data', syntax: 'CSEL Xd, Xn, Xm, cond' },
+  'csinc': { desc: 'Conditional select increment: Rd = cond ? Rn : Rm+1', category: 'data' },
+  'csinv': { desc: 'Conditional select invert: Rd = cond ? Rn : ~Rm', category: 'data' },
+  'csneg': { desc: 'Conditional select negate: Rd = cond ? Rn : -Rm', category: 'data' },
+  'cset': { desc: 'Conditional set: Rd = cond ? 1 : 0', category: 'data' },
+  'csetm': { desc: 'Conditional set mask: Rd = cond ? -1 : 0', category: 'data' },
+  'cinc': { desc: 'Conditional increment: Rd = cond ? Rn+1 : Rn', category: 'data' },
+  'cinv': { desc: 'Conditional invert: Rd = cond ? ~Rn : Rn', category: 'data' },
+  'cneg': { desc: 'Conditional negate: Rd = cond ? -Rn : Rn', category: 'data' },
+  'ccmp': { desc: 'Conditional compare: if cond, compare Rn with Op2, else set flags to nzcv', category: 'data' },
+  'ccmn': { desc: 'Conditional compare negative', category: 'data' },
   // Load/Store
-  'ldr': 'Load register: Load 32-bit word from memory',
-  'ldrb': 'Load register byte: Load 8-bit value, zero-extend',
-  'ldrh': 'Load register halfword: Load 16-bit value, zero-extend',
-  'ldrsb': 'Load register signed byte: Load 8-bit value, sign-extend',
-  'ldrsh': 'Load register signed halfword: Load 16-bit value, sign-extend',
-  'ldrd': 'Load register double: Load 64-bit value to register pair',
-  'ldm': 'Load multiple: Pop multiple registers from memory',
-  'ldmia': 'Load multiple increment after: Pop registers, increment base',
-  'ldmdb': 'Load multiple decrement before: Pop registers, decrement base',
-  'str': 'Store register: Store 32-bit word to memory',
-  'strb': 'Store register byte: Store 8-bit value',
-  'strh': 'Store register halfword: Store 16-bit value',
-  'strd': 'Store register double: Store 64-bit value from register pair',
-  'stm': 'Store multiple: Push multiple registers to memory',
-  'stmia': 'Store multiple increment after: Push registers, increment base',
-  'stmdb': 'Store multiple decrement before (PUSH): Push registers, decrement base',
-  'push': 'Push registers onto stack: SP -= 4×n, store registers',
-  'pop': 'Pop registers from stack: Load registers, SP += 4×n',
+  'ldr': { desc: 'Load register: Load 32/64-bit value from memory', category: 'load_store', example: 'ldr x0, [x1, #8]' },
+  'ldrb': { desc: 'Load register byte: Load 8-bit value, zero-extend', category: 'load_store' },
+  'ldrh': { desc: 'Load register halfword: Load 16-bit value, zero-extend', category: 'load_store' },
+  'ldrsb': { desc: 'Load register signed byte: Load 8-bit value, sign-extend', category: 'load_store' },
+  'ldrsh': { desc: 'Load register signed halfword: Load 16-bit value, sign-extend', category: 'load_store' },
+  'ldrsw': { desc: 'Load register signed word: Load 32-bit, sign-extend to 64-bit', category: 'load_store' },
+  'ldrd': { desc: 'Load register double: Load 64-bit value to register pair', category: 'load_store' },
+  'ldur': { desc: 'Load register unscaled: Load with 9-bit signed offset', category: 'load_store' },
+  'ldp': { desc: 'Load pair: Load two registers from consecutive memory', category: 'load_store', syntax: 'LDP Xt1, Xt2, [Xn, #imm]' },
+  'ldnp': { desc: 'Load pair non-temporal: Load pair with non-temporal hint', category: 'load_store' },
+  'ldar': { desc: 'Load-acquire register: Load with acquire semantics', category: 'load_store' },
+  'ldaxr': { desc: 'Load-acquire exclusive: Load exclusive with acquire', category: 'load_store' },
+  'ldxr': { desc: 'Load exclusive: Load value for exclusive access', category: 'load_store' },
+  'ldm': { desc: 'Load multiple: Pop multiple registers from memory', category: 'load_store' },
+  'ldmia': { desc: 'Load multiple increment after: Pop registers, increment base', category: 'load_store' },
+  'ldmdb': { desc: 'Load multiple decrement before: Pop registers, decrement base', category: 'load_store' },
+  'str': { desc: 'Store register: Store 32/64-bit value to memory', category: 'load_store', example: 'str x0, [sp, #-16]!' },
+  'strb': { desc: 'Store register byte: Store 8-bit value', category: 'load_store' },
+  'strh': { desc: 'Store register halfword: Store 16-bit value', category: 'load_store' },
+  'strd': { desc: 'Store register double: Store 64-bit value from register pair', category: 'load_store' },
+  'stur': { desc: 'Store register unscaled: Store with 9-bit signed offset', category: 'load_store' },
+  'stp': { desc: 'Store pair: Store two registers to consecutive memory', category: 'load_store', syntax: 'STP Xt1, Xt2, [Xn, #imm]' },
+  'stnp': { desc: 'Store pair non-temporal: Store pair with non-temporal hint', category: 'load_store' },
+  'stlr': { desc: 'Store-release register: Store with release semantics', category: 'load_store' },
+  'stlxr': { desc: 'Store-release exclusive: Store exclusive with release', category: 'load_store' },
+  'stxr': { desc: 'Store exclusive: Store value with exclusive access', category: 'load_store' },
+  'stm': { desc: 'Store multiple: Push multiple registers to memory', category: 'load_store' },
+  'stmia': { desc: 'Store multiple increment after: Push registers, increment base', category: 'load_store' },
+  'stmdb': { desc: 'Store multiple decrement before (PUSH): Push registers, decrement base', category: 'load_store' },
+  'push': { desc: 'Push registers onto stack: SP -= 4×n, store registers', category: 'load_store' },
+  'pop': { desc: 'Pop registers from stack: Load registers, SP += 4×n', category: 'load_store' },
+  'prfm': { desc: 'Prefetch memory: Hint to cache controller', category: 'load_store', syntax: 'PRFM type, [Xn]' },
   // Branch
-  'b': 'Branch: Unconditional jump to label',
-  'bl': 'Branch with link: Call subroutine, save return address in LR',
-  'blx': 'Branch with link and exchange: Call with possible mode switch (ARM↔Thumb)',
-  'bx': 'Branch and exchange: Jump with possible mode switch',
-  'beq': 'Branch if equal: Jump if Z flag set',
-  'bne': 'Branch if not equal: Jump if Z flag clear',
-  'bgt': 'Branch if greater than (signed): Jump if Z=0 and N=V',
-  'bge': 'Branch if greater or equal (signed): Jump if N=V',
-  'blt': 'Branch if less than (signed): Jump if N≠V',
-  'ble': 'Branch if less or equal (signed): Jump if Z=1 or N≠V',
-  'bhi': 'Branch if higher (unsigned): Jump if C=1 and Z=0',
-  'bhs': 'Branch if higher or same (unsigned): Jump if C=1',
-  'blo': 'Branch if lower (unsigned): Jump if C=0',
-  'bls': 'Branch if lower or same (unsigned): Jump if C=0 or Z=1',
-  'bcs': 'Branch if carry set: Jump if C flag set',
-  'bcc': 'Branch if carry clear: Jump if C flag clear',
-  'bmi': 'Branch if minus: Jump if N flag set',
-  'bpl': 'Branch if plus: Jump if N flag clear',
-  'bvs': 'Branch if overflow set: Jump if V flag set',
-  'bvc': 'Branch if overflow clear: Jump if V flag clear',
-  'cbz': 'Compare and branch if zero: if Rn == 0, branch',
-  'cbnz': 'Compare and branch if not zero: if Rn != 0, branch',
-  'it': 'If-Then: Make following 1-4 instructions conditional',
-  'ite': 'If-Then-Else: Conditional block with else clause',
+  'b': { desc: 'Branch: Unconditional jump to label (±128MB)', category: 'branch', example: 'b label' },
+  'br': { desc: 'Branch to register: Jump to address in register', category: 'branch', syntax: 'BR Xn' },
+  'bl': { desc: 'Branch with link: Call subroutine, save return address in LR (X30)', category: 'branch', example: 'bl printf' },
+  'blr': { desc: 'Branch with link to register: Call address in register', category: 'branch', syntax: 'BLR Xn' },
+  'blx': { desc: 'Branch with link and exchange: Call with possible mode switch (ARM↔Thumb)', category: 'branch' },
+  'bx': { desc: 'Branch and exchange: Jump with possible mode switch', category: 'branch' },
+  'ret': { desc: 'Return from subroutine: Branch to LR (X30)', category: 'branch', syntax: 'RET {Xn}' },
+  'beq': { desc: 'Branch if equal: Jump if Z flag set', category: 'branch', flags: 'checks Z' },
+  'bne': { desc: 'Branch if not equal: Jump if Z flag clear', category: 'branch', flags: 'checks Z' },
+  'bgt': { desc: 'Branch if greater than (signed): Jump if Z=0 and N=V', category: 'branch' },
+  'bge': { desc: 'Branch if greater or equal (signed): Jump if N=V', category: 'branch' },
+  'blt': { desc: 'Branch if less than (signed): Jump if N≠V', category: 'branch' },
+  'ble': { desc: 'Branch if less or equal (signed): Jump if Z=1 or N≠V', category: 'branch' },
+  'bhi': { desc: 'Branch if higher (unsigned): Jump if C=1 and Z=0', category: 'branch' },
+  'bhs': { desc: 'Branch if higher or same (unsigned): Jump if C=1', category: 'branch' },
+  'blo': { desc: 'Branch if lower (unsigned): Jump if C=0', category: 'branch' },
+  'bls': { desc: 'Branch if lower or same (unsigned): Jump if C=0 or Z=1', category: 'branch' },
+  'bcs': { desc: 'Branch if carry set: Jump if C flag set', category: 'branch' },
+  'bcc': { desc: 'Branch if carry clear: Jump if C flag clear', category: 'branch' },
+  'bmi': { desc: 'Branch if minus: Jump if N flag set', category: 'branch' },
+  'bpl': { desc: 'Branch if plus: Jump if N flag clear', category: 'branch' },
+  'bvs': { desc: 'Branch if overflow set: Jump if V flag set', category: 'branch' },
+  'bvc': { desc: 'Branch if overflow clear: Jump if V flag clear', category: 'branch' },
+  'bal': { desc: 'Branch always: Unconditional branch (explicit)', category: 'branch' },
+  'cbz': { desc: 'Compare and branch if zero: if Rn == 0, branch', category: 'branch', syntax: 'CBZ Xn, label' },
+  'cbnz': { desc: 'Compare and branch if not zero: if Rn != 0, branch', category: 'branch', syntax: 'CBNZ Xn, label' },
+  'tbz': { desc: 'Test bit and branch if zero: if bit #imm of Xn is 0, branch', category: 'branch' },
+  'tbnz': { desc: 'Test bit and branch if not zero', category: 'branch' },
+  'it': { desc: 'If-Then: Make following 1-4 instructions conditional', category: 'branch' },
+  'ite': { desc: 'If-Then-Else: Conditional block with else clause', category: 'branch' },
+  'itttt': { desc: 'If-Then-Then-Then-Then: 4 conditional instructions', category: 'branch' },
   // System
-  'svc': 'Supervisor call: Trigger system call exception (syscall)',
-  'swi': 'Software interrupt: Trigger system call (legacy name for SVC)',
-  'bkpt': 'Breakpoint: Trigger debug exception',
-  'nop': 'No operation: Do nothing (often MOV r0, r0)',
-  'wfi': 'Wait for interrupt: Enter low-power state',
-  'wfe': 'Wait for event: Enter low-power state until event',
-  'sev': 'Send event: Signal other cores',
-  'dmb': 'Data memory barrier: Ensure memory access ordering',
-  'dsb': 'Data synchronization barrier: Complete all memory accesses',
-  'isb': 'Instruction synchronization barrier: Flush pipeline',
-  'mrs': 'Move to register from special: Read system register',
-  'msr': 'Move to special from register: Write system register',
-  // SIMD/VFP
-  'vmov': 'Vector move: Move data between ARM and VFP/NEON registers',
-  'vldr': 'Vector load: Load floating-point register from memory',
-  'vstr': 'Vector store: Store floating-point register to memory',
-  'vadd': 'Vector add: Floating-point addition',
-  'vsub': 'Vector subtract: Floating-point subtraction',
-  'vmul': 'Vector multiply: Floating-point multiplication',
-  'vdiv': 'Vector divide: Floating-point division',
-  'vcmp': 'Vector compare: Compare floating-point values',
+  'svc': { desc: 'Supervisor call: Trigger system call exception (syscall #imm)', category: 'system', syntax: 'SVC #imm', example: 'svc #0' },
+  'swi': { desc: 'Software interrupt: Trigger system call (legacy name for SVC)', category: 'system' },
+  'hvc': { desc: 'Hypervisor call: Call hypervisor from EL1', category: 'system' },
+  'smc': { desc: 'Secure monitor call: Call secure monitor from EL1/EL2', category: 'system' },
+  'brk': { desc: 'Breakpoint: Trigger debug exception with immediate', category: 'system', syntax: 'BRK #imm' },
+  'bkpt': { desc: 'Breakpoint: Trigger debug exception', category: 'system' },
+  'hlt': { desc: 'Halt: Stop execution (debug)', category: 'system' },
+  'nop': { desc: 'No operation: Do nothing (often MOV r0, r0)', category: 'system' },
+  'hint': { desc: 'Hint instruction: Various system hints', category: 'system' },
+  'wfi': { desc: 'Wait for interrupt: Enter low-power state until interrupt', category: 'system' },
+  'wfe': { desc: 'Wait for event: Enter low-power state until event', category: 'system' },
+  'sev': { desc: 'Send event: Signal other cores', category: 'system' },
+  'sevl': { desc: 'Send event local: Signal local event register', category: 'system' },
+  'yield': { desc: 'Yield: Hint that thread can be rescheduled', category: 'system' },
+  'dmb': { desc: 'Data memory barrier: Ensure memory access ordering', category: 'system', syntax: 'DMB option' },
+  'dsb': { desc: 'Data synchronization barrier: Complete all memory accesses', category: 'system' },
+  'isb': { desc: 'Instruction synchronization barrier: Flush pipeline', category: 'system' },
+  'mrs': { desc: 'Move to register from special: Read system register', category: 'system', syntax: 'MRS Xt, sysreg' },
+  'msr': { desc: 'Move to special from register: Write system register', category: 'system', syntax: 'MSR sysreg, Xt' },
+  'dc': { desc: 'Data cache operation', category: 'system', syntax: 'DC op, Xt' },
+  'ic': { desc: 'Instruction cache operation', category: 'system', syntax: 'IC op, Xt' },
+  'tlbi': { desc: 'TLB invalidate', category: 'system' },
+  'at': { desc: 'Address translate', category: 'system' },
+  'sys': { desc: 'System instruction', category: 'system' },
+  'sysl': { desc: 'System instruction with result', category: 'system' },
+  'eret': { desc: 'Exception return: Return from exception handler', category: 'system' },
+  // SIMD/VFP (NEON)
+  'fmov': { desc: 'Floating-point move: Move between FP and GP registers', category: 'simd' },
+  'fadd': { desc: 'Floating-point add', category: 'simd' },
+  'fsub': { desc: 'Floating-point subtract', category: 'simd' },
+  'fmul': { desc: 'Floating-point multiply', category: 'simd' },
+  'fdiv': { desc: 'Floating-point divide', category: 'simd' },
+  'fmadd': { desc: 'Floating-point fused multiply-add: Fd = Fa + (Fn × Fm)', category: 'simd' },
+  'fmsub': { desc: 'Floating-point fused multiply-subtract', category: 'simd' },
+  'fneg': { desc: 'Floating-point negate', category: 'simd' },
+  'fabs': { desc: 'Floating-point absolute value', category: 'simd' },
+  'fsqrt': { desc: 'Floating-point square root', category: 'simd' },
+  'fcmp': { desc: 'Floating-point compare: Set NZCV flags', category: 'simd', flags: 'NZCV' },
+  'fcmpe': { desc: 'Floating-point compare with exception on NaN', category: 'simd' },
+  'fcsel': { desc: 'Floating-point conditional select', category: 'simd' },
+  'fccmp': { desc: 'Floating-point conditional compare', category: 'simd' },
+  'fcvt': { desc: 'Floating-point convert precision', category: 'simd' },
+  'fcvtzs': { desc: 'Floating-point convert to signed integer, round toward zero', category: 'simd' },
+  'fcvtzu': { desc: 'Floating-point convert to unsigned integer, round toward zero', category: 'simd' },
+  'scvtf': { desc: 'Signed integer convert to floating-point', category: 'simd' },
+  'ucvtf': { desc: 'Unsigned integer convert to floating-point', category: 'simd' },
+  'frintz': { desc: 'Floating-point round toward zero', category: 'simd' },
+  'frintp': { desc: 'Floating-point round toward +infinity', category: 'simd' },
+  'frintm': { desc: 'Floating-point round toward -infinity', category: 'simd' },
+  'frinta': { desc: 'Floating-point round to nearest with ties away', category: 'simd' },
+  'vmov': { desc: 'Vector move: Move data between ARM and VFP/NEON registers', category: 'simd' },
+  'vldr': { desc: 'Vector load: Load floating-point register from memory', category: 'simd' },
+  'vstr': { desc: 'Vector store: Store floating-point register to memory', category: 'simd' },
+  'vadd': { desc: 'Vector add: Floating-point addition', category: 'simd' },
+  'vsub': { desc: 'Vector subtract: Floating-point subtraction', category: 'simd' },
+  'vmul': { desc: 'Vector multiply: Floating-point multiplication', category: 'simd' },
+  'vdiv': { desc: 'Vector divide: Floating-point division', category: 'simd' },
+  'vcmp': { desc: 'Vector compare: Compare floating-point values', category: 'simd' },
+  'ld1': { desc: 'Load single structure: Load 1-4 registers from memory', category: 'simd' },
+  'ld2': { desc: 'Load 2-element structure with de-interleave', category: 'simd' },
+  'ld3': { desc: 'Load 3-element structure with de-interleave', category: 'simd' },
+  'ld4': { desc: 'Load 4-element structure with de-interleave', category: 'simd' },
+  'st1': { desc: 'Store single structure: Store 1-4 registers to memory', category: 'simd' },
+  'st2': { desc: 'Store 2-element structure with interleave', category: 'simd' },
+  'st3': { desc: 'Store 3-element structure with interleave', category: 'simd' },
+  'st4': { desc: 'Store 4-element structure with interleave', category: 'simd' },
+  'dup': { desc: 'Duplicate: Broadcast element to all lanes', category: 'simd' },
+  'ins': { desc: 'Insert: Copy element from GP or vector register', category: 'simd' },
+  'umov': { desc: 'Unsigned move: Copy element to GP register', category: 'simd' },
+  'smov': { desc: 'Signed move: Copy element with sign extension', category: 'simd' },
+  // Atomic operations (ARM64)
+  'ldadd': { desc: 'Atomic add: [Xn] = [Xn] + Xs, return old value', category: 'atomic' },
+  'ldadda': { desc: 'Atomic add with acquire', category: 'atomic' },
+  'ldaddl': { desc: 'Atomic add with release', category: 'atomic' },
+  'ldaddal': { desc: 'Atomic add with acquire-release', category: 'atomic' },
+  'stadd': { desc: 'Atomic store add: [Xn] = [Xn] + Xs (no return)', category: 'atomic' },
+  'ldclr': { desc: 'Atomic bit clear: [Xn] = [Xn] & ~Xs', category: 'atomic' },
+  'ldset': { desc: 'Atomic bit set: [Xn] = [Xn] | Xs', category: 'atomic' },
+  'ldeor': { desc: 'Atomic XOR: [Xn] = [Xn] ^ Xs', category: 'atomic' },
+  'ldmax': { desc: 'Atomic signed maximum', category: 'atomic' },
+  'ldmin': { desc: 'Atomic signed minimum', category: 'atomic' },
+  'ldumax': { desc: 'Atomic unsigned maximum', category: 'atomic' },
+  'ldumin': { desc: 'Atomic unsigned minimum', category: 'atomic' },
+  'swp': { desc: 'Swap: Atomically swap register with memory', category: 'atomic' },
+  'swpa': { desc: 'Swap with acquire', category: 'atomic' },
+  'swpl': { desc: 'Swap with release', category: 'atomic' },
+  'swpal': { desc: 'Swap with acquire-release', category: 'atomic' },
+  'cas': { desc: 'Compare and swap: If [Xn] == Xs, [Xn] = Xt', category: 'atomic' },
+  'casa': { desc: 'Compare and swap with acquire', category: 'atomic' },
+  'casl': { desc: 'Compare and swap with release', category: 'atomic' },
+  'casal': { desc: 'Compare and swap with acquire-release', category: 'atomic' },
+  'casp': { desc: 'Compare and swap pair', category: 'atomic' },
+  // Crypto extensions
+  'aese': { desc: 'AES single round encryption', category: 'crypto' },
+  'aesd': { desc: 'AES single round decryption', category: 'crypto' },
+  'aesmc': { desc: 'AES mix columns', category: 'crypto' },
+  'aesimc': { desc: 'AES inverse mix columns', category: 'crypto' },
+  'sha1c': { desc: 'SHA1 hash update (choose)', category: 'crypto' },
+  'sha1m': { desc: 'SHA1 hash update (majority)', category: 'crypto' },
+  'sha1p': { desc: 'SHA1 hash update (parity)', category: 'crypto' },
+  'sha1h': { desc: 'SHA1 fixed rotate', category: 'crypto' },
+  'sha1su0': { desc: 'SHA1 schedule update 0', category: 'crypto' },
+  'sha1su1': { desc: 'SHA1 schedule update 1', category: 'crypto' },
+  'sha256h': { desc: 'SHA256 hash update part 1', category: 'crypto' },
+  'sha256h2': { desc: 'SHA256 hash update part 2', category: 'crypto' },
+  'sha256su0': { desc: 'SHA256 schedule update 0', category: 'crypto' },
+  'sha256su1': { desc: 'SHA256 schedule update 1', category: 'crypto' },
   // Thumb-2 specific
-  'ldr.w': 'Load register wide: 32-bit Thumb-2 LDR encoding',
-  'str.w': 'Store register wide: 32-bit Thumb-2 STR encoding',
-  'add.w': 'Add wide: 32-bit Thumb-2 ADD encoding',
+  'ldr.w': { desc: 'Load register wide: 32-bit Thumb-2 LDR encoding', category: 'load_store' },
+  'str.w': { desc: 'Store register wide: 32-bit Thumb-2 STR encoding', category: 'load_store' },
+  'add.w': { desc: 'Add wide: 32-bit Thumb-2 ADD encoding', category: 'data' },
 };
+
+// Simple lookup map for backward compatibility
+const ARM_DOCS: Record<string, string> = Object.fromEntries(
+  Object.entries(ARM_DOCS_EXTENDED).map(([k, v]) => [k, v.desc])
+);
 
 // x86/x64 instruction documentation
 const X86_DOCS: Record<string, string> = {
@@ -216,24 +387,47 @@ const X86_DOCS: Record<string, string> = {
   'endbr32': 'End branch 32: CET indirect branch tracking marker',
 };
 
-// Get instruction docs based on architecture
-const getInstructionDocs = (mnemonic: string, arch: string): string | null => {
+// Get instruction docs based on architecture - returns extended info
+const getInstructionDocsExtended = (mnemonic: string, arch: string): InstructionDoc | null => {
   const normalizedMnemonic = mnemonic.toLowerCase().replace(/\.w$/, '');
-  
+
   // Check for conditional suffixes on ARM
-  if (arch.includes('arm') || arch.includes('thumb')) {
+  if (arch.includes('arm') || arch.includes('thumb') || arch.includes('aarch64')) {
     // Strip condition codes for lookup
     const armBase = normalizedMnemonic.replace(/(eq|ne|cs|cc|mi|pl|vs|vc|hi|ls|ge|lt|gt|le|al|hs|lo)$/, '');
-    if (ARM_DOCS[normalizedMnemonic]) return ARM_DOCS[normalizedMnemonic];
-    if (ARM_DOCS[armBase]) return ARM_DOCS[armBase];
+    if (ARM_DOCS_EXTENDED[normalizedMnemonic]) return ARM_DOCS_EXTENDED[normalizedMnemonic];
+    if (ARM_DOCS_EXTENDED[armBase]) return ARM_DOCS_EXTENDED[armBase];
   }
-  
+
+  // x86 uses simple docs for now
   if (arch.includes('x86') || arch.includes('amd64') || arch.includes('i386')) {
-    if (X86_DOCS[normalizedMnemonic]) return X86_DOCS[normalizedMnemonic];
+    if (X86_DOCS[normalizedMnemonic]) {
+      return { desc: X86_DOCS[normalizedMnemonic], category: 'data' };
+    }
   }
-  
-  // Fallback: check both
-  return ARM_DOCS[normalizedMnemonic] || X86_DOCS[normalizedMnemonic] || null;
+
+  // Fallback: check ARM then x86
+  if (ARM_DOCS_EXTENDED[normalizedMnemonic]) return ARM_DOCS_EXTENDED[normalizedMnemonic];
+  if (X86_DOCS[normalizedMnemonic]) return { desc: X86_DOCS[normalizedMnemonic], category: 'data' };
+
+  return null;
+};
+
+// Simple string lookup for backward compatibility
+const getInstructionDocs = (mnemonic: string, arch: string): string | null => {
+  const extended = getInstructionDocsExtended(mnemonic, arch);
+  return extended?.desc ?? null;
+};
+
+// Category display names and colors
+const CATEGORY_INFO: Record<InstructionCategory, { label: string; color: string }> = {
+  data: { label: 'Data Processing', color: '#9c27b0' },
+  load_store: { label: 'Load/Store', color: '#2196f3' },
+  branch: { label: 'Branch', color: '#4caf50' },
+  system: { label: 'System', color: '#ff9800' },
+  simd: { label: 'SIMD/FPU', color: '#00bcd4' },
+  crypto: { label: 'Crypto', color: '#e91e63' },
+  atomic: { label: 'Atomic', color: '#673ab7' },
 };
 
 interface ParsedInstruction {
@@ -364,8 +558,9 @@ const InstructionLine: FC<InstructionLineProps> = ({ parsed, arch, annotation })
     tree: isDark ? '#333' : '#ddd',
   };
   
-  // Get instruction documentation
+  // Get instruction documentation (extended version for rich tooltips)
   const docs = parsed.mnemonic ? getInstructionDocs(parsed.mnemonic, arch) : null;
+  const extendedDocs = parsed.mnemonic ? getInstructionDocsExtended(parsed.mnemonic, arch) : null;
   
   // Highlight operands (registers, immediates, memory refs)
   const highlightOperands = useCallback((operands: string) => {
@@ -494,15 +689,34 @@ const InstructionLine: FC<InstructionLineProps> = ({ parsed, arch, annotation })
     : null;
 
   // Wrap with tooltip if we have docs
-  if (docs) {
+  if (docs && extendedDocs) {
+    const categoryInfo = CATEGORY_INFO[extendedDocs.category];
     return (
       <Tooltip
         title={
-          <Box sx={{ maxWidth: 400 }}>
-            <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1}>
-              <Typography variant="subtitle2" fontWeight={600} sx={{ fontFamily: 'monospace' }}>
-                {parsed.mnemonic?.toUpperCase()}
-              </Typography>
+          <Box sx={{ maxWidth: 420, p: 0.5 }}>
+            {/* Header with mnemonic and category badge */}
+            <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1} sx={{ mb: 0.5 }}>
+              <Stack direction="row" alignItems="center" spacing={1}>
+                <Typography variant="subtitle2" fontWeight={700} sx={{ fontFamily: 'monospace', fontSize: '0.95rem' }}>
+                  {parsed.mnemonic?.toUpperCase()}
+                </Typography>
+                <Box
+                  sx={{
+                    px: 0.75,
+                    py: 0.125,
+                    borderRadius: 0.5,
+                    bgcolor: categoryInfo.color,
+                    color: '#fff',
+                    fontSize: '0.6rem',
+                    fontWeight: 600,
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.5px',
+                  }}
+                >
+                  {categoryInfo.label}
+                </Box>
+              </Stack>
               {docUrl && (
                 <Tooltip title="Look up in official docs">
                   <IconButton
@@ -518,20 +732,85 @@ const InstructionLine: FC<InstructionLineProps> = ({ parsed, arch, annotation })
                 </Tooltip>
               )}
             </Stack>
-            <Typography variant="body2" sx={{ mt: 0.5 }}>
+
+            {/* Description */}
+            <Typography variant="body2" sx={{ mb: 0.75, lineHeight: 1.4 }}>
               {docs}
             </Typography>
+
+            {/* Syntax if available */}
+            {extendedDocs.syntax && (
+              <Box sx={{ mb: 0.5 }}>
+                <Typography variant="caption" color="text.secondary" fontWeight={600}>
+                  Syntax:
+                </Typography>
+                <Typography
+                  variant="body2"
+                  sx={{
+                    fontFamily: 'monospace',
+                    fontSize: '0.75rem',
+                    bgcolor: 'rgba(0,0,0,0.15)',
+                    px: 0.75,
+                    py: 0.25,
+                    borderRadius: 0.5,
+                    display: 'inline-block',
+                    ml: 0.5,
+                  }}
+                >
+                  {extendedDocs.syntax}
+                </Typography>
+              </Box>
+            )}
+
+            {/* Flags if available */}
+            {extendedDocs.flags && (
+              <Box sx={{ mb: 0.5 }}>
+                <Typography variant="caption" color="text.secondary" fontWeight={600}>
+                  Flags:
+                </Typography>
+                <Typography
+                  variant="caption"
+                  sx={{
+                    ml: 0.5,
+                    color: 'warning.light',
+                  }}
+                >
+                  {extendedDocs.flags}
+                </Typography>
+              </Box>
+            )}
+
+            {/* Example if available */}
+            {extendedDocs.example && (
+              <Box sx={{ mt: 0.5, pt: 0.5, borderTop: '1px solid rgba(255,255,255,0.1)' }}>
+                <Typography variant="caption" color="text.secondary" fontWeight={600}>
+                  Example:
+                </Typography>
+                <Typography
+                  variant="body2"
+                  sx={{
+                    fontFamily: 'monospace',
+                    fontSize: '0.75rem',
+                    color: 'success.light',
+                    ml: 0.5,
+                  }}
+                >
+                  {extendedDocs.example}
+                </Typography>
+              </Box>
+            )}
+
             {isARM && (
-              <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block', fontStyle: 'italic' }}>
-                Click icon to view ARM reference
+              <Typography variant="caption" color="text.secondary" sx={{ mt: 0.75, display: 'block', fontStyle: 'italic', fontSize: '0.65rem' }}>
+                Click icon for ARM reference manual
               </Typography>
             )}
           </Box>
         }
         placement="right"
         arrow
-        enterDelay={200}
-        leaveDelay={100}
+        enterDelay={150}
+        leaveDelay={50}
       >
         <Box 
           component="div" 
