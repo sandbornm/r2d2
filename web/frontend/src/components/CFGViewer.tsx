@@ -1,12 +1,18 @@
 import AccountTreeIcon from '@mui/icons-material/AccountTree';
 import ChevronRightIcon from '@mui/icons-material/ChevronRight';
+import CompareArrowsIcon from '@mui/icons-material/CompareArrows';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import NavigateBeforeIcon from '@mui/icons-material/NavigateBefore';
 import NavigateNextIcon from '@mui/icons-material/NavigateNext';
+import VerifiedIcon from '@mui/icons-material/Verified';
+import WarningAmberIcon from '@mui/icons-material/WarningAmber';
 import {
+  alpha,
   Box,
   Chip,
   IconButton,
+  keyframes,
+  LinearProgress,
   List,
   ListItemButton,
   ListItemText,
@@ -17,6 +23,280 @@ import {
   useTheme,
 } from '@mui/material';
 import { FC, useCallback, useMemo, useState } from 'react';
+
+// Smooth fade-in animation
+const fadeIn = keyframes`
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+`;
+
+// Pulse animation for uncertainty indicator
+const pulse = keyframes`
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+`;
+
+// Confidence levels for decompilation
+type ConfidenceLevel = 'high' | 'medium' | 'low' | 'unknown';
+
+interface ConfidenceInfo {
+  level: ConfidenceLevel;
+  score: number;
+  reasons: string[];
+  radareMatch: boolean;
+  angrMatch: boolean;
+}
+
+// Calculate confidence based on cross-referencing radare2 and angr analysis
+const calculateConfidence = (
+  nodes: CFGNode[],
+  functions: FunctionCFG[],
+  radareFunctions: Array<{name?: string; offset?: number; size?: number}>,
+): ConfidenceInfo => {
+  const reasons: string[] = [];
+  let score = 0;
+  const hasAngr = nodes.length > 0;
+  const hasRadare = functions.length > 0 || radareFunctions.length > 0;
+
+  // Base scoring
+  if (hasAngr && hasRadare) {
+    score += 40;
+    reasons.push('Both angr and radare2 provided analysis');
+
+    // Check function count agreement
+    const angrFuncCount = new Set(nodes.map(n => n.function || n.function_name).filter(Boolean)).size;
+    const radareFuncCount = functions.length || radareFunctions.length;
+    const funcDiff = Math.abs(angrFuncCount - radareFuncCount);
+
+    if (funcDiff === 0) {
+      score += 30;
+      reasons.push('Function counts match exactly');
+    } else if (funcDiff <= 3) {
+      score += 20;
+      reasons.push(`Function counts differ by ${funcDiff}`);
+    } else if (funcDiff <= 10) {
+      score += 10;
+      reasons.push(`Function counts differ by ${funcDiff} (moderate variance)`);
+    } else {
+      reasons.push(`Function counts differ significantly (${funcDiff})`);
+    }
+
+    // Check for matching function addresses
+    const radareAddrs = new Set(
+      radareFunctions.map(f => f.offset?.toString(16)).filter(Boolean)
+    );
+    const angrAddrs = new Set(
+      nodes.map(n => n.addr?.replace('0x', '')).filter(Boolean)
+    );
+
+    let matchCount = 0;
+    radareAddrs.forEach(addr => {
+      if (addr && angrAddrs.has(addr)) matchCount++;
+    });
+
+    if (matchCount > 0) {
+      const matchRatio = matchCount / Math.max(radareAddrs.size, 1);
+      if (matchRatio > 0.8) {
+        score += 30;
+        reasons.push(`High address agreement (${Math.round(matchRatio * 100)}%)`);
+      } else if (matchRatio > 0.5) {
+        score += 20;
+        reasons.push(`Moderate address agreement (${Math.round(matchRatio * 100)}%)`);
+      } else {
+        score += 10;
+        reasons.push(`Low address agreement (${Math.round(matchRatio * 100)}%)`);
+      }
+    }
+  } else if (hasAngr) {
+    score += 30;
+    reasons.push('Only angr analysis available');
+    reasons.push('Cross-reference with radare2 for higher confidence');
+  } else if (hasRadare) {
+    score += 30;
+    reasons.push('Only radare2 analysis available');
+    reasons.push('Run with angr for higher confidence');
+  } else {
+    reasons.push('No analysis data available');
+  }
+
+  // Determine confidence level
+  let level: ConfidenceLevel;
+  if (score >= 80) {
+    level = 'high';
+  } else if (score >= 50) {
+    level = 'medium';
+  } else if (score > 0) {
+    level = 'low';
+  } else {
+    level = 'unknown';
+  }
+
+  return {
+    level,
+    score: Math.min(100, score),
+    reasons,
+    radareMatch: hasRadare,
+    angrMatch: hasAngr,
+  };
+};
+
+// Confidence indicator component
+interface ConfidenceIndicatorProps {
+  confidence: ConfidenceInfo;
+  compact?: boolean;
+}
+
+const ConfidenceIndicator: FC<ConfidenceIndicatorProps> = ({
+  confidence,
+  compact = false,
+}: ConfidenceIndicatorProps) => {
+  const theme = useTheme();
+
+  const getColor = () => {
+    switch (confidence.level) {
+      case 'high': return theme.palette.success.main;
+      case 'medium': return theme.palette.warning.main;
+      case 'low': return theme.palette.error.main;
+      default: return theme.palette.grey[500];
+    }
+  };
+
+  const getIcon = () => {
+    switch (confidence.level) {
+      case 'high': return <VerifiedIcon sx={{ fontSize: 14, color: getColor() }} />;
+      case 'medium': return <CompareArrowsIcon sx={{ fontSize: 14, color: getColor() }} />;
+      case 'low':
+      case 'unknown':
+        return <WarningAmberIcon sx={{ fontSize: 14, color: getColor(), animation: `${pulse} 2s ease-in-out infinite` }} />;
+    }
+  };
+
+  const getLabel = () => {
+    switch (confidence.level) {
+      case 'high': return 'High Confidence';
+      case 'medium': return 'Medium Confidence';
+      case 'low': return 'Low Confidence';
+      default: return 'Unknown';
+    }
+  };
+
+  if (compact) {
+    return (
+      <Tooltip
+        title={
+          <Box sx={{ p: 0.5 }}>
+            <Typography variant="caption" fontWeight={600} sx={{ display: 'block' }}>
+              {getLabel()} ({confidence.score}%)
+            </Typography>
+            <Box sx={{ mt: 0.5 }}>
+              {confidence.reasons.map((r, i) => (
+                <Typography key={i} variant="caption" sx={{ display: 'block', fontSize: '0.65rem' }}>
+                  • {r}
+                </Typography>
+              ))}
+            </Box>
+            <Stack direction="row" spacing={0.5} sx={{ mt: 1 }}>
+              <Chip
+                size="small"
+                label="radare2"
+                sx={{
+                  height: 16,
+                  fontSize: '0.6rem',
+                  bgcolor: confidence.radareMatch ? alpha(theme.palette.success.main, 0.2) : alpha(theme.palette.grey[500], 0.2),
+                }}
+              />
+              <Chip
+                size="small"
+                label="angr"
+                sx={{
+                  height: 16,
+                  fontSize: '0.6rem',
+                  bgcolor: confidence.angrMatch ? alpha(theme.palette.success.main, 0.2) : alpha(theme.palette.grey[500], 0.2),
+                }}
+              />
+            </Stack>
+          </Box>
+        }
+      >
+        <Stack direction="row" alignItems="center" spacing={0.5} sx={{ cursor: 'help' }}>
+          {getIcon()}
+          <Typography variant="caption" sx={{ color: getColor(), fontWeight: 500 }}>
+            {confidence.score}%
+          </Typography>
+        </Stack>
+      </Tooltip>
+    );
+  }
+
+  return (
+    <Paper
+      variant="outlined"
+      sx={{
+        p: 1,
+        bgcolor: alpha(getColor(), 0.05),
+        borderColor: alpha(getColor(), 0.3),
+        animation: `${fadeIn} 0.3s ease-out`,
+      }}
+    >
+      <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 0.5 }}>
+        {getIcon()}
+        <Typography variant="caption" fontWeight={600} sx={{ color: getColor() }}>
+          {getLabel()}
+        </Typography>
+      </Stack>
+
+      <LinearProgress
+        variant="determinate"
+        value={confidence.score}
+        sx={{
+          height: 4,
+          borderRadius: 2,
+          mb: 1,
+          bgcolor: alpha(getColor(), 0.1),
+          '& .MuiLinearProgress-bar': {
+            bgcolor: getColor(),
+            borderRadius: 2,
+          },
+        }}
+      />
+
+      <Stack direction="row" spacing={0.5} sx={{ mb: 0.5 }}>
+        <Chip
+          size="small"
+          icon={confidence.radareMatch ? <VerifiedIcon sx={{ fontSize: '12px !important' }} /> : undefined}
+          label="radare2"
+          sx={{
+            height: 18,
+            fontSize: '0.6rem',
+            bgcolor: confidence.radareMatch ? alpha(theme.palette.success.main, 0.15) : 'transparent',
+            borderColor: confidence.radareMatch ? theme.palette.success.main : theme.palette.divider,
+          }}
+          variant="outlined"
+        />
+        <Chip
+          size="small"
+          icon={confidence.angrMatch ? <VerifiedIcon sx={{ fontSize: '12px !important' }} /> : undefined}
+          label="angr"
+          sx={{
+            height: 18,
+            fontSize: '0.6rem',
+            bgcolor: confidence.angrMatch ? alpha(theme.palette.success.main, 0.15) : 'transparent',
+            borderColor: confidence.angrMatch ? theme.palette.success.main : theme.palette.divider,
+          }}
+          variant="outlined"
+        />
+      </Stack>
+
+      <Box sx={{ mt: 0.5 }}>
+        {confidence.reasons.slice(0, 3).map((r, i) => (
+          <Typography key={i} variant="caption" color="text.secondary" sx={{ display: 'block', fontSize: '0.6rem' }}>
+            • {r}
+          </Typography>
+        ))}
+      </Box>
+    </Paper>
+  );
+};
 
 interface CFGNode {
   addr: string;
@@ -102,6 +382,12 @@ const CFGViewer: FC<CFGViewerProps> = ({
     allFunctions[0] ?? null
   );
   const [selectedBlockIndex, setSelectedBlockIndex] = useState(0);
+
+  // Calculate confidence by cross-referencing radare2 and angr
+  const confidence = useMemo(
+    () => calculateConfidence(nodes, functions, radareFunctions),
+    [nodes, functions, radareFunctions]
+  );
 
   // Get blocks from selected function, or synthesize from angr nodes
   const currentBlocks = useMemo(() => {
@@ -224,9 +510,10 @@ const CFGViewer: FC<CFGViewerProps> = ({
           flexDirection: 'column',
           gap: 1,
           p: 2,
+          animation: `${fadeIn} 0.4s ease-out`,
         }}
       >
-        <AccountTreeIcon sx={{ fontSize: 48, opacity: 0.3 }} />
+        <AccountTreeIcon sx={{ fontSize: 48, opacity: 0.3, animation: `${pulse} 3s ease-in-out infinite` }} />
         <Typography variant="body2" color="text.secondary">
           No CFG data available
         </Typography>
@@ -272,12 +559,16 @@ const CFGViewer: FC<CFGViewerProps> = ({
           display: 'flex',
           flexDirection: 'column',
           overflow: 'hidden',
+          animation: `${fadeIn} 0.3s ease-out`,
         }}
       >
         <Box sx={{ p: 1, borderBottom: 1, borderColor: 'divider' }}>
-          <Typography variant="caption" color="text.secondary">
-            Functions ({allFunctions.length})
-          </Typography>
+          <Stack direction="row" alignItems="center" justifyContent="space-between">
+            <Typography variant="caption" color="text.secondary">
+              Functions ({allFunctions.length})
+            </Typography>
+            <ConfidenceIndicator confidence={confidence} compact />
+          </Stack>
         </Box>
         <Box sx={{ flex: 1, overflow: 'auto' }}>
           <List dense disablePadding>
@@ -286,7 +577,21 @@ const CFGViewer: FC<CFGViewerProps> = ({
                 key={`fn-${idx}`}
                 selected={selectedFunction?.offset === fn.offset}
                 onClick={() => handleSelectFunction(fn)}
-                sx={{ py: 0.5, px: 1 }}
+                sx={{
+                  py: 0.5,
+                  px: 1,
+                  animation: `${fadeIn} 0.2s ease-out`,
+                  animationDelay: `${Math.min(idx * 20, 200)}ms`,
+                  animationFillMode: 'backwards',
+                  transition: 'all 0.15s ease-out',
+                  '&:hover': {
+                    transform: 'translateX(2px)',
+                  },
+                  '&.Mui-selected': {
+                    borderLeft: 2,
+                    borderColor: 'primary.main',
+                  },
+                }}
               >
                 <ListItemText
                   primary={
@@ -300,6 +605,9 @@ const CFGViewer: FC<CFGViewerProps> = ({
                     </Typography>
                   }
                 />
+                {fn.blocks && fn.blocks.length > 0 && (
+                  <ChevronRightIcon sx={{ fontSize: 14, color: 'text.disabled', ml: 0.5 }} />
+                )}
               </ListItemButton>
             ))}
           </List>
@@ -314,6 +622,9 @@ const CFGViewer: FC<CFGViewerProps> = ({
           display: 'flex',
           flexDirection: 'column',
           overflow: 'hidden',
+          animation: `${fadeIn} 0.3s ease-out`,
+          animationDelay: '0.1s',
+          animationFillMode: 'backwards',
         }}
       >
         {selectedFunction && currentBlocks.length > 0 ? (
@@ -401,16 +712,37 @@ const CFGViewer: FC<CFGViewerProps> = ({
                             display: 'flex',
                             gap: 2,
                             py: 0.25,
-                            '&:hover': { bgcolor: 'action.hover' },
+                            px: 0.5,
+                            borderRadius: 0.5,
+                            animation: `${fadeIn} 0.15s ease-out`,
+                            animationDelay: `${Math.min(idx * 15, 150)}ms`,
+                            animationFillMode: 'backwards',
+                            transition: 'all 0.1s ease-out',
+                            '&:hover': {
+                              bgcolor: isDark ? alpha('#fff', 0.05) : alpha('#000', 0.04),
+                              transform: 'translateX(2px)',
+                            },
                           }}
                         >
                           <Typography
                             component="span"
-                            sx={{ color: 'text.secondary', minWidth: 80 }}
+                            sx={{
+                              color: 'text.secondary',
+                              minWidth: 80,
+                              fontSize: 'inherit',
+                              fontFamily: 'inherit',
+                            }}
                           >
                             {insn.addr}
                           </Typography>
-                          <Typography component="span" sx={{ color: 'primary.main' }}>
+                          <Typography
+                            component="span"
+                            sx={{
+                              color: 'primary.main',
+                              fontSize: 'inherit',
+                              fontFamily: 'inherit',
+                            }}
+                          >
                             {insn.opcode || ''}
                           </Typography>
                         </Box>
@@ -447,40 +779,96 @@ const CFGViewer: FC<CFGViewerProps> = ({
       <Paper
         variant="outlined"
         sx={{
-          width: 140,
+          width: 160,
           flexShrink: 0,
           p: 1,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 1.5,
+          animation: `${fadeIn} 0.3s ease-out`,
+          animationDelay: '0.2s',
+          animationFillMode: 'backwards',
         }}
       >
-        <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
-          CFG Stats
-        </Typography>
-        <Stack spacing={0.5}>
-          <Box>
-            <Typography variant="caption" color="text.secondary">Nodes</Typography>
-            <Typography variant="body2" fontWeight={600}>{nodes.length}</Typography>
-          </Box>
-          <Box>
-            <Typography variant="caption" color="text.secondary">Edges</Typography>
-            <Typography variant="body2" fontWeight={600}>{edges.length}</Typography>
-          </Box>
-          <Box>
-            <Typography variant="caption" color="text.secondary">Functions</Typography>
-            <Typography variant="body2" fontWeight={600}>{allFunctions.length}</Typography>
-          </Box>
-          {angrActive > 0 && (
-            <Box>
-              <Typography variant="caption" color="text.secondary">Active paths</Typography>
-              <Typography variant="body2" fontWeight={600}>{angrActive}</Typography>
+        {/* Confidence indicator */}
+        <ConfidenceIndicator confidence={confidence} />
+
+        {/* Stats */}
+        <Box>
+          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1, fontWeight: 600 }}>
+            CFG Stats
+          </Typography>
+          <Stack spacing={0.75}>
+            <Box
+              sx={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'baseline',
+                animation: `${fadeIn} 0.2s ease-out`,
+                animationDelay: '0.25s',
+                animationFillMode: 'backwards',
+              }}
+            >
+              <Typography variant="caption" color="text.secondary">Nodes</Typography>
+              <Typography variant="body2" fontWeight={600}>{nodes.length.toLocaleString()}</Typography>
             </Box>
-          )}
-          {angrFound > 0 && (
-            <Box>
-              <Typography variant="caption" color="text.secondary">Found</Typography>
-              <Typography variant="body2" fontWeight={600}>{angrFound}</Typography>
+            <Box
+              sx={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'baseline',
+                animation: `${fadeIn} 0.2s ease-out`,
+                animationDelay: '0.3s',
+                animationFillMode: 'backwards',
+              }}
+            >
+              <Typography variant="caption" color="text.secondary">Edges</Typography>
+              <Typography variant="body2" fontWeight={600}>{edges.length.toLocaleString()}</Typography>
             </Box>
-          )}
-        </Stack>
+            <Box
+              sx={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'baseline',
+                animation: `${fadeIn} 0.2s ease-out`,
+                animationDelay: '0.35s',
+                animationFillMode: 'backwards',
+              }}
+            >
+              <Typography variant="caption" color="text.secondary">Functions</Typography>
+              <Typography variant="body2" fontWeight={600}>{allFunctions.length.toLocaleString()}</Typography>
+            </Box>
+            {angrActive > 0 && (
+              <Box
+                sx={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'baseline',
+                  animation: `${fadeIn} 0.2s ease-out`,
+                  pt: 0.5,
+                  borderTop: 1,
+                  borderColor: 'divider',
+                }}
+              >
+                <Typography variant="caption" color="text.secondary">Active paths</Typography>
+                <Typography variant="body2" fontWeight={600} color="info.main">{angrActive}</Typography>
+              </Box>
+            )}
+            {angrFound > 0 && (
+              <Box
+                sx={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'baseline',
+                  animation: `${fadeIn} 0.2s ease-out`,
+                }}
+              >
+                <Typography variant="caption" color="text.secondary">Found</Typography>
+                <Typography variant="body2" fontWeight={600} color="success.main">{angrFound}</Typography>
+              </Box>
+            )}
+          </Stack>
+        </Box>
       </Paper>
     </Box>
   );

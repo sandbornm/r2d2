@@ -505,6 +505,135 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
 
         return Response(_event_stream(), mimetype="text/event-stream")
 
+    # ──────────────────────────────────────────────────────────────────────────
+    # Compilation endpoints
+    # ──────────────────────────────────────────────────────────────────────────
+
+    @app.get("/api/compilers")
+    def list_compilers() -> Any:
+        """List available cross-compilers."""
+        try:
+            from ..compilation import detect_compilers
+            compilers = detect_compilers()
+            result = {}
+            for arch, compiler_list in compilers.items():
+                result[arch] = [
+                    {
+                        "name": c.name,
+                        "path": str(c.path),
+                        "version": c.version,
+                        "is_clang": c.is_clang,
+                    }
+                    for c in compiler_list
+                ]
+            return jsonify({
+                "compilers": result,
+                "available_architectures": [a for a, c in compilers.items() if c],
+            })
+        except ImportError:
+            return jsonify({
+                "compilers": {},
+                "available_architectures": [],
+                "error": "Compilation module not available",
+            })
+
+    @app.post("/api/compile")
+    def compile_source() -> Any:
+        """Compile C source or assemble ASM source."""
+        body = request.get_json(silent=True) or {}
+        source_code = body.get("source", "").strip()
+        source_path = body.get("source_path", "").strip()
+        architecture = body.get("architecture", "arm64")
+        source_type = body.get("type", "c")  # "c" or "asm"
+        optimization = body.get("optimization", "-O0")
+        output_name = body.get("output_name", "")
+
+        if not source_code and not source_path:
+            return jsonify({"error": "Either 'source' or 'source_path' required"}), 400
+
+        try:
+            from ..compilation import compile_c_source, assemble_source
+
+            # Determine source
+            if source_path:
+                source = Path(source_path)
+                if not source.exists():
+                    return jsonify({"error": f"Source file not found: {source_path}"}), 404
+            else:
+                source = source_code
+
+            # Determine output path
+            output = None
+            if output_name:
+                output = uploads_dir / output_name
+
+            # Compile or assemble
+            if source_type == "asm":
+                result = assemble_source(source, architecture, output)
+            else:
+                result = compile_c_source(source, architecture, output, optimization)
+
+            response = {
+                "success": result.success,
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+                "command": result.command,
+                "return_code": result.return_code,
+                "architecture": result.architecture,
+                "compiler": result.compiler_used,
+            }
+
+            if result.success and result.output_path:
+                response["output_path"] = str(result.output_path)
+                response["output_name"] = result.output_path.name
+
+            return jsonify(response), 200 if result.success else 400
+
+        except ImportError:
+            return jsonify({"error": "Compilation module not available"}), 503
+
+    @app.post("/api/compile/modified-asm")
+    def compile_modified_asm() -> Any:
+        """Compile modified assembly back to binary.
+
+        This endpoint allows re-assembling modified disassembly output.
+        """
+        body = request.get_json(silent=True) or {}
+        asm_source = body.get("asm", "").strip()
+        original_binary = body.get("original_binary", "").strip()
+        architecture = body.get("architecture", "arm64")
+
+        if not asm_source:
+            return jsonify({"error": "Assembly source required"}), 400
+
+        try:
+            from ..compilation import assemble_source
+
+            # Create output in uploads directory
+            import hashlib
+            hash_suffix = hashlib.md5(asm_source.encode()).hexdigest()[:8]
+            output_name = f"modified_{hash_suffix}.o"
+            output = uploads_dir / output_name
+
+            result = assemble_source(asm_source, architecture, output)
+
+            response = {
+                "success": result.success,
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+                "command": result.command,
+                "return_code": result.return_code,
+                "architecture": result.architecture,
+            }
+
+            if result.success and result.output_path:
+                response["output_path"] = str(result.output_path)
+
+            return jsonify(response), 200 if result.success else 400
+
+        except ImportError:
+            return jsonify({"error": "Compilation module not available"}), 503
+
     return app
 
 
