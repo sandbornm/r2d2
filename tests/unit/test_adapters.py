@@ -125,9 +125,18 @@ class TestAngrAdapter:
         """Test is_available checks angr module availability."""
         from r2d2.adapters.angr import AngrAdapter
 
-        adapter = AngrAdapter()
-        result = adapter.is_available()
-        assert isinstance(result, bool)
+        # Mock at module import level to avoid broken angr dependency issues
+        with patch.dict("sys.modules", {"angr": MagicMock()}):
+            adapter = AngrAdapter()
+            # When angr import succeeds, is_available should return True
+            result = adapter.is_available()
+            assert result is True
+
+        # Test when angr is not installed
+        with patch("builtins.__import__", side_effect=ModuleNotFoundError("angr")):
+            adapter = AngrAdapter()
+            result = adapter.is_available()
+            assert result is False
 
     def test_quick_scan_raises_when_unavailable(self):
         """Test quick_scan raises AdapterUnavailable when angr not installed."""
@@ -135,7 +144,8 @@ class TestAngrAdapter:
 
         adapter = AngrAdapter()
 
-        with patch.object(adapter, "is_available", return_value=False):
+        # Patch the is_available method at class level
+        with patch.object(AngrAdapter, "is_available", return_value=False):
             with pytest.raises(AdapterUnavailable):
                 adapter.quick_scan(Path("/tmp/test.bin"))
 
@@ -145,7 +155,8 @@ class TestAngrAdapter:
 
         adapter = AngrAdapter()
 
-        with patch.object(adapter, "is_available", return_value=False):
+        # Patch the is_available method at class level
+        with patch.object(AngrAdapter, "is_available", return_value=False):
             with pytest.raises(AdapterUnavailable):
                 adapter.deep_scan(Path("/tmp/test.bin"))
 

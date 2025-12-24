@@ -128,7 +128,12 @@ def load_config(config_path: Path | None = None) -> AppConfig:
     # Honor environment overrides for secrets and tool paths without
     # requiring users to edit their config manually.
     env_install_dir = os.getenv("GHIDRA_INSTALL_DIR")
-    if not config.ghidra.install_dir and env_install_dir:
+    # Check if install_dir is None or an empty/current-dir path (from empty string in config)
+    install_dir_unset = (
+        config.ghidra.install_dir is None
+        or str(config.ghidra.install_dir) in ("", ".")
+    )
+    if install_dir_unset and env_install_dir:
         config.ghidra.install_dir = Path(env_install_dir).expanduser()
 
     env_api_key = os.getenv(config.llm.api_key_env)

@@ -85,7 +85,8 @@ class TestAnalysisOrchestrator:
         plan = orchestrator.create_plan(quick_only=True, skip_deep=False)
 
         assert isinstance(plan, AnalysisPlan)
-        assert plan.quick_only is True
+        assert plan.quick is True
+        assert plan.deep is False  # quick_only disables deep
 
     def test_create_plan_full(self, minimal_config, mock_env):
         """Test creating a full analysis plan."""
@@ -98,7 +99,8 @@ class TestAnalysisOrchestrator:
         plan = orchestrator.create_plan(quick_only=False, skip_deep=False)
 
         assert isinstance(plan, AnalysisPlan)
-        assert plan.quick_only is False
+        assert plan.quick is True
+        assert plan.deep is True
 
     def test_ensure_elf_valid(self, minimal_config, mock_env, minimal_elf):
         """Test ELF validation passes for valid ELF."""
@@ -127,8 +129,8 @@ class TestAnalysisOrchestrator:
         with pytest.raises(ValueError):
             orchestrator._ensure_elf(non_elf)
 
-    def test_ensure_elf_skipped_when_disabled(self, minimal_config, mock_env, tmp_path):
-        """Test ELF validation is skipped when require_elf is False."""
+    def test_analyze_skips_elf_check_when_disabled(self, minimal_config, mock_env, tmp_path):
+        """Test analyze() skips ELF validation when require_elf is False."""
         minimal_config.analysis.require_elf = False
         orchestrator = AnalysisOrchestrator(
             minimal_config,
@@ -140,7 +142,10 @@ class TestAnalysisOrchestrator:
         non_elf.write_bytes(b'\x00\x00\x00\x00')
 
         # Should not raise when require_elf is False
-        orchestrator._ensure_elf(non_elf)
+        # analyze() checks require_elf config before calling _ensure_elf
+        plan = orchestrator.create_plan(quick_only=True)
+        result = orchestrator.analyze(non_elf, plan)
+        assert result is not None
 
 
 class TestAnalysisWithMockedAdapters:
@@ -163,9 +168,9 @@ class TestAnalysisWithMockedAdapters:
             "mime": "application/x-executable",
         }
 
-        with patch.object(orchestrator.registry, '_adapters', [mock_libmagic]):
-            with patch.object(orchestrator.registry, 'get', return_value=mock_libmagic):
-                with patch.object(orchestrator.registry, 'available', return_value=[mock_libmagic]):
+        with patch.object(orchestrator._registry, '_adapters', [mock_libmagic]):
+            with patch.object(orchestrator._registry, 'get', return_value=mock_libmagic):
+                with patch.object(orchestrator._registry, 'available', return_value=[mock_libmagic]):
                     # The orchestrator should handle analysis
                     plan = orchestrator.create_plan(quick_only=True)
                     # Full analyze would require more mocking, but we can verify plan creation
@@ -185,7 +190,7 @@ class TestAnalysisWithMockedAdapters:
             events_received.append((event, payload))
 
         # Mock adapters to avoid actual tool calls
-        with patch.object(orchestrator.registry, 'available', return_value=[]):
+        with patch.object(orchestrator._registry, 'available', return_value=[]):
             with patch.object(orchestrator, '_run_quick', return_value={}):
                 with patch.object(orchestrator, '_run_deep', return_value={}):
                     with patch.object(orchestrator, '_ensure_elf'):
@@ -207,26 +212,26 @@ class TestAnalysisPlan:
     def test_plan_creation(self):
         """Test AnalysisPlan can be created."""
         plan = AnalysisPlan(
-            quick_only=False,
-            skip_deep=False,
-            enable_angr=True,
-            enable_ghidra=False,
-            adapters=["libmagic", "radare2"],
+            quick=True,
+            deep=True,
+            run_angr=True,
+            persist_trajectory=True,
         )
 
-        assert plan.quick_only is False
-        assert plan.enable_angr is True
-        assert "radare2" in plan.adapters
+        assert plan.quick is True
+        assert plan.deep is True
+        assert plan.run_angr is True
+        assert plan.persist_trajectory is True
 
     def test_plan_quick_only(self):
-        """Test quick_only plan configuration."""
+        """Test quick-only plan configuration (deep disabled)."""
         plan = AnalysisPlan(
-            quick_only=True,
-            skip_deep=True,
-            enable_angr=False,
-            enable_ghidra=False,
-            adapters=["libmagic"],
+            quick=True,
+            deep=False,
+            run_angr=False,
+            persist_trajectory=True,
         )
 
-        assert plan.quick_only is True
-        assert plan.skip_deep is True
+        assert plan.quick is True
+        assert plan.deep is False
+        assert plan.run_angr is False
