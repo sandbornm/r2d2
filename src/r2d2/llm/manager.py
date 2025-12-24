@@ -22,8 +22,8 @@ class LLMBridge:
 
     # Available models for selection (provider, model_id, display_name)
     AVAILABLE_MODELS = [
-        ("anthropic", "claude-sonnet-4-5", "Claude Sonnet 4"),
-        ("anthropic", "claude-opus-4-5", "Claude Opus 4"),
+        ("anthropic", "claude-sonnet-4-5", "Claude Sonnet 4.5"),
+        ("anthropic", "claude-opus-4-5", "Claude Opus 4.5"),
         ("openai", "gpt-5.2-2025-12-11", "GPT-5.2"),
     ]
 
