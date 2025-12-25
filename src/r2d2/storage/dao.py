@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Iterable
 
 from .db import Database
@@ -42,7 +43,7 @@ class TrajectoryDAO:
             )
 
     def finish_trajectory(self, trajectory: AnalysisTrajectory) -> None:
-        trajectory.completed_at = datetime.utcnow()
+        trajectory.completed_at = datetime.now(timezone.utc)
         with self._db.connect() as conn:
             conn.execute(
                 "UPDATE trajectories SET completed_at = ? WHERE trajectory_id = ?",

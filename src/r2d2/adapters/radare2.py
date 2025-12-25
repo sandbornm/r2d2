@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import shutil
+import types
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -20,7 +21,7 @@ class Radare2Adapter:
     profile: str = "analysis.quick"
 
     @staticmethod
-    def _r2pipe() -> "module":
+    def _r2pipe() -> types.ModuleType:
         try:
             import r2pipe
         except ModuleNotFoundError as exc:  # pragma: no cover - import guard

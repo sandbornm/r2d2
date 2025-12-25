@@ -1,0 +1,40 @@
+# syntax=docker/dockerfile:1.6
+################################################################################
+# Slim ARM Cross-Compiler Container
+# Provides ARM32 and ARM64 toolchains for compiling C to ELF binaries
+################################################################################
+FROM debian:bookworm-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install ARM cross-compilation toolchains
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    # ARM32 (armhf) cross-compiler
+    gcc-arm-linux-gnueabihf \
+    libc6-dev-armhf-cross \
+    # ARM64 (aarch64) cross-compiler
+    gcc-aarch64-linux-gnu \
+    libc6-dev-arm64-cross \
+    # Common utilities
+    binutils \
+    make \
+    file \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+# Verify toolchains
+RUN arm-linux-gnueabihf-gcc --version && \
+    aarch64-linux-gnu-gcc --version
+
+# Create working directories
+WORKDIR /compile
+RUN mkdir -p /compile/src /compile/out
+
+# Non-root user for security
+RUN useradd -m -s /bin/bash compiler && \
+    chown -R compiler:compiler /compile
+USER compiler
+
+# Default entrypoint - can be used standalone or as service
+ENTRYPOINT ["/bin/bash"]
+

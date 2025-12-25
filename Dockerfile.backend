@@ -12,7 +12,7 @@ COPY web/frontend/ .
 RUN npm run build
 
 ################################################################################
-# Backend stage
+# Backend stage with ARM cross-compilers
 ################################################################################
 FROM python:3.11-slim AS runtime
 
@@ -29,7 +29,13 @@ RUN apt-get update && \
         libmagic1 \
         python3-dev \
         radare2 \
-        curl && \
+        curl \
+        # ARM cross-compilation toolchains
+        gcc-arm-linux-gnueabihf \
+        libc6-dev-armhf-cross \
+        gcc-aarch64-linux-gnu \
+        libc6-dev-arm64-cross \
+        binutils && \
     rm -rf /var/lib/apt/lists/*
 
 RUN pip install --no-cache-dir uv
@@ -45,6 +51,9 @@ COPY scripts ./scripts
 COPY ghidra ./ghidra
 COPY web ./web
 COPY --from=frontend-builder /frontend/dist ./web/frontend/dist
+
+# Create compile output directory
+RUN mkdir -p /app/artifacts/compiled && chmod 777 /app/artifacts/compiled
 
 EXPOSE 5050
 

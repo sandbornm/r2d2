@@ -14,9 +14,13 @@ services:
       R2D2_WEB_PORT: "${R2D2_WEB_PORT:-5050}"
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      COMPILER_SERVICE_URL: "http://compiler:8080"
     volumes:
       - ./artifacts:/app/artifacts
       - ./data:/app/data
+      - compile-volume:/compile
+    depends_on:
+      - compiler
 
   frontend:
     build:
@@ -32,3 +36,18 @@ services:
       VITE_R2D2_API_BASE: "http://backend:5050"
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+
+  compiler:
+    build:
+      context: .
+      dockerfile: Dockerfile.compiler
+    image: r2d2-compiler:latest
+    restart: unless-stopped
+    volumes:
+      - compile-volume:/compile
+    # Keep container running for exec-based compilation
+    command: ["tail", "-f", "/dev/null"]
+    user: compiler
+
+volumes:
+  compile-volume:

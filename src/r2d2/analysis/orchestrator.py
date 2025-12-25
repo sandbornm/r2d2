@@ -5,14 +5,14 @@ from __future__ import annotations
 import logging
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
 from ..config import AppConfig
 from ..environment import EnvironmentReport
 from ..storage.dao import TrajectoryDAO
 from ..storage.models import AnalysisTrajectory, TrajectoryAction
 from .resource_tree import BinaryResource, FunctionResource, Resource
-from ..adapters.base import AdapterRegistry, AdapterUnavailable
+from ..adapters.base import AdapterRegistry, AdapterUnavailable, AnalyzerAdapter
 from ..adapters import (
     AngrAdapter,
     CapstoneAdapter,
@@ -57,16 +57,15 @@ class AnalysisOrchestrator:
         self._env = env
         self._trajectory_dao = trajectory_dao
 
-        adapters = [
-            LibmagicAdapter(),
-            Radare2Adapter(profile=config.analysis.default_radare_profile),
-            CapstoneAdapter(),
-        ]
+        adapters: list[AnalyzerAdapter] = []
+        adapters.append(cast(AnalyzerAdapter, LibmagicAdapter()))
+        adapters.append(cast(AnalyzerAdapter, Radare2Adapter(profile=config.analysis.default_radare_profile)))
+        adapters.append(cast(AnalyzerAdapter, CapstoneAdapter()))
 
         if config.analysis.enable_ghidra and env.ghidra:
-            adapters.append(GhidraAdapter(env.ghidra, config.ghidra.project_dir))
+            adapters.append(cast(AnalyzerAdapter, GhidraAdapter(env.ghidra, config.ghidra.project_dir)))
         if config.analysis.enable_angr:
-            adapters.append(AngrAdapter())
+            adapters.append(cast(AnalyzerAdapter, AngrAdapter()))
 
         self._registry = AdapterRegistry(adapters)
 

@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Sequence
 import uuid
+
+
+def _utcnow() -> datetime:
+    """Return current UTC time as timezone-aware datetime."""
+    return datetime.now(timezone.utc)
 
 
 @dataclass(slots=True)
@@ -18,7 +23,7 @@ class CodeSnippet:
     bytes_hex: str | None = None
     instructions: list[dict[str, str]] = field(default_factory=list)
     source: str = "unknown"  # "angr" | "radare2" | "capstone"
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=_utcnow)
     
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -37,7 +42,7 @@ class CodeSnippet:
         if isinstance(created, str):
             created = datetime.fromisoformat(created)
         elif not isinstance(created, datetime):
-            created = datetime.utcnow()
+            created = _utcnow()
             
         return cls(
             address=data.get("address", "0x0"),
@@ -57,12 +62,12 @@ class SnippetStore:
     session_id: str
     binary_path: str
     snippets: list[CodeSnippet] = field(default_factory=list)
-    created_at: datetime = field(default_factory=datetime.utcnow)
-    updated_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=_utcnow)
+    updated_at: datetime = field(default_factory=_utcnow)
     
     def add_snippet(self, snippet: CodeSnippet) -> None:
         self.snippets.append(snippet)
-        self.updated_at = datetime.utcnow()
+        self.updated_at = _utcnow()
     
     def add_from_angr(self, block_data: dict[str, Any]) -> None:
         """Add snippets from angr CFG block data."""
@@ -122,12 +127,12 @@ class SnippetStore:
         if isinstance(created, str):
             created = datetime.fromisoformat(created)
         elif not isinstance(created, datetime):
-            created = datetime.utcnow()
+            created = _utcnow()
             
         if isinstance(updated, str):
             updated = datetime.fromisoformat(updated)
         elif not isinstance(updated, datetime):
-            updated = datetime.utcnow()
+            updated = _utcnow()
         
         store = cls(
             session_id=data.get("session_id", ""),
@@ -146,14 +151,14 @@ class SnippetStore:
 class TrajectoryAction:
     action: str
     payload: Any
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=_utcnow)
 
 
 @dataclass(slots=True)
 class AnalysisTrajectory:
     binary_path: str
     trajectory_id: str = field(default_factory=lambda: uuid.uuid4().hex)
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=_utcnow)
     completed_at: datetime | None = None
     actions: list[TrajectoryAction] = field(default_factory=list)
 
@@ -167,8 +172,8 @@ class ChatSession:
     session_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     trajectory_id: str | None = None
     title: str | None = None
-    created_at: datetime = field(default_factory=datetime.utcnow)
-    updated_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=_utcnow)
+    updated_at: datetime = field(default_factory=_utcnow)
     message_count: int = 0
 
 
@@ -182,4 +187,4 @@ class ChatMessage:
     content: str
     attachments: Sequence[AttachmentType] = field(default_factory=list)
     message_id: str = field(default_factory=lambda: uuid.uuid4().hex)
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=_utcnow)

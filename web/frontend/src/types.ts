@@ -107,3 +107,32 @@ export interface AssemblyAnnotation {
   note: string;
   createdAt: string;
 }
+
+// Compiler-related types
+export interface CompileResult {
+  success: boolean;
+  stdout: string;
+  stderr: string;
+  command: string;
+  return_code: number;
+  architecture: string;
+  compiler: string;
+  output_path?: string;
+  output_name?: string;
+  assembly?: string;
+  asm_path?: string;
+  asm_name?: string;
+}
+
+export interface CompilerInfo {
+  name: string;
+  path: string;
+  version: string;
+  is_clang: boolean;
+}
+
+export interface CompilersResponse {
+  compilers: Record<string, CompilerInfo[]>;
+  available_architectures: string[];
+  error?: string;
+}

@@ -12,10 +12,10 @@ class AnalyzerAdapter(Protocol):
     def is_available(self) -> bool:
         ...
 
-    def quick_scan(self, binary: Path) -> dict[str, Any]:
+    def quick_scan(self, binary: Path, **kwargs: Any) -> dict[str, Any]:
         ...
 
-    def deep_scan(self, binary: Path, *, resource_tree: Any | None = None) -> dict[str, Any]:
+    def deep_scan(self, binary: Path, *, resource_tree: Any | None = None, **kwargs: Any) -> dict[str, Any]:
         ...
 
 

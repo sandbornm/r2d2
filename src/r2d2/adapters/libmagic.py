@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import types
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -22,7 +23,7 @@ class LibmagicAdapter:
             return False
         return True
 
-    def _magic(self) -> "module":
+    def _magic(self) -> types.ModuleType:
         try:
             import magic
         except (ModuleNotFoundError, ImportError) as exc:  # pragma: no cover - import guard

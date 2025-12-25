@@ -300,8 +300,8 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
         if not address:
             return jsonify({"error": "address is required"}), 400
         
-        from datetime import datetime
-        now = datetime.utcnow().isoformat()
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
         
         with state.db.connect() as conn:
             if note:
@@ -485,7 +485,7 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
         return jsonify({"job_id": job.id, "session_id": session.session_id})
 
     @app.get("/api/jobs/<job_id>/stream")
-    def stream(job_id: str) -> Response:
+    def stream(job_id: str) -> Response | tuple[Response, int]:
         job = jobs.get(job_id)
         if not job:
             return jsonify({"error": "job not found"}), 404
@@ -513,8 +513,12 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
     def list_compilers() -> Any:
         """List available cross-compilers."""
         try:
-            from ..compilation import detect_compilers
+            from ..compilation.compiler import detect_compilers, _is_docker_available, _docker_image_exists, DOCKER_COMPILER_IMAGE
             compilers = detect_compilers()
+            
+            docker_available = _is_docker_available()
+            docker_image_exists = docker_available and _docker_image_exists(DOCKER_COMPILER_IMAGE)
+            
             result = {}
             for arch, compiler_list in compilers.items():
                 result[arch] = [
@@ -529,11 +533,43 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
             return jsonify({
                 "compilers": result,
                 "available_architectures": [a for a, c in compilers.items() if c],
+                "docker_available": docker_available,
+                "docker_image_exists": docker_image_exists,
             })
         except ImportError:
             return jsonify({
                 "compilers": {},
                 "available_architectures": [],
+                "docker_available": False,
+                "docker_image_exists": False,
+                "error": "Compilation module not available",
+            })
+
+    @app.post("/api/compilers/preview")
+    def preview_compile_command() -> Any:
+        """Preview the compilation command that would run."""
+        try:
+            from ..compilation.compiler import get_compile_command_preview
+            body = request.get_json(silent=True) or {}
+            
+            architecture = body.get("architecture", "arm64")
+            optimization = body.get("optimization", "-O0")
+            freestanding = body.get("freestanding", False)
+            output_name = body.get("output_name", "output")
+            
+            preview = get_compile_command_preview(
+                architecture=architecture,
+                optimization=optimization,
+                freestanding=freestanding,
+                output_name=output_name or "output",
+            )
+            return jsonify(preview)
+        except ImportError:
+            return jsonify({
+                "command": "",
+                "uses_docker": False,
+                "compiler": "none",
+                "available": False,
                 "error": "Compilation module not available",
             })
 
@@ -547,12 +583,14 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
         source_type = body.get("type", "c")  # "c" or "asm"
         optimization = body.get("optimization", "-O0")
         output_name = body.get("output_name", "")
+        freestanding = body.get("freestanding", False)  # No libc mode
+        emit_asm = body.get("emit_asm", True)  # Also generate .s file
 
         if not source_code and not source_path:
             return jsonify({"error": "Either 'source' or 'source_path' required"}), 400
 
         try:
-            from ..compilation import compile_c_source, assemble_source
+            from ..compilation import compile_c_source, assemble_source, compile_to_asm
 
             # Determine source
             if source_path:
@@ -565,13 +603,32 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
             # Determine output path
             output = None
             if output_name:
-                output = uploads_dir / output_name
+                # Strip extension if provided, we'll add the right one
+                base_name = output_name.rsplit('.', 1)[0] if '.' in output_name else output_name
+                output = uploads_dir / base_name
+
+            # Build extra flags for freestanding mode
+            extra_flags = []
+            if freestanding:
+                extra_flags = ["-ffreestanding", "-nostdlib", "-static"]
+
+            # First, generate assembly if requested
+            asm_output = None
+            asm_path = None
+            if emit_asm and source_type == "c":
+                asm_result = compile_to_asm(source, architecture, optimization, extra_flags)
+                if asm_result.success and asm_result.assembly:
+                    asm_output = asm_result.assembly
+                    # Save .s file
+                    asm_filename = (output.stem if output else "output") + ".s"
+                    asm_path = uploads_dir / asm_filename
+                    asm_path.write_text(asm_output)
 
             # Compile or assemble
             if source_type == "asm":
                 result = assemble_source(source, architecture, output)
             else:
-                result = compile_c_source(source, architecture, output, optimization)
+                result = compile_c_source(source, architecture, output, optimization, extra_flags)
 
             response = {
                 "success": result.success,
@@ -586,6 +643,13 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
             if result.success and result.output_path:
                 response["output_path"] = str(result.output_path)
                 response["output_name"] = result.output_path.name
+
+            # Include assembly output
+            if asm_output:
+                response["assembly"] = asm_output
+                if asm_path:
+                    response["asm_path"] = str(asm_path)
+                    response["asm_name"] = asm_path.name
 
             return jsonify(response), 200 if result.success else 400
 
@@ -633,6 +697,28 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
 
         except ImportError:
             return jsonify({"error": "Compilation module not available"}), 503
+
+    @app.get("/api/compile/download/<path:filename>")
+    def download_compiled(filename: str) -> Any:
+        """Download a compiled binary file."""
+        from werkzeug.utils import secure_filename
+        
+        # Security: ensure filename is safe
+        safe_name = secure_filename(filename)
+        if not safe_name:
+            return jsonify({"error": "Invalid filename"}), 400
+        
+        file_path = uploads_dir / safe_name
+        if not file_path.exists():
+            return jsonify({"error": "File not found"}), 404
+        
+        # Serve the file for download
+        return send_from_directory(
+            uploads_dir,
+            safe_name,
+            as_attachment=True,
+            download_name=safe_name,
+        )
 
     return app
 

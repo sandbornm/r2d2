@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import types
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -20,7 +21,7 @@ class AngrAdapter:
             return False
         return True
 
-    def _angr(self) -> "module":
+    def _angr(self) -> types.ModuleType:
         try:
             import angr
         except ModuleNotFoundError as exc:  # pragma: no cover - import guard

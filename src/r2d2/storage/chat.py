@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Iterable
 
 from .db import Database
@@ -44,7 +44,7 @@ class ChatDAO:
                     session.title = title
                     needs_update = True
                 if needs_update:
-                    session.updated_at = datetime.utcnow()
+                    session.updated_at = datetime.now(timezone.utc)
                     conn.execute(
                         """
                         UPDATE chat_sessions

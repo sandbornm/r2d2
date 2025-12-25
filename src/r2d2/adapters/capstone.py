@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import types
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -23,7 +24,7 @@ class CapstoneAdapter:
             return False
         return True
 
-    def _capstone(self) -> "module":
+    def _capstone(self) -> types.ModuleType:
         try:
             import capstone
         except ModuleNotFoundError as exc:  # pragma: no cover - import guard
@@ -59,7 +60,7 @@ class CapstoneAdapter:
         return {"status": "pending", "blocks": len(blocks)}
 
 
-def _resolve_mode(capstone: "module", arch: str) -> tuple[int, int]:
+def _resolve_mode(capstone: types.ModuleType, arch: str) -> tuple[int, int]:
     arch_map = {
         "x86": (capstone.CS_ARCH_X86, capstone.CS_MODE_64),
         "x86_64": (capstone.CS_ARCH_X86, capstone.CS_MODE_64),

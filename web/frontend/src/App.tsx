@@ -32,6 +32,7 @@ import {
   useState,
 } from 'react';
 import ChatPanel from './components/ChatPanel';
+import CompilerPanel from './components/CompilerPanel';
 import ProgressLog from './components/ProgressLog';
 import ResultViewer from './components/ResultViewer';
 import SessionList from './components/SessionList';
@@ -580,6 +581,14 @@ In 2-3 sentences: what is it and what does it do? I'm ${funcCount > 0 ? 'seeing 
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
+  const handleBinaryCompiled = useCallback((path: string, filename: string) => {
+    setBinaryPath(path);
+    setFileName(filename);
+    setStatus('idle');
+    setStatusMessage(`Compiled: ${filename}`);
+    lastSyncedSessionIdRef.current = null;
+  }, []);
+
   return (
     <Box
       sx={{
@@ -709,33 +718,42 @@ In 2-3 sentences: what is it and what does it do? I'm ${funcCount > 0 ? 'seeing 
             accept="*/*"
           />
 
-          {/* No file selected - show full drop zone */}
+          {/* No file selected - show compiler panel + drop zone */}
           {!fileName && !result ? (
-            <Box
-              onClick={() => fileInputRef.current?.click()}
-              sx={{
-                flex: 1,
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center',
-                justifyContent: 'center',
-                cursor: 'pointer',
-                bgcolor: isDragging ? 'action.hover' : 'transparent',
-                border: isDragging ? 2 : 0,
-                borderStyle: 'dashed',
-                borderColor: 'primary.main',
-                m: isDragging ? 2 : 0,
-                borderRadius: isDragging ? 2 : 0,
-                transition: 'all 0.2s',
-              }}
-            >
-              <CloudUploadIcon sx={{ fontSize: 56, color: 'text.disabled', mb: 2 }} />
-              <Typography variant="body1" color="text.secondary" fontWeight={500}>
-                {isDragging ? 'Drop binary here' : 'Drop a binary file to analyze'}
-              </Typography>
-              <Typography variant="caption" color="text.disabled" sx={{ mt: 0.5 }}>
-                or click anywhere to browse
-              </Typography>
+            <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'auto' }}>
+              {/* Compiler Panel */}
+              <Box sx={{ p: 2, pb: 0 }}>
+                <CompilerPanel onBinaryCompiled={handleBinaryCompiled} />
+              </Box>
+
+              {/* Drop zone */}
+              <Box
+                onClick={() => fileInputRef.current?.click()}
+                sx={{
+                  flex: 1,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  cursor: 'pointer',
+                  bgcolor: isDragging ? 'action.hover' : 'transparent',
+                  border: isDragging ? 2 : 0,
+                  borderStyle: 'dashed',
+                  borderColor: 'primary.main',
+                  m: isDragging ? 2 : 0,
+                  borderRadius: isDragging ? 2 : 0,
+                  transition: 'all 0.2s',
+                  minHeight: 200,
+                }}
+              >
+                <CloudUploadIcon sx={{ fontSize: 56, color: 'text.disabled', mb: 2 }} />
+                <Typography variant="body1" color="text.secondary" fontWeight={500}>
+                  {isDragging ? 'Drop binary here' : 'Drop a binary file to analyze'}
+                </Typography>
+                <Typography variant="caption" color="text.disabled" sx={{ mt: 0.5 }}>
+                  or click anywhere to browse
+                </Typography>
+              </Box>
             </Box>
           ) : (
             <>
