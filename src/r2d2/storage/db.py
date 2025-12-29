@@ -95,6 +95,28 @@ class Database:
                 )
                 """
             )
+            
+            # User activity events for context tracking
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS activity_events (
+                    event_id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    event_data TEXT,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (session_id) REFERENCES chat_sessions (session_id) ON DELETE CASCADE
+                )
+                """
+            )
+            
+            # Index for efficient activity lookups
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_activity_session_time 
+                ON activity_events (session_id, created_at DESC)
+                """
+            )
 
     def iter_actions(self, trajectory_id: str) -> Iterator[sqlite3.Row]:
         with self.connect() as conn:

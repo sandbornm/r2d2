@@ -136,3 +136,41 @@ export interface CompilersResponse {
   available_architectures: string[];
   error?: string;
 }
+
+// Activity tracking types for context engineering
+export type ActivityEventType =
+  | 'tab_switch'
+  | 'function_view'
+  | 'address_hover'
+  | 'code_select'
+  | 'annotation_add'
+  | 'search_query'
+  | 'cfg_navigate'
+  | 'disassembly_scroll'
+  | 'ask_claude';
+
+export interface ActivityEvent {
+  event_id?: string;
+  event_type: ActivityEventType;
+  event_data: Record<string, unknown>;
+  created_at: string;
+  duration_ms?: number;  // Time spent on this activity
+}
+
+export interface ActivityContext {
+  recent_events: ActivityEvent[];
+  current_tab: string;
+  last_viewed_function?: string;
+  last_viewed_address?: string;
+  session_duration_ms: number;
+  event_count: number;
+}
+
+// Code citation for linking LLM responses to disassembly
+export interface CodeCitation {
+  address: string;
+  function_name?: string;
+  instruction?: string;
+  bytes?: string;
+  context_lines?: string[];  // Surrounding disassembly lines
+}

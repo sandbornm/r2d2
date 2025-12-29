@@ -83,11 +83,36 @@ Adapters raise `AdapterUnavailable` when prerequisites are missing to keep the o
   - Node/edge/function counts
 - **Navigation**: OFRAK-style function list → block navigation → inline disassembly
 
+## ARM Compiler Agent
+- **Backend Module**: `r2d2.compilation.compiler`
+- **Frontend Module**: `web/frontend/src/components/CompilerPanel.tsx`
+- **Capabilities**:
+  - Cross-compile C to ARM32/ARM64 via Docker container
+  - Auto-detect freestanding (`_start`) vs libc-linked (`main`) code
+  - Generate both ELF binary and assembly source
+  - Godbolt-style assembly viewer with syntax highlighting
+- **Docker Image**: `r2d2-compiler:latest` (built from `Dockerfile.compiler`)
+- **Compiler Flags**:
+  - Freestanding: `-ffreestanding -nostartfiles -nodefaultlibs -static`
+  - Libc (musl): `-static -specs=/musl/<arch>.specs`
+- **Example Templates**: Hello World, Fibonacci, Loops, Memory operations
+- **Download Artifacts**: Binary and `.s` assembly files downloadable from UI
+
 ## ARM Instruction Documentation
 - **Reference**: [ARM Developer DUI0489](https://developer.arm.com/documentation/dui0489/h/arm-and-thumb-instructions/instruction-summary)
 - **Implementation**: `DisassemblyViewer` provides hover tooltips for ARM32/64 and x86 instructions
 - **Coverage**: 100+ instructions with descriptions (MOV, LDR, BL, PUSH, etc.)
 - **Fallback**: Search link to ARM Developer site for unknown instructions
+
+## Session Manager
+- **Frontend Module**: `web/frontend/src/components/SessionList.tsx` + `App.tsx`
+- **Backend**: `r2d2.storage.chat.ChatDAO`
+- **Features**:
+  - Create new sessions via "+" button in sidebar
+  - Switch between active sessions (each linked to a binary)
+  - Delete sessions when no longer needed
+  - Auto-sync annotations and chat history across sessions
+- **Persistence**: All sessions stored in SQLite with full message history
 
 ## Future Agents (placeholders)
 - Pattern detector pipeline (`r2d2.analysis.pipelines`) for signature-based hints and heuristics.

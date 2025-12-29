@@ -34,6 +34,10 @@ interface ChatPanelProps {
   onSend: (content: string, options: { callLLM: boolean }) => Promise<void>;
   sending?: boolean;
   error?: string | null;
+  // Disassembly context for address hover citations
+  disassembly?: string;
+  // Callback when user clicks to navigate to an address
+  onNavigateToAddress?: (address: string) => void;
 }
 
 const CopyButton: FC<{ text: string }> = ({ text }) => {
@@ -58,7 +62,13 @@ const CopyButton: FC<{ text: string }> = ({ text }) => {
   );
 };
 
-const MessageBubble: FC<{ message: ChatMessageItem }> = ({ message }) => {
+interface MessageBubbleProps {
+  message: ChatMessageItem;
+  disassembly?: string;
+  onNavigateToAddress?: (address: string) => void;
+}
+
+const MessageBubble: FC<MessageBubbleProps> = ({ message, disassembly, onNavigateToAddress }) => {
   const theme = useTheme();
   const isUser = message.role === 'user';
   const isSystem = message.role === 'system';
@@ -178,7 +188,11 @@ const MessageBubble: FC<{ message: ChatMessageItem }> = ({ message }) => {
             )}
           </Stack>
           {isAssistant ? (
-            <MarkdownRenderer content={message.content} />
+            <MarkdownRenderer 
+              content={message.content}
+              disassembly={disassembly}
+              onNavigateToAddress={onNavigateToAddress}
+            />
           ) : (
             <Typography
               variant="body2"
@@ -231,6 +245,8 @@ export const ChatPanel: FC<ChatPanelProps> = ({
   onSend,
   sending = false,
   error,
+  disassembly,
+  onNavigateToAddress,
 }) => {
   const theme = useTheme();
   const [content, setContent] = useState('');
@@ -344,7 +360,12 @@ export const ChatPanel: FC<ChatPanelProps> = ({
             </Box>
           )}
           {visibleMessages.map((msg) => (
-            <MessageBubble key={msg.message_id} message={msg} />
+            <MessageBubble 
+              key={msg.message_id} 
+              message={msg}
+              disassembly={disassembly}
+              onNavigateToAddress={onNavigateToAddress}
+            />
           ))}
           <div ref={messagesEndRef} />
         </Stack>

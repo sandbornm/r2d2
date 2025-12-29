@@ -1,11 +1,16 @@
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import { alpha, Box, IconButton, Tooltip, Typography, useTheme } from '@mui/material';
-import { FC, useState } from 'react';
+import { FC, ReactNode, useMemo, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import CitedAddress from './CitedAddress';
 
 interface MarkdownRendererProps {
   content: string;
+  // Disassembly context for address hover citations
+  disassembly?: string;
+  // Callback when user clicks to navigate to an address
+  onNavigateToAddress?: (address: string) => void;
 }
 
 const CodeBlock: FC<{ children: string; className?: string }> = ({ children, className }) => {
@@ -111,9 +116,76 @@ const InlineCode: FC<{ children: React.ReactNode }> = ({ children }) => {
   );
 };
 
-const MarkdownRenderer: FC<MarkdownRendererProps> = ({ content }) => {
+// Regex to match hex addresses (0x followed by hex digits)
+const ADDRESS_REGEX = /\b(0x[0-9a-fA-F]{4,16})\b/g;
+
+// Parse text and wrap addresses with CitedAddress components
+interface TextWithCitationsProps {
+  text: string;
+  disassembly?: string;
+  onNavigate?: (address: string) => void;
+}
+
+const TextWithCitations: FC<TextWithCitationsProps> = ({ text, disassembly, onNavigate }) => {
+  const parts = useMemo(() => {
+    const result: ReactNode[] = [];
+    let lastIndex = 0;
+    let match: RegExpExecArray | null;
+    let key = 0;
+    
+    // Reset regex state
+    ADDRESS_REGEX.lastIndex = 0;
+    
+    while ((match = ADDRESS_REGEX.exec(text)) !== null) {
+      // Add text before the match
+      if (match.index > lastIndex) {
+        result.push(text.slice(lastIndex, match.index));
+      }
+      
+      // Add the cited address component
+      result.push(
+        <CitedAddress
+          key={key++}
+          address={match[1]}
+          disassembly={disassembly}
+          onNavigate={onNavigate}
+        />
+      );
+      
+      lastIndex = match.index + match[0].length;
+    }
+    
+    // Add remaining text
+    if (lastIndex < text.length) {
+      result.push(text.slice(lastIndex));
+    }
+    
+    return result;
+  }, [text, disassembly, onNavigate]);
+  
+  return <>{parts}</>;
+};
+
+const MarkdownRenderer: FC<MarkdownRendererProps> = ({ 
+  content, 
+  disassembly,
+  onNavigateToAddress,
+}) => {
   const theme = useTheme();
-  const isDark = theme.palette.mode === 'dark';
+  
+  // Custom text renderer that wraps addresses with CitedAddress
+  const renderTextWithCitations = (text: string): ReactNode => {
+    if (!disassembly || !ADDRESS_REGEX.test(text)) {
+      return text;
+    }
+    return (
+      <TextWithCitations
+        text={text}
+        disassembly={disassembly}
+        onNavigate={onNavigateToAddress}
+      />
+    );
+  };
   
   return (
     <Box
@@ -192,6 +264,23 @@ const MarkdownRenderer: FC<MarkdownRendererProps> = ({ content }) => {
             const isInline = !className && typeof children === 'string' && !children.includes('\n');
             
             if (isInline) {
+              // Check if the inline code is an address
+              const text = String(children);
+              if (disassembly && ADDRESS_REGEX.test(text)) {
+                // Reset regex state after test
+                ADDRESS_REGEX.lastIndex = 0;
+                const match = text.match(ADDRESS_REGEX);
+                if (match && match[0] === text) {
+                  // The entire inline code is an address
+                  return (
+                    <CitedAddress
+                      address={text}
+                      disassembly={disassembly}
+                      onNavigate={onNavigateToAddress}
+                    />
+                  );
+                }
+              }
               return <InlineCode>{children}</InlineCode>;
             }
             
@@ -204,6 +293,40 @@ const MarkdownRenderer: FC<MarkdownRendererProps> = ({ content }) => {
           pre({ children }) {
             // Just pass through - code block handles styling
             return <>{children}</>;
+          },
+          // Custom text renderer to catch addresses in paragraph text
+          p({ children }) {
+            // Process children to find text nodes with addresses
+            const processChild = (child: ReactNode): ReactNode => {
+              if (typeof child === 'string') {
+                return renderTextWithCitations(child);
+              }
+              return child;
+            };
+            
+            const processedChildren = Array.isArray(children)
+              ? children.map((child, i) => (
+                  <span key={i}>{processChild(child)}</span>
+                ))
+              : processChild(children);
+            
+            return <p>{processedChildren}</p>;
+          },
+          li({ children }) {
+            const processChild = (child: ReactNode): ReactNode => {
+              if (typeof child === 'string') {
+                return renderTextWithCitations(child);
+              }
+              return child;
+            };
+            
+            const processedChildren = Array.isArray(children)
+              ? children.map((child, i) => (
+                  <span key={i}>{processChild(child)}</span>
+                ))
+              : processChild(children);
+            
+            return <li>{processedChildren}</li>;
           },
         }}
       >

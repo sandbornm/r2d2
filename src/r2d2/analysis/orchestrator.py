@@ -106,7 +106,7 @@ class AnalysisOrchestrator:
         try:
             self._run_quick(binary, result, trajectory, progress_callback)
             if plan.deep:
-                self._run_deep(binary, result, trajectory, progress_callback)
+                self._run_deep(binary, result, trajectory, progress_callback, plan)
         finally:
             if trajectory and self._trajectory_dao:
                 self._trajectory_dao.finish_trajectory(trajectory)
@@ -190,13 +190,16 @@ class AnalysisOrchestrator:
         result: AnalysisResult,
         trajectory: AnalysisTrajectory | None,
         progress_callback: Callable[[str, dict[str, Any]], None] | None,
+        plan: AnalysisPlan | None = None,
     ) -> None:
         _LOGGER.info("Starting deep analysis: %s", binary)
         self._emit_progress(progress_callback, "stage_started", {"stage": "deep"})
         radare = self._registry.get("radare2") if self._has_adapter("radare2") else None
         ghidra = self._registry.get("ghidra") if self._has_adapter("ghidra") else None
         capstone = self._registry.get("capstone") if self._has_adapter("capstone") else None
-        angr = self._registry.get("angr") if self._has_adapter("angr") else None
+        # Only get angr adapter if run_angr is enabled in plan
+        run_angr = plan.run_angr if plan else self._config.analysis.enable_angr
+        angr = self._registry.get("angr") if self._has_adapter("angr") and run_angr else None
 
         if radare:
             try:
@@ -262,7 +265,7 @@ class AnalysisOrchestrator:
                     {"stage": "deep", "adapter": "capstone", "error": str(exc)},
                 )
 
-        if angr and self._config.analysis.enable_angr:
+        if angr:
             try:
                 self._emit_progress(progress_callback, "adapter_started", {"stage": "deep", "adapter": "angr"})
                 angr_payload = angr.deep_scan(binary)

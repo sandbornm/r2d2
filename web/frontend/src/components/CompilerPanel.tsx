@@ -9,27 +9,26 @@ import {
   FormControl,
   InputLabel,
   TextField,
-  Collapse,
-  IconButton,
   Alert,
   CircularProgress,
   Chip,
   Tooltip,
-  Divider,
   SelectChangeEvent,
   Switch,
   FormControlLabel,
-  Tab,
-  Tabs,
+  Stack,
 } from '@mui/material';
-import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
-import ExpandLessIcon from '@mui/icons-material/ExpandLess';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import DownloadIcon from '@mui/icons-material/Download';
-import CodeIcon from '@mui/icons-material/Code';
 import BugReportIcon from '@mui/icons-material/BugReport';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
+import ChatBubbleOutlineIcon from '@mui/icons-material/ChatBubbleOutline';
+import CodeIcon from '@mui/icons-material/Code';
+import MemoryIcon from '@mui/icons-material/Memory';
+import DataObjectIcon from '@mui/icons-material/DataObject';
 import CodeEditor, { AsmViewer } from './CodeEditor';
+import ListingView from './ListingView';
+import PanelLayout, { PanelSelector, PanelConfig } from './PanelLayout';
 
 const API_BASE = '';
 
@@ -212,6 +211,7 @@ interface CommandPreview {
 
 interface CompilerPanelProps {
   onBinaryCompiled?: (path: string, filename: string) => void;
+  onAnalyzeAndChat?: (path: string, filename: string) => void;
 }
 
 // Tooltip descriptions for each option
@@ -229,13 +229,12 @@ const TOOLTIPS = {
   },
   freestanding: `Freestanding mode compiles without the C standard library (libc).
 Required for bare-metal code that runs without an OS.
-Adds: -ffreestanding -nostdlib -static
-Entry point must be _start instead of main.`,
+Adds: -ffreestanding -nostartfiles -nodefaultlibs -static
+Entry point must be _start (not main) with inline syscalls.`,
   outputName: 'Name of the compiled binary (without extension). Defaults to "output".',
 };
 
-export default function CompilerPanel({ onBinaryCompiled }: CompilerPanelProps) {
-  const [expanded, setExpanded] = useState(false);
+export default function CompilerPanel({ onBinaryCompiled, onAnalyzeAndChat }: CompilerPanelProps) {
   const [code, setCode] = useState(HELLO_EXAMPLE);
   const [architecture, setArchitecture] = useState<'arm32' | 'arm64'>('arm64');
   const [optimization, setOptimization] = useState('-O0');
@@ -247,8 +246,8 @@ export default function CompilerPanel({ onBinaryCompiled }: CompilerPanelProps) 
   const [compilerInfo, setCompilerInfo] = useState<Record<string, CompilerInfo[]>>({});
   const [dockerAvailable, setDockerAvailable] = useState(false);
   const [dockerImageExists, setDockerImageExists] = useState(false);
-  const [outputTab, setOutputTab] = useState<'asm' | 'errors'>('asm');
   const [commandPreview, setCommandPreview] = useState<CommandPreview | null>(null);
+  const [activePanels, setActivePanels] = useState<string[]>(['source', 'asm']);
 
   // Fetch available compilers on mount
   useEffect(() => {
@@ -310,8 +309,10 @@ export default function CompilerPanel({ onBinaryCompiled }: CompilerPanelProps) 
       const data: CompileResult = await response.json();
       setResult(data);
       
-      // Auto-switch to errors tab if failed, asm tab if success
-      setOutputTab(data.success && data.assembly ? 'asm' : 'errors');
+      // Auto-show asm panel if success
+      if (data.success && data.assembly) {
+        setActivePanels((prev) => prev.includes('asm') ? prev : [...prev, 'asm']);
+      }
 
       if (data.success && data.output_path && data.output_name && onBinaryCompiled) {
         onBinaryCompiled(data.output_path, data.output_name);
@@ -402,180 +403,250 @@ export default function CompilerPanel({ onBinaryCompiled }: CompilerPanelProps) 
     return <Chip size="small" label="No compiler" color="warning" variant="outlined" />;
   }, [architecture, currentCompiler, dockerAvailable, dockerImageExists, isDockerCompiler]);
 
-  return (
-    <Paper
-      elevation={2}
-      sx={{
-        mb: 2,
-        overflow: 'hidden',
-        border: '1px solid',
-        borderColor: 'divider',
-        borderRadius: 2,
-      }}
-    >
-      {/* Header */}
-      <Box
-        sx={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          px: 2,
-          py: 1.5,
-          bgcolor: expanded ? 'action.selected' : 'background.paper',
-          cursor: 'pointer',
-          '&:hover': { bgcolor: 'action.hover' },
-        }}
-        onClick={() => setExpanded(!expanded)}
-      >
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-          <CodeIcon color="primary" />
-          <Typography variant="subtitle1" fontWeight={600}>
-            ARM Compiler
-          </Typography>
-          {dockerStatusChip}
+  // Toggle panel visibility
+  const handlePanelToggle = useCallback((id: string) => {
+    setActivePanels((prev) =>
+      prev.includes(id) ? prev.filter((p) => p !== id) : [...prev, id]
+    );
+  }, []);
+
+  const handlePanelClose = useCallback((id: string) => {
+    setActivePanels((prev) => prev.filter((p) => p !== id));
+  }, []);
+
+  // Panel configurations
+  const panelConfigs: PanelConfig[] = useMemo(() => [
+    {
+      id: 'source',
+      title: 'C Source',
+      icon: <CodeIcon sx={{ fontSize: 14 }} />,
+      minWidth: 250,
+      defaultWidth: 1,
+      content: (
+        <CodeEditor
+          value={code}
+          onChange={setCode}
+          language="c"
+          height="100%"
+        />
+      ),
+    },
+    {
+      id: 'asm',
+      title: `Assembly${result?.assembly ? ` (${result.assembly.split('\n').length})` : ''}`,
+      icon: <MemoryIcon sx={{ fontSize: 14 }} />,
+      minWidth: 250,
+      defaultWidth: 1,
+      content: result?.assembly ? (
+        <AsmViewer value={result.assembly} height="100%" />
+      ) : (
+        <Box sx={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'text.disabled' }}>
+          <Typography variant="body2">Compile to see assembly</Typography>
         </Box>
-        <IconButton size="small" onClick={(e) => { e.stopPropagation(); setExpanded(!expanded); }}>
-          {expanded ? <ExpandLessIcon /> : <ExpandMoreIcon />}
-        </IconButton>
-      </Box>
+      ),
+    },
+    {
+      id: 'listing',
+      title: 'Listing',
+      icon: <DataObjectIcon sx={{ fontSize: 14 }} />,
+      minWidth: 300,
+      defaultWidth: 1,
+      content: (
+        <ListingView binaryName={result?.output_name || null} />
+      ),
+    },
+  ], [code, result?.assembly, result?.output_name]);
 
-      <Collapse in={expanded}>
-        <Divider />
-        <Box sx={{ p: 2 }}>
-          {/* Toolbar */}
-          <Box sx={{ display: 'flex', gap: 2, mb: 2, flexWrap: 'wrap', alignItems: 'center' }}>
-            <Tooltip title={TOOLTIPS.architecture[architecture]} arrow placement="top">
-              <FormControl size="small" sx={{ minWidth: 160 }}>
-                <InputLabel>Architecture</InputLabel>
-                <Select
-                  value={architecture}
-                  label="Architecture"
-                  onChange={(e: SelectChangeEvent) =>
-                    setArchitecture(e.target.value as 'arm32' | 'arm64')
-                  }
-                >
-                  <MenuItem value="arm32">
-                    <Tooltip title={TOOLTIPS.architecture.arm32} placement="right">
-                      <Box component="span">ARM32 (armhf)</Box>
-                    </Tooltip>
-                  </MenuItem>
-                  <MenuItem value="arm64">
-                    <Tooltip title={TOOLTIPS.architecture.arm64} placement="right">
-                      <Box component="span">ARM64 (aarch64)</Box>
-                    </Tooltip>
-                  </MenuItem>
-                </Select>
-              </FormControl>
-            </Tooltip>
+  // Panel selector items
+  const panelItems = useMemo(() => [
+    { id: 'source', title: 'Source', icon: <CodeIcon sx={{ fontSize: 14 }} /> },
+    { id: 'asm', title: 'Assembly', icon: <MemoryIcon sx={{ fontSize: 14 }} /> },
+    { id: 'listing', title: 'Listing', icon: <DataObjectIcon sx={{ fontSize: 14 }} /> },
+  ], []);
 
-            <Tooltip 
-              title={TOOLTIPS.optimization[optimization as keyof typeof TOOLTIPS.optimization]} 
-              arrow 
-              placement="top"
-            >
-              <FormControl size="small" sx={{ minWidth: 130 }}>
-                <InputLabel>Optimization</InputLabel>
-                <Select
-                  value={optimization}
-                  label="Optimization"
-                  onChange={(e: SelectChangeEvent) => setOptimization(e.target.value)}
-                >
-                  <MenuItem value="-O0">-O0 (debug)</MenuItem>
-                  <MenuItem value="-O1">-O1</MenuItem>
-                  <MenuItem value="-O2">-O2</MenuItem>
-                  <MenuItem value="-O3">-O3 (fast)</MenuItem>
-                  <MenuItem value="-Os">-Os (size)</MenuItem>
-                </Select>
-              </FormControl>
-            </Tooltip>
-
-            <Tooltip title={TOOLTIPS.outputName} arrow placement="top">
-              <TextField
-                size="small"
-                label="Output name"
-                placeholder="output"
-                value={outputName}
-                onChange={(e) => setOutputName(e.target.value)}
-                sx={{ width: 120 }}
-              />
-            </Tooltip>
-
-            <Tooltip title={TOOLTIPS.freestanding} arrow placement="top">
-              <FormControlLabel
-                control={
-                  <Switch
-                    size="small"
-                    checked={freestanding}
-                    onChange={(e) => setFreestanding(e.target.checked)}
-                  />
+  return (
+    <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+      {/* Toolbar Row 1: Settings */}
+      <Paper variant="outlined" sx={{ p: 1, mb: 1, flexShrink: 0 }}>
+        <Stack direction="row" spacing={1.5} alignItems="center" flexWrap="wrap" useFlexGap>
+          <Tooltip title={TOOLTIPS.architecture[architecture]} arrow placement="top">
+            <FormControl size="small" sx={{ minWidth: 160 }}>
+              <InputLabel>Architecture</InputLabel>
+              <Select
+                value={architecture}
+                label="Architecture"
+                onChange={(e: SelectChangeEvent) =>
+                  setArchitecture(e.target.value as 'arm32' | 'arm64')
                 }
-                label={
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                    <Typography variant="caption" color="text.secondary">
-                      Freestanding
-                    </Typography>
-                    <InfoOutlinedIcon sx={{ fontSize: 14, color: 'text.disabled' }} />
-                  </Box>
-                }
-              />
-            </Tooltip>
+              >
+                <MenuItem value="arm32">ARM32 (armhf)</MenuItem>
+                <MenuItem value="arm64">ARM64 (aarch64)</MenuItem>
+              </Select>
+            </FormControl>
+          </Tooltip>
 
-            <Box sx={{ flexGrow: 1 }} />
+          <Tooltip 
+            title={TOOLTIPS.optimization[optimization as keyof typeof TOOLTIPS.optimization]} 
+            arrow 
+            placement="top"
+          >
+            <FormControl size="small" sx={{ minWidth: 130 }}>
+              <InputLabel>Optimization</InputLabel>
+              <Select
+                value={optimization}
+                label="Optimization"
+                onChange={(e: SelectChangeEvent) => setOptimization(e.target.value)}
+              >
+                <MenuItem value="-O0">-O0 (debug)</MenuItem>
+                <MenuItem value="-O1">-O1</MenuItem>
+                <MenuItem value="-O2">-O2</MenuItem>
+                <MenuItem value="-O3">-O3 (fast)</MenuItem>
+                <MenuItem value="-Os">-Os (size)</MenuItem>
+              </Select>
+            </FormControl>
+          </Tooltip>
 
-            {/* Example buttons */}
-            <Box sx={{ display: 'flex', gap: 0.5 }}>
-              <Tooltip title="Hello World using ARM syscalls - great starting point">
-                <Button size="small" variant="text" onClick={() => loadExample('hello')}>
-                  Hello
-                </Button>
-              </Tooltip>
-              <Tooltip title="Recursive & iterative Fibonacci - see function calls in assembly">
-                <Button size="small" variant="text" onClick={() => loadExample('fibonacci')}>
-                  Fib
-                </Button>
-              </Tooltip>
-              <Tooltip title="Loop patterns - learn cmp, b.lt, b.ne branching">
-                <Button size="small" variant="text" onClick={() => loadExample('loop')}>
-                  Loops
-                </Button>
-              </Tooltip>
-              <Tooltip title="Structs & pointers - see ldr/str memory operations">
-                <Button size="small" variant="text" onClick={() => loadExample('memory')}>
-                  Memory
-                </Button>
-              </Tooltip>
-            </Box>
-          </Box>
-
-          {/* CodeMirror Editor */}
-          <Box sx={{ mb: 2 }}>
-            <CodeEditor
-              value={code}
-              onChange={setCode}
-              language="c"
-              height={350}
+          <Tooltip title={TOOLTIPS.outputName} arrow placement="top">
+            <TextField
+              size="small"
+              label="Output name"
+              placeholder="output"
+              value={outputName}
+              onChange={(e) => setOutputName(e.target.value)}
+              sx={{ width: 120 }}
             />
-          </Box>
+          </Tooltip>
 
-          {/* Actions */}
-          <Box sx={{ display: 'flex', gap: 2, alignItems: 'center', mb: 2 }}>
+          <Tooltip title={TOOLTIPS.freestanding} arrow placement="top">
+            <FormControlLabel
+              control={
+                <Switch
+                  size="small"
+                  checked={freestanding}
+                  onChange={(e) => setFreestanding(e.target.checked)}
+                />
+              }
+              label={
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                  <Typography variant="caption" color="text.secondary">
+                    Freestanding
+                  </Typography>
+                  <InfoOutlinedIcon sx={{ fontSize: 14, color: 'text.disabled' }} />
+                </Box>
+              }
+            />
+          </Tooltip>
+
+          <Box sx={{ flexGrow: 1 }} />
+
+          {/* Example buttons */}
+          <Stack direction="row" spacing={0.5}>
+            <Tooltip title="Hello World using ARM syscalls - great starting point">
+              <Chip label="Hello" size="small" onClick={() => loadExample('hello')} clickable />
+            </Tooltip>
+            <Tooltip title="Recursive & iterative Fibonacci - see function calls in assembly">
+              <Chip label="Fib" size="small" onClick={() => loadExample('fibonacci')} clickable />
+            </Tooltip>
+            <Tooltip title="Loop patterns - learn cmp, b.lt, b.ne branching">
+              <Chip label="Loops" size="small" onClick={() => loadExample('loop')} clickable />
+            </Tooltip>
+            <Tooltip title="Structs & pointers - see ldr/str memory operations">
+              <Chip label="Memory" size="small" onClick={() => loadExample('memory')} clickable />
+            </Tooltip>
+          </Stack>
+
+          {dockerStatusChip}
+        </Stack>
+      </Paper>
+
+      {/* Toolbar Row 2: Panel selector + Actions */}
+      <Paper variant="outlined" sx={{ p: 1, mb: 1, flexShrink: 0 }}>
+        <Stack direction="row" spacing={2} alignItems="center" justifyContent="space-between">
+          {/* Panel toggles */}
+          <PanelSelector panels={panelItems} activePanels={activePanels} onToggle={handlePanelToggle} />
+
+          {/* Compile button + status */}
+          <Stack direction="row" spacing={1} alignItems="center">
+            {result && (
+              <Chip 
+                size="small" 
+                label={result.success ? 'Success' : 'Failed'} 
+                color={result.success ? 'success' : 'error'}
+                sx={{ height: 20, fontSize: '0.65rem' }}
+              />
+            )}
+
+            {/* Download buttons */}
+            {result?.success && result.output_name && (
+              <Tooltip title="Download compiled ELF binary">
+                <Button
+                  size="small"
+                  variant="outlined"
+                  color="success"
+                  startIcon={<DownloadIcon sx={{ fontSize: 14 }} />}
+                  onClick={handleDownloadBinary}
+                  sx={{ minWidth: 'auto', px: 1, height: 28 }}
+                >
+                  ELF
+                </Button>
+              </Tooltip>
+            )}
+            {result?.assembly && (
+              <Tooltip title="Download assembly source">
+                <Button
+                  size="small"
+                  variant="outlined"
+                  color="info"
+                  startIcon={<DownloadIcon sx={{ fontSize: 14 }} />}
+                  onClick={handleDownloadAsm}
+                  sx={{ minWidth: 'auto', px: 1, height: 28 }}
+                >
+                  .s
+                </Button>
+              </Tooltip>
+            )}
+            {result?.success && result.output_path && onBinaryCompiled && (
+              <Tooltip title="Open in analyzer">
+                <Button
+                  size="small"
+                  variant="outlined"
+                  startIcon={<BugReportIcon sx={{ fontSize: 14 }} />}
+                  onClick={() => onBinaryCompiled(result.output_path!, result.output_name!)}
+                  sx={{ minWidth: 'auto', px: 1, height: 28 }}
+                >
+                  Analyze
+                </Button>
+              </Tooltip>
+            )}
+            {result?.success && result.output_path && onAnalyzeAndChat && (
+              <Tooltip title="Analyze and chat with Claude">
+                <Button
+                  size="small"
+                  variant="contained"
+                  color="secondary"
+                  startIcon={<ChatBubbleOutlineIcon sx={{ fontSize: 14 }} />}
+                  onClick={() => onAnalyzeAndChat(result.output_path!, result.output_name!)}
+                  sx={{ minWidth: 'auto', px: 1, height: 28 }}
+                >
+                  Chat
+                </Button>
+              </Tooltip>
+            )}
+
             <Tooltip 
               title={
-                <Box sx={{ maxWidth: 400 }}>
-                  <Typography variant="caption" component="div" sx={{ fontFamily: 'monospace', mb: 1 }}>
-                    {commandPreview?.command || 'Loading...'}
-                  </Typography>
-                  {commandPreview?.uses_docker && (
-                    <Typography variant="caption" color="info.light">
-                      🐳 Uses Docker container for ARM cross-compilation
+                commandPreview ? (
+                  <Box sx={{ maxWidth: 400 }}>
+                    <Typography variant="caption" component="div" sx={{ fontFamily: 'monospace', mb: 0.5 }}>
+                      {commandPreview.command}
                     </Typography>
-                  )}
-                  {commandPreview && !commandPreview.available && (
-                    <Typography variant="caption" color="error.light">
-                      ⚠️ {!dockerAvailable ? 'Docker not running' : 'Docker image not built'}
-                    </Typography>
-                  )}
-                </Box>
+                    {commandPreview.uses_docker && (
+                      <Typography variant="caption" color="info.light">
+                        🐳 Docker cross-compilation
+                      </Typography>
+                    )}
+                  </Box>
+                ) : 'Loading...'
               } 
               arrow 
               placement="top"
@@ -584,177 +655,61 @@ export default function CompilerPanel({ onBinaryCompiled }: CompilerPanelProps) 
                 <Button
                   variant="contained"
                   color="primary"
-                  startIcon={compiling ? <CircularProgress size={18} /> : <PlayArrowIcon />}
+                  size="small"
+                  startIcon={compiling ? <CircularProgress size={14} color="inherit" /> : <PlayArrowIcon />}
                   onClick={handleCompile}
                   disabled={compiling || !code.trim() || (commandPreview ? !commandPreview.available : false)}
+                  sx={{ height: 28 }}
                 >
                   {compiling ? 'Compiling...' : 'Compile'}
                 </Button>
               </span>
             </Tooltip>
+          </Stack>
+        </Stack>
+      </Paper>
 
-            {result?.success && result.output_name && (
-              <Tooltip title="Download the compiled ELF binary">
-                <Button
-                  variant="outlined"
-                  color="success"
-                  startIcon={<DownloadIcon />}
-                  onClick={handleDownloadBinary}
-                >
-                  Binary (.elf)
-                </Button>
-              </Tooltip>
-            )}
-
-            {result?.assembly && (
-              <Tooltip title="Download the generated assembly source">
-                <Button
-                  variant="outlined"
-                  color="info"
-                  startIcon={<DownloadIcon />}
-                  onClick={handleDownloadAsm}
-                >
-                  Assembly (.s)
-                </Button>
-              </Tooltip>
-            )}
-
-            {result?.success && result.output_path && onBinaryCompiled && (
-              <Tooltip title="Open this binary in the r2d2 analyzer">
-                <Button
-                  variant="outlined"
-                  color="secondary"
-                  startIcon={<BugReportIcon />}
-                  onClick={() => onBinaryCompiled(result.output_path!, result.output_name!)}
-                >
-                  Analyze
-                </Button>
-              </Tooltip>
-            )}
-
-            <Box sx={{ flexGrow: 1 }} />
-
-            {/* Compiler info */}
-            <Typography variant="caption" color="text.secondary" sx={{ fontFamily: 'monospace' }}>
-              {commandPreview?.uses_docker ? '🐳 Docker' : currentCompiler?.name || 'none'}
+      {/* Compiler output message (if error) */}
+      {result && !result.success && (
+        <Alert 
+          severity="error" 
+          sx={{ mb: 1, flexShrink: 0, py: 0.5 }}
+          action={
+            <Typography variant="caption" sx={{ fontFamily: 'monospace', opacity: 0.7 }}>
+              exit {result.return_code}
             </Typography>
-          </Box>
+          }
+        >
+          <Typography variant="caption" component="pre" sx={{ m: 0, whiteSpace: 'pre-wrap', maxHeight: 60, overflow: 'auto' }}>
+            {result.stderr || 'Compilation failed'}
+          </Typography>
+        </Alert>
+      )}
 
-          {/* Output area */}
-          {result && (
-            <Box>
-              {result.success ? (
-                <Alert severity="success" sx={{ mb: 1 }}>
-                  ✓ Compiled successfully! {result.output_name && `Binary: ${result.output_name}`}
-                </Alert>
-              ) : (
-                <Alert severity="error" sx={{ mb: 1 }}>
-                  ✗ Compilation failed (exit code {result.return_code})
-                </Alert>
-              )}
+      {/* Main content: Resizable panels */}
+      <Box sx={{ flex: 1, overflow: 'hidden', minHeight: 0 }}>
+        <PanelLayout
+          panels={panelConfigs}
+          activePanels={activePanels}
+          onPanelClose={handlePanelClose}
+          height="100%"
+        />
+      </Box>
 
-              {/* Tabs for ASM / Errors */}
-              <Box sx={{ borderBottom: 1, borderColor: 'divider', mb: 1 }}>
-                <Tabs
-                  value={outputTab}
-                  onChange={(_, v) => setOutputTab(v)}
-                  sx={{ minHeight: 36 }}
-                >
-                  <Tab
-                    value="asm"
-                    label={`Assembly${result.assembly ? ` (${result.assembly.split('\n').length} lines)` : ''}`}
-                    sx={{ minHeight: 36, py: 0 }}
-                    disabled={!result.assembly}
-                  />
-                  <Tab
-                    value="errors"
-                    label="Output"
-                    sx={{ minHeight: 36, py: 0 }}
-                  />
-                </Tabs>
-              </Box>
-
-              {/* Assembly output with CodeMirror */}
-              {outputTab === 'asm' && result.assembly && (
-                <AsmViewer value={result.assembly} height={300} />
-              )}
-
-              {/* Compiler output */}
-              {outputTab === 'errors' && (
-                <Paper
-                  variant="outlined"
-                  sx={{
-                    p: 1.5,
-                    bgcolor: 'background.default',
-                    maxHeight: 200,
-                    overflow: 'auto',
-                  }}
-                >
-                  <Typography
-                    variant="caption"
-                    component="pre"
-                    sx={{
-                      fontFamily: '"JetBrains Mono", monospace',
-                      whiteSpace: 'pre-wrap',
-                      wordBreak: 'break-word',
-                      m: 0,
-                      color: result.success ? 'text.secondary' : 'error.main',
-                    }}
-                  >
-                    {result.stderr || result.stdout || 'No output'}
-                  </Typography>
-                </Paper>
-              )}
-
-              {/* Command used */}
-              {result.command && (
-                <Tooltip title="The exact command that was executed">
-                  <Typography
-                    variant="caption"
-                    color="text.secondary"
-                    sx={{ 
-                      display: 'block', 
-                      mt: 1, 
-                      fontFamily: 'monospace', 
-                      fontSize: '0.7rem',
-                      cursor: 'help',
-                    }}
-                  >
-                    $ {result.command}
-                  </Typography>
-                </Tooltip>
-              )}
-            </Box>
-          )}
-
-          {/* Setup instructions if Docker not available */}
-          {(!dockerAvailable || !dockerImageExists) && architecture.startsWith('arm') && (
-            <Alert severity="info" sx={{ mt: 2 }}>
-              <Typography variant="body2" fontWeight={500} gutterBottom>
-                {!dockerAvailable ? '🐳 Docker not running' : '🐳 Docker image not found'}
-              </Typography>
-              {!dockerAvailable ? (
-                <Typography variant="caption" component="div">
-                  Start Docker Desktop to enable ARM cross-compilation on this machine.
-                </Typography>
-              ) : (
-                <>
-                  <Typography variant="caption" component="div">
-                    Build the Docker image for ARM compilation:
-                  </Typography>
-                  <Typography
-                    component="pre"
-                    variant="caption"
-                    sx={{ fontFamily: 'monospace', mt: 0.5, mb: 1, bgcolor: 'action.hover', p: 1, borderRadius: 1 }}
-                  >
-                    docker build -t r2d2-compiler -f Dockerfile.compiler .
-                  </Typography>
-                </>
-              )}
-            </Alert>
-          )}
-        </Box>
-      </Collapse>
-    </Paper>
+      {/* Docker setup instructions */}
+      {(!dockerAvailable || !dockerImageExists) && architecture.startsWith('arm') && !result && (
+        <Alert severity="info" sx={{ mt: 1.5, flexShrink: 0 }}>
+          <Typography variant="body2" fontWeight={500}>
+            {!dockerAvailable ? '🐳 Start Docker Desktop' : '🐳 Build Docker image'}
+          </Typography>
+          <Typography variant="caption" component="div">
+            {!dockerAvailable 
+              ? 'Docker is required for ARM cross-compilation on this machine.'
+              : 'Run: docker build -t r2d2-compiler -f Dockerfile.compiler .'
+            }
+          </Typography>
+        </Alert>
+      )}
+    </Box>
   );
 }

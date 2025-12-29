@@ -675,9 +675,10 @@ class TestSamplePrograms:
             output = temp_output_dir / c_file.stem
             
             # Some files need freestanding mode
+            # Use -nostartfiles to avoid crt1.o conflict when code defines _start
             extra_flags = None
             if c_file.name in FREESTANDING_FILES:
-                extra_flags = ["-ffreestanding", "-nostdlib", "-static"]
+                extra_flags = ["-ffreestanding", "-nostartfiles", "-nodefaultlibs", "-static"]
             
             result = compile_c_source(
                 source=c_file,

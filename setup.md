@@ -123,6 +123,23 @@ scripts/run_frontend.sh
 
 Open http://localhost:5173 in your browser.
 
+### ARM Compiler Setup (Docker)
+The web UI includes an ARM cross-compiler that requires Docker:
+
+```bash
+# Build the compiler container (one-time)
+docker build -t r2d2-compiler -f Dockerfile.compiler .
+
+# Or use docker-compose
+docker-compose up -d compiler
+```
+
+The compiler supports:
+- **ARM32** (armhf) - Raspberry Pi, embedded systems
+- **ARM64** (aarch64) - Apple Silicon (via Docker), modern ARM
+- Freestanding mode (no libc) for bare-metal code
+- musl libc for static linking when using libc functions
+
 ### Production bundle
 ```bash
 cd web/frontend && npm run build

@@ -7,6 +7,7 @@ import queue
 import threading
 import uuid
 from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -213,7 +214,11 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
         if call_llm:
             history = chat_dao.list_messages(session.session_id)
             analysis_attachment = _extract_latest_analysis(history)
-            llm_messages = _build_llm_messages(history, analysis_attachment)
+            
+            # Fetch recent activity context
+            activity_context = _get_activity_context(state.db, session.session_id) if state.db else None
+            
+            llm_messages = _build_llm_messages(history, analysis_attachment, activity_context)
             try:
                 assistant_response = llm_bridge.chat(llm_messages)
             except RuntimeError as exc:  # pragma: no cover - handled at runtime
@@ -350,6 +355,88 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
         
         return jsonify({"deleted": True, "address": address})
 
+    # ──────────────────────────────────────────────────────────────────────────
+    # Activity tracking endpoints for context engineering
+    # ──────────────────────────────────────────────────────────────────────────
+    
+    @app.post("/api/chats/<session_id>/activities")
+    def track_activities(session_id: str) -> Any:
+        """Record user activity events for session trajectory and LLM context."""
+        if not state.db:
+            return jsonify({"error": "database not configured"}), 503
+            
+        session = chat_dao.get_session(session_id)
+        if not session:
+            return jsonify({"error": "session not found"}), 404
+        
+        body = request.get_json(silent=True) or {}
+        events = body.get("events", [])
+        
+        if not isinstance(events, list):
+            return jsonify({"error": "events must be a list"}), 400
+        
+        with state.db.connect() as conn:
+            for event in events:
+                if not isinstance(event, dict):
+                    continue
+                event_type = event.get("event_type", "unknown")
+                event_data = event.get("event_data", {})
+                created_at = event.get("created_at") or datetime.now(timezone.utc).isoformat()
+                event_id = f"{session_id}-{uuid.uuid4().hex[:8]}"
+                
+                conn.execute(
+                    """
+                    INSERT INTO activity_events (event_id, session_id, event_type, event_data, created_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (event_id, session_id, event_type, json.dumps(event_data), created_at),
+                )
+        
+        return jsonify({"recorded": len(events)})
+
+    @app.get("/api/chats/<session_id>/activities")
+    def list_activities(session_id: str) -> Any:
+        """Get recent activity events for a session."""
+        if not state.db:
+            return jsonify({"activities": []})
+            
+        session = chat_dao.get_session(session_id)
+        if not session:
+            return jsonify({"error": "session not found"}), 404
+        
+        limit_param = request.args.get("limit")
+        try:
+            limit = int(limit_param) if limit_param else 50
+        except ValueError:
+            limit = 50
+        
+        with state.db.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT event_id, event_type, event_data, created_at
+                FROM activity_events
+                WHERE session_id = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (session_id, limit),
+            ).fetchall()
+        
+        activities = []
+        for row in rows:
+            try:
+                event_data = json.loads(row["event_data"]) if row["event_data"] else {}
+            except json.JSONDecodeError:
+                event_data = {}
+            activities.append({
+                "event_id": row["event_id"],
+                "event_type": row["event_type"],
+                "event_data": event_data,
+                "created_at": row["created_at"],
+            })
+        
+        return jsonify({"activities": activities})
+
     # Ensure uploads directory exists
     uploads_dir = Path(state.config.output.artifacts_dir).expanduser() / "uploads"
     uploads_dir.mkdir(parents=True, exist_ok=True)
@@ -386,6 +473,8 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
         body = request.get_json(silent=True) or {}
         binary_path = body.get("binary")
         user_goal = body.get("user_goal", "").strip()
+        quick_only = body.get("quick_only", False)
+        enable_angr = body.get("enable_angr", True)
         
         if not binary_path:
             return jsonify({"error": "Missing 'binary' in request body"}), 400
@@ -420,7 +509,10 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
             job.put("job_started", {"binary": str(path), "session_id": job.session_id})
             try:
                 orchestrator = AnalysisOrchestrator(state.config, state.env, trajectory_dao=state.dao)
-                result = orchestrator.analyze(path, progress_callback=_progress)
+                # Create custom analysis plan respecting frontend settings
+                plan = orchestrator.create_plan(quick_only=quick_only)
+                plan.run_angr = enable_angr and not quick_only
+                result = orchestrator.analyze(path, plan=plan, progress_callback=_progress)
                 job.result = result
                 job.status = "completed"
 
@@ -608,9 +700,10 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
                 output = uploads_dir / base_name
 
             # Build extra flags for freestanding mode
+            # Use -nostartfiles to avoid crt1.o conflict when code defines _start
             extra_flags = []
             if freestanding:
-                extra_flags = ["-ffreestanding", "-nostdlib", "-static"]
+                extra_flags = ["-ffreestanding", "-nostartfiles", "-nodefaultlibs", "-static"]
 
             # First, generate assembly if requested
             asm_output = None
@@ -720,6 +813,135 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
             download_name=safe_name,
         )
 
+    @app.get("/api/compile/listing/<path:filename>")
+    def get_binary_listing(filename: str) -> Any:
+        """Get objdump-style disassembly listing for a compiled binary.
+        
+        Returns structured listing with address, bytes, and instruction for each line.
+        This is the typical binary view in tools like Ghidra, OFRAK, and angr.
+        """
+        import subprocess
+        from werkzeug.utils import secure_filename
+        
+        safe_name = secure_filename(filename)
+        if not safe_name:
+            return jsonify({"error": "Invalid filename"}), 400
+        
+        file_path = uploads_dir / safe_name
+        if not file_path.exists():
+            return jsonify({"error": "File not found"}), 404
+        
+        # Determine architecture and pick appropriate objdump
+        # Try to detect from filename or use default
+        arch = "aarch64" if "arm64" in filename.lower() or "aarch64" in filename.lower() else "arm"
+        
+        # Try Docker objdump first (for cross-arch), then native
+        listing_lines: list[dict] = []
+        raw_output = ""
+        
+        try:
+            # Use Docker container for cross-arch objdump
+            objdump_cmd = f"aarch64-linux-gnu-objdump" if arch == "aarch64" else "arm-linux-gnueabihf-objdump"
+            docker_cmd = [
+                "docker", "run", "--rm",
+                "-v", f"{file_path.parent}:/data:ro",
+                "-w", "/data",
+                "r2d2-compiler:latest",
+                "-c", f"{objdump_cmd} -d -w /data/{safe_name}"
+            ]
+            
+            result = subprocess.run(docker_cmd, capture_output=True, text=True, timeout=30)
+            raw_output = result.stdout
+            
+            if result.returncode != 0:
+                # Fallback to native objdump
+                native_result = subprocess.run(
+                    ["objdump", "-d", "-w", str(file_path)],
+                    capture_output=True, text=True, timeout=30
+                )
+                raw_output = native_result.stdout
+        except Exception:
+            # Try native objdump as last resort
+            try:
+                native_result = subprocess.run(
+                    ["objdump", "-d", "-w", str(file_path)],
+                    capture_output=True, text=True, timeout=30
+                )
+                raw_output = native_result.stdout
+            except Exception as e:
+                return jsonify({"error": f"Failed to disassemble: {e}"}), 500
+        
+        # Parse objdump output into structured format
+        current_section = ""
+        current_function = ""
+        
+        for line in raw_output.split("\n"):
+            line = line.rstrip()
+            
+            # Section header (e.g., "Disassembly of section .text:")
+            if line.startswith("Disassembly of section"):
+                current_section = line.split()[-1].rstrip(":")
+                listing_lines.append({
+                    "type": "section",
+                    "name": current_section,
+                })
+                continue
+            
+            # Function header (e.g., "0000000000400078 <_start>:")
+            if "<" in line and ">:" in line and not line.startswith(" "):
+                parts = line.split()
+                if parts:
+                    addr = parts[0]
+                    func_name = line.split("<")[1].split(">")[0] if "<" in line else ""
+                    current_function = func_name
+                    listing_lines.append({
+                        "type": "function",
+                        "address": addr,
+                        "name": func_name,
+                    })
+                continue
+            
+            # Instruction line (e.g., "  400078:	d2800020 	mov	x0, #0x1")
+            if ":" in line and line.strip() and line[0] in " \t":
+                parts = line.split(":", 1)
+                if len(parts) == 2:
+                    addr = parts[0].strip()
+                    rest = parts[1].strip()
+                    
+                    # Split bytes from instruction
+                    # Format: "d2800020 	mov	x0, #0x1"
+                    tokens = rest.split(None, 1)
+                    if tokens:
+                        # First token(s) are hex bytes, rest is instruction
+                        bytes_part = ""
+                        instr_part = ""
+                        
+                        # Collect hex bytes until we hit a non-hex token
+                        words = rest.split()
+                        i = 0
+                        for i, word in enumerate(words):
+                            # Check if word is hex (bytes)
+                            if all(c in "0123456789abcdef" for c in word.lower()) and len(word) in [2, 4, 8]:
+                                bytes_part += word + " "
+                            else:
+                                break
+                        
+                        instr_part = " ".join(words[i:]) if i < len(words) else ""
+                        
+                        listing_lines.append({
+                            "type": "instruction",
+                            "address": addr,
+                            "bytes": bytes_part.strip(),
+                            "instruction": instr_part,
+                            "function": current_function,
+                        })
+        
+        return jsonify({
+            "filename": safe_name,
+            "listing": listing_lines,
+            "raw": raw_output[:50000] if len(raw_output) > 50000 else raw_output,  # Limit raw output
+        })
+
     return app
 
 
@@ -763,14 +985,144 @@ def _extract_user_goal(history: list[StoredChatMessage]) -> str | None:
     return None
 
 
+def _get_activity_context(db: Any, session_id: str, limit: int = 25) -> list[dict[str, Any]] | None:
+    """Fetch recent user activity events for LLM context."""
+    if not db:
+        return None
+    
+    try:
+        with db.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT event_type, event_data, created_at
+                FROM activity_events
+                WHERE session_id = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (session_id, limit),
+            ).fetchall()
+        
+        activities = []
+        for row in rows:
+            try:
+                event_data = json.loads(row["event_data"]) if row["event_data"] else {}
+            except json.JSONDecodeError:
+                event_data = {}
+            activities.append({
+                "event_type": row["event_type"],
+                "event_data": event_data,
+                "created_at": row["created_at"],
+            })
+        
+        return list(reversed(activities))  # Chronological order
+    except Exception:
+        return None
+
+
+def _format_activity_context(activities: list[dict[str, Any]] | None) -> str | None:
+    """Format activity events into a readable context string for the LLM."""
+    if not activities:
+        return None
+    
+    lines = ["## Recent User Activity"]
+    lines.append("(Use this to understand what the user has been exploring)")
+    lines.append("")
+    
+    # Summarize patterns
+    tab_visits = {}
+    functions_viewed = []
+    addresses_viewed = []
+    code_selections = 0
+    questions_asked = 0
+    
+    for event in activities:
+        event_type = event.get("event_type", "")
+        data = event.get("event_data", {})
+        
+        if event_type == "tab_switch":
+            to_tab = data.get("to_tab", "")
+            if to_tab:
+                tab_visits[to_tab] = tab_visits.get(to_tab, 0) + 1
+        elif event_type == "function_view":
+            func_name = data.get("function_name")
+            if func_name and func_name not in functions_viewed:
+                functions_viewed.append(func_name)
+        elif event_type == "address_hover":
+            addr = data.get("address")
+            if addr and addr not in addresses_viewed:
+                addresses_viewed.append(addr)
+        elif event_type == "code_select":
+            code_selections += 1
+        elif event_type == "ask_claude":
+            questions_asked += 1
+    
+    # Build summary
+    if tab_visits:
+        most_visited = sorted(tab_visits.items(), key=lambda x: -x[1])[:3]
+        tabs_str = ", ".join(f"{t}({c}x)" for t, c in most_visited)
+        lines.append(f"- Tabs visited: {tabs_str}")
+    
+    if functions_viewed:
+        lines.append(f"- Functions explored: {', '.join(functions_viewed[-5:])}")
+    
+    if addresses_viewed:
+        lines.append(f"- Addresses examined: {', '.join(addresses_viewed[-5:])}")
+    
+    if code_selections > 0:
+        lines.append(f"- Selected code {code_selections} time(s)")
+    
+    if questions_asked > 0:
+        lines.append(f"- Asked {questions_asked} question(s) this session")
+    
+    # Show last 5 events as timeline
+    recent_events = activities[-5:]
+    if recent_events:
+        lines.append("")
+        lines.append("Recent timeline:")
+        for event in recent_events:
+            event_type = event.get("event_type", "")
+            data = event.get("event_data", {})
+            desc = _describe_activity_event(event_type, data)
+            lines.append(f"  → {desc}")
+    
+    return "\n".join(lines)
+
+
+def _describe_activity_event(event_type: str, data: dict[str, Any]) -> str:
+    """Generate human-readable description of an activity event."""
+    if event_type == "tab_switch":
+        return f"Switched to {data.get('to_tab', '?')} tab"
+    elif event_type == "function_view":
+        return f"Viewed function {data.get('function_name', '?')}"
+    elif event_type == "address_hover":
+        return f"Examined address {data.get('address', '?')}"
+    elif event_type == "code_select":
+        lines = data.get("line_count", "?")
+        return f"Selected {lines} lines of code"
+    elif event_type == "annotation_add":
+        return f"Added annotation at {data.get('address', '?')}"
+    elif event_type == "search_query":
+        return f"Searched for '{data.get('query', '?')}'"
+    elif event_type == "cfg_navigate":
+        target = data.get("block") or data.get("function") or "block"
+        return f"Navigated CFG to {target}"
+    elif event_type == "ask_claude":
+        return f"Asked about {data.get('topic', 'code')}"
+    else:
+        return event_type
+
+
 def _build_llm_messages(
     history: list[StoredChatMessage],
     analysis_attachment: dict[str, Any] | None,
+    activity_context: list[dict[str, Any]] | None = None,
 ) -> list[LLMChatMessage]:
     """Build focused LLM messages with FULL analysis context for every message.
     
     The analysis context is ALWAYS included in the system prompt to ensure
     the LLM has consistent access to binary information throughout the conversation.
+    Activity context provides insight into what the user has been exploring.
     """
     
     user_goal = _extract_user_goal(history)
@@ -792,8 +1144,13 @@ Help users understand binaries at their level. Start simple, go deeper when aske
 - First response: 2-3 sentences max. What is it? What stands out?
 - Follow-ups: Go as deep as needed
 - Use code blocks for assembly snippets
-- Reference addresses like `0x1234` and function names
-- If binary looks packed/encrypted/unusual, say so upfront""",
+- Reference addresses like `0x1234` and function names so the user can hover them for context
+- If binary looks packed/encrypted/unusual, say so upfront
+
+## Address Citations
+When referencing specific addresses in your response, always use the format `0x...` (e.g., `0x401000`).
+The frontend will automatically make these addresses hoverable, showing the relevant assembly context.
+This helps users follow along with your explanations in the disassembly view.""",
     ]
     
     if user_goal:
@@ -812,6 +1169,12 @@ Help users understand binaries at their level. Start simple, go deeper when aske
                         ctx = _build_analysis_context(att)
                         system_parts.append(ctx)
                         break
+    
+    # Include activity context for better situational awareness
+    if activity_context:
+        activity_str = _format_activity_context(activity_context)
+        if activity_str:
+            system_parts.append(activity_str)
     
     system_prompt = "\n\n".join(system_parts)
     messages: list[LLMChatMessage] = [LLMChatMessage(role="system", content=system_prompt)]

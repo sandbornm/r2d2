@@ -159,7 +159,20 @@ Open http://localhost:5050 directly.
   - **Annotation**: Click 📝 to annotate any instruction, or drag to select a range
   - **Ask Claude**: Select code → "Ask Claude" to explain selected assembly
 
-- **CFG Explorer**: OFRAK-style navigation through functions and basic blocks with disassembly views. Debug panel shows why CFG data may be missing.
+- **ARM Compiler** (dedicated tab):
+  - Write C code with syntax highlighting
+  - Compile to ARM32/ARM64 via Docker cross-compiler
+  - **Godbolt-style assembly view** with syntax highlighting (instructions, registers, labels, directives)
+  - Download binaries and `.s` assembly files
+  - Example templates: Hello World, Fibonacci, Loops, Memory operations
+  - Auto-analyze compiled binaries with one click
+
+- **CFG Explorer**: OFRAK-style navigation through functions and basic blocks with disassembly views. Debug panel shows why CFG data may be missing. Supports angr symbolic execution when enabled.
+
+- **Session Management**:
+  - Create new sessions with the "+" button
+  - Switch between analysis sessions in the sidebar
+  - Delete sessions when no longer needed
 
 - **Analysis Persistence**: Annotations and code snippets are saved to SQLite and sync across sessions.
 
@@ -186,12 +199,16 @@ Backend image pulls `radare2`, `libmagic`, and installs Python dependencies via 
 - Extend trajectory schema to capture diffable artifacts and caching metadata.
 - Integrate angr selectively (per function) once performance budgets are profiled.
 
-## TODO - left off 2025-11-28
+## Recent Updates (2025-12-28)
 
-- [ ] Improve UI components
-- [ ] Add discrete analysis phases
-- [ ] Add task description metadata for uploaded binaries
-- [ ] Add visuals with angr CFG and disassembly views
-- [ ] Highlight CFG/disassembly panels to hand off questions to the AI
+- **ARM Compiler Tab**: Dedicated compiler panel with syntax-highlighted assembly output (Godbolt-style)
+- **Session Management**: New Session button for quick session creation
+- **CFG Viewer**: Improved angr CFG integration with debug diagnostics
+- **Download Artifacts**: Download compiled binaries and assembly files directly from the UI
+
+## TODO
+
 - [ ] Record trajectory replay (generate equivalent Python script for each run)
 - [ ] Improve logging, performance, and support additional LLM providers
+- [ ] Add symbolic execution insights from angr to chat context
+- [ ] Textual TUI for terminal-based workflows

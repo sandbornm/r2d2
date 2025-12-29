@@ -76,13 +76,16 @@ src/r2d2/
 
 ```
 web/frontend/src/
-├── App.tsx                # Main application shell
+├── App.tsx                # Main application shell with tabs: Results, Chat, Compiler, Logs
 ├── components/
-│   ├── CFGViewer.tsx      # Control flow graph visualization
-│   ├── DisassemblyViewer.tsx  # Annotatable disassembly
+│   ├── CFGViewer.tsx      # Control flow graph visualization (angr + radare2)
+│   ├── CodeEditor.tsx     # C code editor + AsmViewer with syntax highlighting
+│   ├── CompilerPanel.tsx  # ARM cross-compiler UI with examples
+│   ├── DisassemblyViewer.tsx  # Annotatable disassembly with tooltips
 │   ├── ChatPanel.tsx      # AI conversation interface
-│   ├── ProgressLog.tsx    # Real-time analysis events
-│   ├── ResultViewer.tsx   # Analysis results display
+│   ├── ProgressLog.tsx    # Real-time analysis events (SSE)
+│   ├── ResultViewer.tsx   # Analysis results with tabbed view
+│   ├── SessionList.tsx    # Session sidebar with new/delete
 │   └── SettingsDrawer.tsx # Configuration UI
 ├── types.ts               # TypeScript interfaces
 └── theme.ts               # MUI theme configuration
@@ -141,6 +144,13 @@ When both radare2 and angr provide analysis, uncertainty is calculated:
 1. Add route in `src/r2d2/web/app.py`
 2. Add TypeScript types in `web/frontend/src/types.ts`
 3. Add frontend integration tests
+
+### Key API Endpoints
+- `POST /api/analyze` - Run analysis on a binary (supports `quick_only`, `enable_angr` flags)
+- `POST /api/compile` - Compile C code to ARM binary (uses Docker cross-compiler)
+- `GET /api/compile/download/<filename>` - Download compiled binary or assembly
+- `POST /api/chats/<id>/messages` - Send a message to Claude about the binary
+- `GET /api/chats/<id>/annotations` - List annotations for a session
 
 ### New UI Component
 1. Create in `web/frontend/src/components/`

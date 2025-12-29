@@ -1,4 +1,6 @@
+import AddIcon from '@mui/icons-material/Add';
 import CloudUploadIcon from '@mui/icons-material/CloudUpload';
+import CodeIcon from '@mui/icons-material/Code';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import SettingsIcon from '@mui/icons-material/Settings';
 import DarkModeIcon from '@mui/icons-material/DarkMode';
@@ -37,6 +39,7 @@ import ProgressLog from './components/ProgressLog';
 import ResultViewer from './components/ResultViewer';
 import SessionList from './components/SessionList';
 import SettingsDrawer, { AI_MODELS, AnalysisSettings, ModelId } from './components/SettingsDrawer';
+import { ActivityProvider, useActivity } from './contexts/ActivityContext';
 import { useThemeMode } from './main';
 import type {
   AnalysisResultPayload,
@@ -66,7 +69,7 @@ const EVENT_NAMES: ProgressEventName[] = [
 ];
 
 type JobStatus = 'idle' | 'running' | 'done' | 'error';
-type TabValue = 'results' | 'chat' | 'logs';
+type TabValue = 'results' | 'chat' | 'logs' | 'compiler';
 
 type AnalysisResponseEvent = AnalysisResultPayload & { session_id?: string };
 type SSEHandlers = Partial<Record<ProgressEventName, (payload: ProgressEventPayload) => void>>;
@@ -88,10 +91,11 @@ const loadSettings = (): AnalysisSettings => {
   return DEFAULT_SETTINGS;
 };
 
-const App = () => {
+const AppContent = () => {
   const theme = useTheme();
   const { mode, toggleTheme } = useThemeMode();
   const isDark = mode === 'dark';
+  const activity = useActivity();
 
   const [binaryPath, setBinaryPath] = useState('');
   const [fileName, setFileName] = useState<string | null>(null);
@@ -478,12 +482,30 @@ In 2-3 sentences: what is it and what does it do? I'm ${funcCount > 0 ? 'seeing 
         }),
       });
       
+      // Check if response is JSON before parsing
+      const contentType = response.headers.get('content-type');
+      if (!contentType || !contentType.includes('application/json')) {
+        console.error('Auto-ask: Server returned non-JSON response');
+        setChatError('Backend not responding. Is the server running?');
+        return;
+      }
+      
       if (response.ok) {
         const data = await response.json();
         setMessages(data.messages);
+        if (data.error) {
+          setChatError(data.error);
+        }
+      } else {
+        const errorData = await response.json();
+        setChatError(errorData.error || 'LLM request failed');
       }
     } catch (error) {
       console.error('Auto-ask failed:', error);
+      const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+      if (errorMsg.includes('Unexpected token') || errorMsg.includes('JSON')) {
+        setChatError('Cannot connect to backend. Make sure the Flask server is running.');
+      }
     } finally {
       setSendingMessage(false);
     }
@@ -525,6 +547,16 @@ In 2-3 sentences: what is it and what does it do? I'm ${funcCount > 0 ? 'seeing 
     if (!activeSessionId) return;
     setSendingMessage(true);
     setChatError(null);
+    
+    // Track the question being asked
+    if (options.callLLM) {
+      const topic = content.length > 50 ? content.slice(0, 50) + '...' : content;
+      activity.trackEvent('ask_claude', { topic, content_length: content.length });
+    }
+    
+    // Sync activity context to backend before sending (best effort)
+    activity.syncToBackend(activeSessionId).catch(() => {});
+    
     const optimisticId = `pending-${Date.now()}`;
     const timestamp = new Date().toISOString();
     const optimisticMessage: ChatMessageItem = {
@@ -543,6 +575,14 @@ In 2-3 sentences: what is it and what does it do? I'm ${funcCount > 0 ? 'seeing 
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ content, call_llm: options.callLLM }),
       });
+      
+      // Check if response is JSON before parsing
+      const contentType = response.headers.get('content-type');
+      if (!contentType || !contentType.includes('application/json')) {
+        setMessages((prev) => prev.filter((msg) => msg.message_id !== optimisticId));
+        throw new Error('Server returned non-JSON response. Is the backend running on port 5050?');
+      }
+      
       if (!response.ok) {
         setMessages((prev) => prev.filter((msg) => msg.message_id !== optimisticId));
         const errorBody = await response.json();
@@ -559,7 +599,13 @@ In 2-3 sentences: what is it and what does it do? I'm ${funcCount > 0 ? 'seeing 
       if (data.error) setChatError(data.error);
     } catch (error) {
       console.error(error);
-      setChatError(error instanceof Error ? error.message : 'Failed');
+      const errorMsg = error instanceof Error ? error.message : 'Failed';
+      // Provide better error message for common issues
+      if (errorMsg.includes('Unexpected token') || errorMsg.includes('JSON')) {
+        setChatError('Cannot connect to backend. Make sure the Flask server is running: python -m r2d2 web --port 5050');
+      } else {
+        setChatError(errorMsg);
+      }
       setMessages((prev) => prev.filter((msg) => msg.message_id !== optimisticId));
     } finally {
       setSendingMessage(false);
@@ -568,7 +614,38 @@ In 2-3 sentences: what is it and what does it do? I'm ${funcCount > 0 ? 'seeing 
 
   const handleTabChange = (_: SyntheticEvent, value: TabValue) => {
     setActiveTab(value);
+    // Track tab switch for activity context
+    activity.setCurrentTab(value);
   };
+
+  // Extract disassembly from analysis result for address hover citations
+  const disassemblyContext = useMemo(() => {
+    if (!result) return undefined;
+    const deep = result.deep_scan?.radare2 as Record<string, unknown> | undefined;
+    if (!deep) return undefined;
+    
+    // Prefer entry_disassembly, fall back to general disassembly
+    const entryDisasm = deep.entry_disassembly;
+    if (typeof entryDisasm === 'string' && entryDisasm.trim()) {
+      return entryDisasm;
+    }
+    
+    const generalDisasm = deep.disassembly;
+    if (typeof generalDisasm === 'string' && generalDisasm.trim()) {
+      return generalDisasm;
+    }
+    
+    return undefined;
+  }, [result]);
+
+  // Handle navigation to a specific address (from citation click)
+  const handleNavigateToAddress = useCallback((address: string) => {
+    // Track the navigation event
+    activity.trackEvent('address_hover', { address, source: 'citation' });
+    // Switch to results tab to show disassembly
+    setActiveTab('results');
+    // Could add scrolling to the address in disassembly view in the future
+  }, [activity]);
 
   const clearFile = () => {
     setBinaryPath('');
@@ -577,6 +654,22 @@ In 2-3 sentences: what is it and what does it do? I'm ${funcCount > 0 ? 'seeing 
     setResult(null);
     setEvents([]);
     setStatus('idle');
+  };
+
+  const handleNewSession = () => {
+    // Clear current state for a fresh start
+    setActiveSessionId(null);
+    activeSessionIdRef.current = null;
+    lastSyncedSessionIdRef.current = null;
+    setBinaryPath('');
+    setFileName(null);
+    setUserGoal('');
+    setResult(null);
+    setMessages([]);
+    setEvents([]);
+    setStatus('idle');
+    setStatusMessage(null);
+    setActiveTab('results');
     setStatusMessage(null);
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
@@ -588,6 +681,106 @@ In 2-3 sentences: what is it and what does it do? I'm ${funcCount > 0 ? 'seeing 
     setStatusMessage(`Compiled: ${filename}`);
     lastSyncedSessionIdRef.current = null;
   }, []);
+
+  // Handle "Analyze & Chat" - analyze the compiled binary and auto-ask Claude
+  const handleAnalyzeAndChat = useCallback(async (path: string, filename: string) => {
+    setBinaryPath(path);
+    setFileName(filename);
+    setStatus('running');
+    setStatusMessage('Analyzing compiled binary...');
+    setEvents([]);
+    setResult(null);
+    setActiveTab('logs');
+    lastSyncedSessionIdRef.current = null;
+
+    try {
+      const response = await fetch('/api/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          binary: path,
+          user_goal: `I just compiled this ARM binary (${filename}). Help me understand the generated assembly and how it maps to my C code.`,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorBody = await response.json().catch(() => ({}));
+        throw new Error(errorBody.error ?? 'Analysis failed');
+      }
+
+      const data: ApiAnalysisResponse = await response.json();
+
+      if (data.session_id) {
+        setActiveSessionId(data.session_id);
+        activeSessionIdRef.current = data.session_id;
+        refreshSessions();
+        loadSessionMessages(data.session_id).catch(console.error);
+      }
+
+      const source = new EventSource(`/api/jobs/${data.job_id}/stream`);
+      sourceRef.current = source;
+
+      source.onmessage = (event) => {
+        const parsed = JSON.parse(event.data);
+        setEvents((prev) => [...prev, { event: 'message', data: parsed }]);
+      };
+
+      EVENT_NAMES.forEach((eventName) => {
+        source.addEventListener(eventName, (e) => {
+          const payload = JSON.parse((e as MessageEvent).data);
+          setEvents((prev) => [...prev, { event: eventName, data: payload }]);
+
+          if (eventName === 'job_completed') {
+            setStatus('done');
+            setStatusMessage('Done');
+            closeSource();
+            // Switch to chat tab and auto-ask
+            setActiveTab('chat');
+            if (payload.session_id) {
+              setActiveSessionId(payload.session_id);
+              activeSessionIdRef.current = payload.session_id;
+              // Trigger auto-ask about the compiled binary
+              setTimeout(() => {
+                const sessionId = payload.session_id;
+                const prompt = `Help me understand this compiled ARM binary (${filename}). What patterns do you see in the assembly?`;
+                setSendingMessage(true);
+                fetch(`/api/chats/${sessionId}/messages`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ content: prompt, call_llm: true }),
+                })
+                  .then((res) => res.ok ? res.json() : Promise.reject(res))
+                  .then((data) => {
+                    if (data?.messages) setMessages(data.messages);
+                    if (data?.error) setChatError(data.error);
+                  })
+                  .catch((err) => {
+                    console.error('Auto-ask failed:', err);
+                    setChatError('Failed to get LLM response');
+                  })
+                  .finally(() => setSendingMessage(false));
+              }, 500);
+            }
+          } else if (eventName === 'analysis_result') {
+            setResult(payload);
+          } else if (eventName === 'job_failed') {
+            setStatus('error');
+            setStatusMessage(payload.error ?? 'Failed');
+            closeSource();
+          }
+        });
+      });
+
+      source.onerror = () => {
+        setStatus('error');
+        setStatusMessage('Connection lost');
+        closeSource();
+      };
+    } catch (error) {
+      setStatus('error');
+      setStatusMessage(error instanceof Error ? error.message : 'Analysis failed');
+    }
+  }, [refreshSessions, loadSessionMessages]);
 
   return (
     <Box
@@ -687,10 +880,15 @@ In 2-3 sentences: what is it and what does it do? I'm ${funcCount > 0 ? 'seeing 
             bgcolor: 'background.paper',
           }}
         >
-          <Box sx={{ p: 1.5, borderBottom: 1, borderColor: 'divider' }}>
+          <Box sx={{ p: 1.5, borderBottom: 1, borderColor: 'divider', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             <Typography variant="caption" color="text.secondary" fontWeight={500}>
               Sessions
             </Typography>
+            <Tooltip title="New Session">
+              <IconButton size="small" onClick={handleNewSession} sx={{ p: 0.5 }}>
+                <AddIcon sx={{ fontSize: 16 }} />
+              </IconButton>
+            </Tooltip>
           </Box>
           <Box sx={{ flex: 1, overflow: 'auto' }}>
             <SessionList
@@ -718,41 +916,52 @@ In 2-3 sentences: what is it and what does it do? I'm ${funcCount > 0 ? 'seeing 
             accept="*/*"
           />
 
-          {/* No file selected - show compiler panel + drop zone */}
+          {/* No file selected - show welcome screen with tabs */}
           {!fileName && !result ? (
-            <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'auto' }}>
-              {/* Compiler Panel */}
-              <Box sx={{ p: 2, pb: 0 }}>
-                <CompilerPanel onBinaryCompiled={handleBinaryCompiled} />
+            <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+              {/* Tabs for empty state */}
+              <Box sx={{ borderBottom: 1, borderColor: 'divider', px: 2 }}>
+                <Tabs value={activeTab} onChange={handleTabChange}>
+                  <Tab value="compiler" label="Compiler" icon={<CodeIcon sx={{ fontSize: 16 }} />} iconPosition="start" />
+                  <Tab value="results" label="Upload Binary" icon={<CloudUploadIcon sx={{ fontSize: 16 }} />} iconPosition="start" />
+                </Tabs>
               </Box>
 
-              {/* Drop zone */}
-              <Box
-                onClick={() => fileInputRef.current?.click()}
-                sx={{
-                  flex: 1,
-                  display: 'flex',
-                  flexDirection: 'column',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  cursor: 'pointer',
-                  bgcolor: isDragging ? 'action.hover' : 'transparent',
-                  border: isDragging ? 2 : 0,
-                  borderStyle: 'dashed',
-                  borderColor: 'primary.main',
-                  m: isDragging ? 2 : 0,
-                  borderRadius: isDragging ? 2 : 0,
-                  transition: 'all 0.2s',
-                  minHeight: 200,
-                }}
-              >
-                <CloudUploadIcon sx={{ fontSize: 56, color: 'text.disabled', mb: 2 }} />
-                <Typography variant="body1" color="text.secondary" fontWeight={500}>
-                  {isDragging ? 'Drop binary here' : 'Drop a binary file to analyze'}
-                </Typography>
-                <Typography variant="caption" color="text.disabled" sx={{ mt: 0.5 }}>
-                  or click anywhere to browse
-                </Typography>
+              <Box sx={{ flex: 1, overflow: 'auto', p: 2 }}>
+                {activeTab === 'compiler' ? (
+                  <CompilerPanel onBinaryCompiled={handleBinaryCompiled} onAnalyzeAndChat={handleAnalyzeAndChat} />
+                ) : (
+                  /* Drop zone */
+                  <Box
+                    onClick={() => fileInputRef.current?.click()}
+                    sx={{
+                      height: '100%',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      cursor: 'pointer',
+                      bgcolor: isDragging ? 'action.hover' : 'transparent',
+                      border: isDragging ? 2 : 1,
+                      borderStyle: 'dashed',
+                      borderColor: isDragging ? 'primary.main' : 'divider',
+                      borderRadius: 2,
+                      transition: 'all 0.2s',
+                      minHeight: 300,
+                    }}
+                  >
+                    <CloudUploadIcon sx={{ fontSize: 64, color: 'text.disabled', mb: 2 }} />
+                    <Typography variant="h6" color="text.secondary" fontWeight={500}>
+                      {isDragging ? 'Drop binary here' : 'Drop a binary file to analyze'}
+                    </Typography>
+                    <Typography variant="body2" color="text.disabled" sx={{ mt: 0.5 }}>
+                      or click to browse
+                    </Typography>
+                    <Typography variant="caption" color="text.disabled" sx={{ mt: 2 }}>
+                      Supports ELF binaries (ARM, x86, etc.)
+                    </Typography>
+                  </Box>
+                )}
               </Box>
             </Box>
           ) : (
@@ -823,6 +1032,7 @@ In 2-3 sentences: what is it and what does it do? I'm ${funcCount > 0 ? 'seeing 
                 <Tabs value={activeTab} onChange={handleTabChange}>
                   <Tab value="results" label="Results" />
                   <Tab value="chat" label="Chat" />
+                  <Tab value="compiler" label="Compiler" icon={<CodeIcon sx={{ fontSize: 16 }} />} iconPosition="start" />
                   <Tab value="logs" label={`Logs${events.length ? ` (${events.length})` : ''}`} />
                 </Tabs>
               </Box>
@@ -862,7 +1072,12 @@ In 2-3 sentences: what is it and what does it do? I'm ${funcCount > 0 ? 'seeing 
                     onSend={handleSendMessage}
                     sending={sendingMessage}
                     error={chatError}
+                    disassembly={disassemblyContext}
+                    onNavigateToAddress={handleNavigateToAddress}
                   />
+                )}
+                {activeTab === 'compiler' && (
+                  <CompilerPanel onBinaryCompiled={handleBinaryCompiled} onAnalyzeAndChat={handleAnalyzeAndChat} />
                 )}
                 {activeTab === 'logs' && <ProgressLog entries={events} />}
               </Box>
@@ -871,6 +1086,15 @@ In 2-3 sentences: what is it and what does it do? I'm ${funcCount > 0 ? 'seeing 
         </Box>
       </Box>
     </Box>
+  );
+};
+
+// Wrap AppContent with ActivityProvider for activity tracking context
+const App = () => {
+  return (
+    <ActivityProvider>
+      <AppContent />
+    </ActivityProvider>
   );
 };
 

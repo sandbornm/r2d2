@@ -317,7 +317,7 @@ def _compile_with_docker(
     
     This is used when native ARM cross-compilers are not available (e.g., on macOS).
     """
-    extra_flags = extra_flags or []
+    extra_flags = list(extra_flags) if extra_flags else []
     
     if not _is_docker_available():
         return CompilerResult(
@@ -369,12 +369,39 @@ def _compile_with_docker(
         # Write source code
         source_file.write_text(source_code)
         
+        # Detect if code uses _start (freestanding) vs main (needs libc)
+        has_start = "_start" in source_code and ("void _start" in source_code or "void\n_start" in source_code)
+        has_main = "int main" in source_code or "void main" in source_code
+        uses_libc = any(h in source_code for h in ["#include <stdio.h>", "#include <stdlib.h>", 
+                                                     "#include <string.h>", "printf(", "malloc("])
+        
         # Build compilation command
         compile_flags = [
             optimization,
             "-g",
             "-fno-stack-protector",
         ]
+        
+        # Handle freestanding vs libc modes
+        if "-nostdlib" in extra_flags or "-ffreestanding" in extra_flags:
+            # User explicitly requested freestanding - ensure we don't link startup files
+            if "-nostartfiles" not in extra_flags:
+                extra_flags.append("-nostartfiles")
+            # If using -nostdlib, remove it and add proper flags
+            if "-nostdlib" in extra_flags:
+                extra_flags.remove("-nostdlib")
+                extra_flags.extend(["-nostartfiles", "-nodefaultlibs"])
+        elif has_start and not has_main:
+            # Code defines _start without main - must avoid C runtime's _start
+            # This is freestanding-style code even if freestanding mode is off
+            extra_flags.extend(["-nostartfiles", "-nodefaultlibs", "-static"])
+        elif uses_libc and has_main:
+            # Code uses libc functions and has main() - link with musl statically
+            if architecture == "arm32":
+                extra_flags.extend(["-static", "-specs=/musl/arm-linux-musleabihf.specs"])
+            else:
+                extra_flags.extend(["-static", "-specs=/musl/aarch64-linux-musl.specs"])
+        
         compile_flags.extend(extra_flags)
         
         # Build the flags string for shell command
@@ -887,10 +914,10 @@ def get_compile_command_preview(
     """
     compilers = detect_compilers()
     
-    # Build extra flags
+    # Build extra flags - use nostartfiles for freestanding to avoid crt1.o conflict
     extra_flags = []
     if freestanding:
-        extra_flags = ["-ffreestanding", "-nostdlib", "-static"]
+        extra_flags = ["-ffreestanding", "-nostartfiles", "-nodefaultlibs", "-static"]
     
     # Determine which compiler will be used
     if architecture in ("arm32", "arm64"):
