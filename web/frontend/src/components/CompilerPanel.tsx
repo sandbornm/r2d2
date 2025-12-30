@@ -242,7 +242,7 @@ export default function CompilerPanel({ onBinaryCompiled, onAnalyzeAndChat }: Co
   const [freestanding, setFreestanding] = useState(true);
   const [compiling, setCompiling] = useState(false);
   const [result, setResult] = useState<CompileResult | null>(null);
-  const [availableArchs, setAvailableArchs] = useState<string[]>([]);
+  const [, setAvailableArchs] = useState<string[]>([]);
   const [compilerInfo, setCompilerInfo] = useState<Record<string, CompilerInfo[]>>({});
   const [dockerAvailable, setDockerAvailable] = useState(false);
   const [dockerImageExists, setDockerImageExists] = useState(false);
@@ -369,23 +369,6 @@ export default function CompilerPanel({ onBinaryCompiled, onAnalyzeAndChat }: Co
   const isDockerCompiler = currentCompiler?.name?.startsWith('docker:') || 
     (commandPreview?.uses_docker ?? false);
   
-  // Determine compile button tooltip
-  const compileButtonTooltip = useMemo(() => {
-    if (!commandPreview) return 'Loading...';
-    if (!commandPreview.available) {
-      if (commandPreview.uses_docker) {
-        if (!dockerAvailable) {
-          return 'Docker is not running. Start Docker Desktop to enable ARM compilation.';
-        }
-        if (!dockerImageExists) {
-          return 'Docker image not found. Run: docker build -t r2d2-compiler -f Dockerfile.compiler .';
-        }
-      }
-      return 'No compiler available for this architecture';
-    }
-    return `Command: ${commandPreview.command}`;
-  }, [commandPreview, dockerAvailable, dockerImageExists]);
-
   // Docker status chip
   const dockerStatusChip = useMemo(() => {
     if (isDockerCompiler || (architecture.startsWith('arm') && !currentCompiler)) {

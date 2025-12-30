@@ -289,6 +289,7 @@ const ARM_DOCS_EXTENDED: Record<string, InstructionDoc> = {
 };
 
 // Simple lookup map for backward compatibility
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 const ARM_DOCS: Record<string, string> = Object.fromEntries(
   Object.entries(ARM_DOCS_EXTENDED).map(([k, v]) => [k, v.desc])
 );
@@ -521,6 +522,7 @@ const getARMDocUrl = (mnemonic: string): string => {
 };
 
 // Alternative ARM doc URL for search fallback
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 const getARMSearchUrl = (mnemonic: string): string => {
   const cleanMnemonic = mnemonic.toLowerCase().replace(/\.w$/, '');
   return `https://developer.arm.com/search#q=${encodeURIComponent(cleanMnemonic + ' instruction')}&sort=relevancy`;
@@ -944,6 +946,7 @@ const DisassemblyViewer: FC<DisassemblyViewerProps> = ({
     setTimeout(() => setCopied(false), 1500);
   }, [selectedText]);
 
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const handleAskAboutSelection = useCallback(() => {
     if (onAskAbout && selectedText) {
       onAskAbout(selectedText);

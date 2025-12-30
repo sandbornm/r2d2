@@ -127,7 +127,9 @@ const ARM_INSTRUCTIONS = new Set([
   'push', 'pop',
 ]);
 
-const ARM_DIRECTIVES = new Set([
+// ARM directives - used for syntax highlighting validation
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+const _ARM_DIRECTIVES = new Set([
   '.text', '.data', '.bss', '.section', '.global', '.globl', '.local', '.weak',
   '.byte', '.hword', '.word', '.quad', '.ascii', '.asciz', '.string', '.space', '.skip', '.zero',
   '.align', '.balign', '.p2align', '.type', '.size', '.file', '.loc', '.cfi_startproc', '.cfi_endproc',
@@ -139,14 +141,9 @@ const ARM_DIRECTIVES = new Set([
 interface AsmLineProps {
   lineNumber: number;
   content: string;
-  isLabel: boolean;
-  isDirective: boolean;
-  isInstruction: boolean;
 }
 
-function AsmLine({ lineNumber, content, isLabel, isDirective, isInstruction }: AsmLineProps) {
-  const trimmed = content.trim();
-  
+function AsmLine({ lineNumber, content }: AsmLineProps) {
   // Parse the line into tokens for coloring
   const tokens = useMemo(() => {
     const result: { text: string; type: string }[] = [];
@@ -220,7 +217,7 @@ function AsmLine({ lineNumber, content, isLabel, isDirective, isInstruction }: A
       }
 
       // Punctuation
-      if ((match = remaining.match(/^([,\[\]{}()+\-*!:]+)/))) {
+      if ((match = remaining.match(/^([,[\]{}()+\-*!:]+)/))) {
         result.push({ text: match[1], type: 'punctuation' });
         remaining = remaining.slice(match[1].length);
         continue;
@@ -317,23 +314,13 @@ export function AsmViewer({
         py: 1,
       }}
     >
-      {lines.map((line, idx) => {
-        const trimmed = line.trim();
-        const isLabel = /^[._a-zA-Z][._a-zA-Z0-9]*:/.test(trimmed);
-        const isDirective = trimmed.startsWith('.');
-        const isInstruction = !isLabel && !isDirective && trimmed.length > 0 && !trimmed.startsWith('/') && !trimmed.startsWith('#');
-        
-        return (
-          <AsmLine
-            key={idx}
-            lineNumber={idx + 1}
-            content={line}
-            isLabel={isLabel}
-            isDirective={isDirective}
-            isInstruction={isInstruction}
-          />
-        );
-      })}
+      {lines.map((line, idx) => (
+        <AsmLine
+          key={idx}
+          lineNumber={idx + 1}
+          content={line}
+        />
+      ))}
     </Box>
   );
 }

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
-from typing import Iterable
+from typing import Any, Iterable
 
 from .db import Database
 from .models import AttachmentType, ChatMessage, ChatSession
@@ -185,7 +185,7 @@ class ChatDAO:
 
     # Internal helpers ---------------------------------------------------
     @staticmethod
-    def _row_to_session(row) -> ChatSession:
+    def _row_to_session(row: Any) -> ChatSession:
         session = ChatSession(
             binary_path=row["binary_path"],
             session_id=row["session_id"],
@@ -198,7 +198,7 @@ class ChatDAO:
         return session
 
     @staticmethod
-    def _row_to_message(row) -> ChatMessage:
+    def _row_to_message(row: Any) -> ChatMessage:
         attachments_raw = row["attachments"] or "[]"
         try:
             attachments = json.loads(attachments_raw)

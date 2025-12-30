@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from flask import Flask, Response, jsonify, request, send_from_directory
-from flask_cors import CORS
+from flask_cors import CORS  # type: ignore[import-untyped]
 
 from ..analysis import AnalysisOrchestrator, AnalysisResult
 from ..llm import ChatMessage as LLMChatMessage, LLMBridge
@@ -836,7 +836,7 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
         arch = "aarch64" if "arm64" in filename.lower() or "aarch64" in filename.lower() else "arm"
         
         # Try Docker objdump first (for cross-arch), then native
-        listing_lines: list[dict] = []
+        listing_lines: list[dict[str, Any]] = []
         raw_output = ""
         
         try:
@@ -1030,7 +1030,7 @@ def _format_activity_context(activities: list[dict[str, Any]] | None) -> str | N
     lines.append("")
     
     # Summarize patterns
-    tab_visits = {}
+    tab_visits: dict[str, int] = {}
     functions_viewed = []
     addresses_viewed = []
     code_selections = 0

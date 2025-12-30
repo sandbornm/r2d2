@@ -88,7 +88,7 @@ class ClaudeClient:
                 max_tokens=self._config.llm.max_tokens,
                 temperature=self._config.llm.temperature,
                 system=system_prompt or "",
-                messages=formatted,
+                messages=formatted,  # type: ignore[arg-type]
             )
 
             if not response.content:

@@ -260,7 +260,7 @@ const MarkdownRenderer: FC<MarkdownRendererProps> = ({
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
-          code({ node, className, children, ...props }) {
+          code({ className, children }) {
             const isInline = !className && typeof children === 'string' && !children.includes('\n');
             
             if (isInline) {

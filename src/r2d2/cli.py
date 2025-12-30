@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import typer
 from rich.console import Console
@@ -52,15 +52,15 @@ def analyze(
             "notes": result.notes,
             "issues": result.issues,
         }
-        plan = result.plan if hasattr(result, "plan") else None
+        plan_opt = result.plan if hasattr(result, "plan") else None
         pipeline_hint = ""
-        if plan:
+        if plan_opt:
             enabled_segments: list[str] = []
-            if getattr(plan, "quick", False):
+            if getattr(plan_opt, "quick", False):
                 enabled_segments.append("quick scan (libmagic, radare2 metadata, strings)")
-            if getattr(plan, "deep", False):
+            if getattr(plan_opt, "deep", False):
                 enabled_segments.append("deep analysis (radare2 analysis, capstone disassembly)")
-            if getattr(plan, "run_angr", False):
+            if getattr(plan_opt, "run_angr", False):
                 enabled_segments.append("symbolic pivots with angr")
             if enabled_segments:
                 pipeline_hint = (
@@ -136,7 +136,7 @@ def trajectories(
     console.print(table)
 
 
-def _render_result(result) -> None:
+def _render_result(result: Any) -> None:
     console.rule(f"Analysis: {result.binary.name}")
     meta = result.quick_scan.get("identification", {})
     info = result.quick_scan.get("radare2", {}).get("info", {}) if isinstance(result.quick_scan.get("radare2"), dict) else {}

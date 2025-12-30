@@ -1,4 +1,6 @@
 import AddIcon from '@mui/icons-material/Add';
+import ChevronLeftIcon from '@mui/icons-material/ChevronLeft';
+import ChevronRightIcon from '@mui/icons-material/ChevronRight';
 import CloudUploadIcon from '@mui/icons-material/CloudUpload';
 import CodeIcon from '@mui/icons-material/Code';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
@@ -21,7 +23,6 @@ import {
   TextField,
   Tooltip,
   Typography,
-  useTheme,
 } from '@mui/material';
 import {
   DragEvent,
@@ -38,7 +39,7 @@ import CompilerPanel from './components/CompilerPanel';
 import ProgressLog from './components/ProgressLog';
 import ResultViewer from './components/ResultViewer';
 import SessionList from './components/SessionList';
-import SettingsDrawer, { AI_MODELS, AnalysisSettings, ModelId } from './components/SettingsDrawer';
+import SettingsDrawer, { AnalysisSettings } from './components/SettingsDrawer';
 import { ActivityProvider, useActivity } from './contexts/ActivityContext';
 import { useThemeMode } from './main';
 import type {
@@ -78,7 +79,7 @@ const DEFAULT_SETTINGS: AnalysisSettings = {
   quickScanOnly: false,
   enableAngr: true,
   autoAskLLM: false,
-  selectedModel: 'claude-sonnet-4-5',
+  selectedModel: 'claude-opus-4-5',
 };
 
 const loadSettings = (): AnalysisSettings => {
@@ -92,7 +93,6 @@ const loadSettings = (): AnalysisSettings => {
 };
 
 const AppContent = () => {
-  const theme = useTheme();
   const { mode, toggleTheme } = useThemeMode();
   const isDark = mode === 'dark';
   const activity = useActivity();
@@ -115,6 +115,7 @@ const AppContent = () => {
   const [uploading, setUploading] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settings, setSettings] = useState<AnalysisSettings>(loadSettings);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   const sourceRef = useRef<EventSource | null>(null);
   const activeSessionIdRef = useRef<string | null>(null);
@@ -445,17 +446,10 @@ const AppContent = () => {
     setSendingMessage(true);
     
     // Extract key info from analysis if available
-    const quickScan = analysisResult?.quick_scan ?? result?.quick_scan ?? {};
-    const deepScan = analysisResult?.deep_scan ?? result?.deep_scan ?? {};
-    const r2Quick = (quickScan.radare2 ?? {}) as Record<string, any>;
-    const r2Deep = (deepScan.radare2 ?? {}) as Record<string, any>;
-    const binInfo = (r2Quick.info?.bin ?? {}) as Record<string, any>;
-    
-    const arch = binInfo.arch ?? 'unknown';
-    const bits = binInfo.bits ?? '?';
+    const analysisDeepScan = analysisResult?.deep_scan ?? result?.deep_scan ?? {};
+    const r2Deep = (analysisDeepScan.radare2 ?? {}) as Record<string, unknown>;
     const funcCount = Array.isArray(r2Deep.functions) ? r2Deep.functions.length : 0;
-    const importCount = Array.isArray(r2Quick.imports) ? r2Quick.imports.length : 0;
-    const fileName = analysisResult?.binary?.split('/').pop() ?? 'this binary';
+    const currentFileName = analysisResult?.binary?.split('/').pop() ?? 'this binary';
     
     // Build a simple, friendly intro prompt
     let prompt: string;
@@ -464,10 +458,10 @@ const AppContent = () => {
       // User has a specific goal
       prompt = `My goal: ${userGoal.trim()}
 
-What can you tell me about ${fileName}? Keep it brief.`;
+What can you tell me about ${currentFileName}? Keep it brief.`;
     } else {
       // Simple intro - just ask for a quick summary
-      prompt = `Give me a quick intro to ${fileName}.
+      prompt = `Give me a quick intro to ${currentFileName}.
 
 In 2-3 sentences: what is it and what does it do? I'm ${funcCount > 0 ? 'seeing ' + funcCount + ' functions' : 'just getting started'}.`;
     }
@@ -872,32 +866,48 @@ In 2-3 sentences: what is it and what does it do? I'm ${funcCount > 0 ? 'seeing 
         <Box
           component="aside"
           sx={{
-            width: 240,
+            width: sidebarCollapsed ? 40 : 240,
+            minWidth: sidebarCollapsed ? 40 : 240,
             borderRight: 1,
             borderColor: 'divider',
             display: 'flex',
             flexDirection: 'column',
             bgcolor: 'background.paper',
+            transition: 'width 0.2s ease, min-width 0.2s ease',
+            overflow: 'hidden',
           }}
         >
-          <Box sx={{ p: 1.5, borderBottom: 1, borderColor: 'divider', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <Typography variant="caption" color="text.secondary" fontWeight={500}>
-              Sessions
-            </Typography>
-            <Tooltip title="New Session">
-              <IconButton size="small" onClick={handleNewSession} sx={{ p: 0.5 }}>
-                <AddIcon sx={{ fontSize: 16 }} />
-              </IconButton>
-            </Tooltip>
+          <Box sx={{ p: sidebarCollapsed ? 0.5 : 1.5, borderBottom: 1, borderColor: 'divider', display: 'flex', alignItems: 'center', justifyContent: sidebarCollapsed ? 'center' : 'space-between' }}>
+            {!sidebarCollapsed && (
+              <Typography variant="caption" color="text.secondary" fontWeight={500}>
+                Sessions
+              </Typography>
+            )}
+            <Stack direction="row" spacing={0.5} alignItems="center">
+              {!sidebarCollapsed && (
+                <Tooltip title="New Session">
+                  <IconButton size="small" onClick={handleNewSession} sx={{ p: 0.5 }}>
+                    <AddIcon sx={{ fontSize: 16 }} />
+                  </IconButton>
+                </Tooltip>
+              )}
+              <Tooltip title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}>
+                <IconButton size="small" onClick={() => setSidebarCollapsed(!sidebarCollapsed)} sx={{ p: 0.5 }}>
+                  {sidebarCollapsed ? <ChevronRightIcon sx={{ fontSize: 16 }} /> : <ChevronLeftIcon sx={{ fontSize: 16 }} />}
+                </IconButton>
+              </Tooltip>
+            </Stack>
           </Box>
-          <Box sx={{ flex: 1, overflow: 'auto' }}>
-            <SessionList
-              sessions={sessions}
-              activeSessionId={activeSessionId}
-              onSelect={handleSessionSelect}
-              onDelete={handleDeleteSession}
-            />
-          </Box>
+          {!sidebarCollapsed && (
+            <Box sx={{ flex: 1, overflow: 'auto' }}>
+              <SessionList
+                sessions={sessions}
+                activeSessionId={activeSessionId}
+                onSelect={handleSessionSelect}
+                onDelete={handleDeleteSession}
+              />
+            </Box>
+          )}
         </Box>
 
         {/* Main panel */}
@@ -1057,8 +1067,9 @@ In 2-3 sentences: what is it and what does it do? I'm ${funcCount > 0 ? 'seeing 
                         prompt = codeOrQuestion;
                       } else {
                         // Just code, use boilerplate analysis
-                        const archName = (result?.quick_scan?.radare2 as any)?.info?.bin?.arch || 'assembly';
-                        prompt = `Explain this ${archName} code:\n\n\`\`\`asm\n${codeOrQuestion}\n\`\`\`\n\nWhat does it do? Walk me through each instruction. Are there any security concerns or interesting patterns?`;
+                        const archName = ((result?.quick_scan?.radare2 as Record<string, unknown> | undefined)?.info as Record<string, unknown> | undefined)?.bin as Record<string, unknown> | undefined;
+                        const archNameStr = (archName?.arch as string | undefined) || 'assembly';
+                        prompt = `Explain this ${archNameStr} code:\n\n\`\`\`asm\n${codeOrQuestion}\n\`\`\`\n\nWhat does it do? Walk me through each instruction. Are there any security concerns or interesting patterns?`;
                       }
                       
                       handleSendMessage(prompt, { callLLM: true });

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 from .db import Database
 from .models import AnalysisTrajectory, TrajectoryAction
@@ -66,7 +66,7 @@ class TrajectoryDAO:
             yield trajectory
 
     @staticmethod
-    def _next_seq(conn, trajectory_id: str) -> int:
+    def _next_seq(conn: Any, trajectory_id: str) -> int:
         seq = conn.execute(
             "SELECT MAX(seq) FROM trajectory_actions WHERE trajectory_id = ?",
             (trajectory_id,),

@@ -9,7 +9,6 @@ import {
   Menu,
   MenuItem,
   Typography,
-  useTheme,
 } from '@mui/material';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
@@ -31,7 +30,6 @@ export const SessionList: FC<SessionListProps> = ({
   onSelect,
   onDelete,
 }) => {
-  const theme = useTheme();
   const [menuAnchor, setMenuAnchor] = useState<null | HTMLElement>(null);
   const [menuSessionId, setMenuSessionId] = useState<string | null>(null);
 

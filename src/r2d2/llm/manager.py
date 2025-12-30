@@ -56,7 +56,7 @@ class LLMBridge:
                 continue
 
             try:
-                response = client.chat(messages)  # type: ignore[union-attr]
+                response = client.chat(messages)  # type: ignore[arg-type]
                 self._last_provider = provider
                 return response
             except (OpenAIError, ClaudeError) as exc:
@@ -92,7 +92,7 @@ class LLMBridge:
                 continue
 
             try:
-                response = client.summarize_analysis(summary)  # type: ignore[union-attr]
+                response = client.summarize_analysis(summary)
                 self._last_provider = provider
                 return response
             except (OpenAIError, ClaudeError) as exc:

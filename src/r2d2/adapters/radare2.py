@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import shutil
 import types
@@ -26,7 +25,7 @@ class Radare2Adapter:
             import r2pipe
         except ModuleNotFoundError as exc:  # pragma: no cover - import guard
             raise AdapterUnavailable("r2pipe module is not installed") from exc
-        return r2pipe
+        return r2pipe  # type: ignore[no-any-return]
 
     def is_available(self) -> bool:
         return shutil.which("radare2") is not None and self._module_available()
@@ -100,22 +99,23 @@ class Radare2Adapter:
             for func in sorted_functions:
                 func_offset = func.get("offset")
                 func_name = func.get("name", f"fcn_{func_offset:x}" if func_offset else "unknown")
-                
+
                 if func_offset is not None:
                     try:
                         # Get function CFG blocks
                         func_cfg = session.cmdj(f"agfj @ {func_offset}")
+                        blocks = []
+
                         if func_cfg:
-                            blocks = []
                             for graph in func_cfg if isinstance(func_cfg, list) else [func_cfg]:
                                 if isinstance(graph, dict) and "blocks" in graph:
                                     for block in graph.get("blocks", []):
                                         block_offset = block.get("offset")
                                         block_size = block.get("size", 0)
-                                        
-                                        # Get block disassembly
+
+                                        # Get block disassembly using pDj for better format
                                         block_disasm = []
-                                        if block_offset:
+                                        if block_offset and block_size > 0:
                                             try:
                                                 block_ops = session.cmdj(f"pDj {block_size} @ {block_offset}")
                                                 if block_ops:
@@ -129,7 +129,20 @@ class Radare2Adapter:
                                                             })
                                             except Exception:
                                                 pass
-                                        
+
+                                        # If pDj failed, try to use ops from agfj
+                                        if not block_disasm:
+                                            raw_ops = block.get("ops", [])
+                                            for op in raw_ops[:50]:
+                                                if isinstance(op, dict):
+                                                    op_offset = op.get("offset")
+                                                    block_disasm.append({
+                                                        "addr": hex(op_offset) if op_offset else "?",
+                                                        "bytes": op.get("bytes", ""),
+                                                        "opcode": op.get("opcode", ""),
+                                                        "type": op.get("type", ""),
+                                                    })
+
                                         blocks.append({
                                             "offset": hex(block_offset) if block_offset else None,
                                             "size": block_size,
@@ -138,7 +151,9 @@ class Radare2Adapter:
                                             "fail": hex(block.get("fail")) if block.get("fail") else None,
                                             "disassembly": block_disasm,
                                         })
-                            
+
+                        # Only add function if we got blocks
+                        if blocks:
                             function_cfgs.append({
                                 "name": func_name,
                                 "offset": hex(func_offset),
@@ -148,18 +163,17 @@ class Radare2Adapter:
                                 "blocks": blocks,
                                 "block_count": len(blocks),
                             })
-                            
+
                             # Store snippets for this function
-                            if blocks:
-                                function_snippets.append({
-                                    "function": func_name,
-                                    "offset": hex(func_offset),
-                                    "blocks": [{
-                                        "offset": b["offset"],
-                                        "disassembly": b["disassembly"][:10],
-                                    } for b in blocks[:10]],
-                                })
-                                
+                            function_snippets.append({
+                                "function": func_name,
+                                "offset": hex(func_offset),
+                                "blocks": [{
+                                    "offset": b["offset"],
+                                    "disassembly": b["disassembly"][:10],
+                                } for b in blocks[:10]],
+                            })
+
                     except Exception as exc:
                         _LOGGER.debug("Failed to get CFG for %s: %s", func_name, exc)
 

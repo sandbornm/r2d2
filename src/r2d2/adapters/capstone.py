@@ -19,7 +19,7 @@ class CapstoneAdapter:
 
     def is_available(self) -> bool:
         try:
-            import capstone  # noqa: F401
+            import capstone  # type: ignore[import-untyped]  # noqa: F401
         except ModuleNotFoundError:
             return False
         return True
@@ -29,7 +29,7 @@ class CapstoneAdapter:
             import capstone
         except ModuleNotFoundError as exc:  # pragma: no cover - import guard
             raise AdapterUnavailable("capstone module is not installed") from exc
-        return capstone
+        return capstone  # type: ignore[no-any-return]
 
     def quick_scan(self, binary: Path, *, arch: str | None = None, entry: int | None = None) -> dict[str, Any]:
         if not self.is_available():

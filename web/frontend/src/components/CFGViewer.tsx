@@ -391,27 +391,48 @@ const CFGViewer: FC<CFGViewerProps> = ({
 
   // Get blocks from selected function, or synthesize from angr nodes
   const currentBlocks = useMemo(() => {
+    // Prefer radare2 function_cfgs blocks (has more detail)
     if (selectedFunction?.blocks && selectedFunction.blocks.length > 0) {
       return selectedFunction.blocks;
     }
-    
+
     // Try to find blocks from angr nodes for this function
     if (selectedFunction && nodes.length > 0) {
       const funcAddr = selectedFunction.offset;
-      const matchingNodes = nodes.filter(
-        n => n.function === funcAddr || n.function_name === selectedFunction.name
-      );
-      return matchingNodes.map(n => ({
+      const funcName = selectedFunction.name;
+
+      // Match by function address or name (handle both hex formats)
+      const matchingNodes = nodes.filter(n => {
+        // Normalize addresses for comparison (remove leading zeros)
+        const normalizeAddr = (addr: string | null | undefined) =>
+          addr ? addr.toLowerCase().replace(/^0x0+/, '0x') : '';
+
+        const nodeFunc = normalizeAddr(n.function);
+        const targetFunc = normalizeAddr(funcAddr);
+        const nodeFuncName = n.function_name;
+
+        return (
+          (nodeFunc && targetFunc && nodeFunc === targetFunc) ||
+          (nodeFuncName && funcName && nodeFuncName === funcName)
+        );
+      });
+
+      // If no matches by function, check if it's the first/entry function
+      const blocksToUse = matchingNodes.length > 0 ? matchingNodes : nodes.slice(0, 10);
+
+      return blocksToUse.map(n => ({
         offset: n.addr,
         size: n.size || 0,
-        disassembly: n.disassembly?.map(d => ({
-          addr: d.addr,
-          opcode: d.mnemonic ? `${d.mnemonic} ${d.op_str || ''}` : d.opcode || '',
-          bytes: d.bytes,
-        })),
+        jump: null,
+        fail: null,
+        disassembly: n.disassembly?.map((d: Record<string, unknown>) => ({
+          addr: d.addr || '?',
+          opcode: d.mnemonic ? `${d.mnemonic} ${d.op_str || ''}`.trim() : (d.opcode || ''),
+          bytes: d.bytes || '',
+        })) || [],
       }));
     }
-    
+
     return [];
   }, [selectedFunction, nodes]);
 
@@ -446,22 +467,29 @@ const CFGViewer: FC<CFGViewerProps> = ({
     navigator.clipboard.writeText(text);
   }, [currentBlock]);
 
-  // Get disassembly from current block (handle both formats)
+  // Get disassembly from current block (handle both radare2 and angr formats)
   const blockDisasm = useMemo(() => {
     if (!currentBlock) return [];
-    
+
+    // Handle radare2 format (disassembly array with addr/opcode)
     if (currentBlock.disassembly && currentBlock.disassembly.length > 0) {
-      return currentBlock.disassembly;
+      return currentBlock.disassembly.map((d: Record<string, unknown>) => ({
+        addr: d.addr || '?',
+        // Handle both radare2 (opcode) and angr (mnemonic + op_str) formats
+        opcode: d.opcode || (d.mnemonic ? `${d.mnemonic} ${d.op_str || ''}`.trim() : ''),
+        bytes: d.bytes || '',
+      }));
     }
-    
+
+    // Handle radare2 ops format (from agfj command)
     if (currentBlock.ops && currentBlock.ops.length > 0) {
-      return currentBlock.ops.map(op => ({
-        addr: op.offset ? `0x${op.offset.toString(16)}` : '?',
+      return currentBlock.ops.map((op: Record<string, unknown>) => ({
+        addr: typeof op.offset === 'number' ? `0x${op.offset.toString(16)}` : (op.offset || '?'),
         opcode: op.opcode || '',
         bytes: op.bytes || '',
       }));
     }
-    
+
     return [];
   }, [currentBlock]);
 
@@ -527,7 +555,7 @@ const CFGViewer: FC<CFGViewerProps> = ({
             CFG Generation Checklist:
           </Typography>
           <Typography variant="caption" component="ul" sx={{ pl: 2, m: 0, color: 'text.secondary' }}>
-            <li>Enable "Full Analysis" (not quick scan)</li>
+            <li>Enable &quot;Full Analysis&quot; (not quick scan)</li>
             <li>angr must be installed: <code>pip install angr</code></li>
             <li>Binary must be a valid ELF/PE executable</li>
             <li>Check console logs for errors</li>

@@ -150,13 +150,14 @@ const ResultViewer: FC<ResultViewerProps> = ({ result, sessionId, onAskAboutCode
   const deepScan = result.deep_scan ?? {};
 
   // Extract data from radare2
-  const r2Quick = (quickScan.radare2 ?? {}) as Record<string, any>;
-  const r2Deep = (deepScan.radare2 ?? {}) as Record<string, any>;
-  const angrDeep = (deepScan.angr ?? {}) as Record<string, any>;
+  const r2Quick = (quickScan.radare2 ?? {}) as Record<string, unknown>;
+  const r2Deep = (deepScan.radare2 ?? {}) as Record<string, unknown>;
+  const angrDeep = (deepScan.angr ?? {}) as Record<string, unknown>;
 
   // Binary metadata
-  const binInfo = (r2Quick.info?.bin ?? {}) as Record<string, any>;
-  const coreInfo = (r2Quick.info?.core ?? {}) as Record<string, any>;
+  const r2QuickInfo = r2Quick.info as Record<string, unknown> | undefined;
+  const binInfo = (r2QuickInfo?.bin ?? {}) as Record<string, unknown>;
+  const coreInfo = (r2QuickInfo?.core ?? {}) as Record<string, unknown>;
   const rawArch = binInfo.arch ?? 'unknown';
   const bits = binInfo.bits ?? null;
   const machine = binInfo.machine ?? '';
@@ -219,10 +220,12 @@ const ResultViewer: FC<ResultViewerProps> = ({ result, sessionId, onAskAboutCode
   const imports = Array.isArray(r2Quick.imports) ? r2Quick.imports : [];
   const functionCfgs = Array.isArray(r2Deep.function_cfgs) ? r2Deep.function_cfgs : [];
   
-  // angr data
-  const angrCfg = (angrDeep.cfg ?? {}) as Record<string, any>;
+  // angr data - properly extract CFG nodes, edges, and stats
+  const angrCfg = (angrDeep.cfg ?? {}) as Record<string, unknown>;
   const angrNodes = Array.isArray(angrCfg.nodes) ? angrCfg.nodes : [];
   const angrEdges = Array.isArray(angrCfg.edges) ? angrCfg.edges : [];
+  const angrActive = typeof angrDeep.active === 'number' ? angrDeep.active : 0;
+  const angrFound = typeof angrDeep.found === 'number' ? angrDeep.found : 0;
 
   // Disassembly
   const entryDisasm = typeof r2Deep.entry_disassembly === 'string' ? r2Deep.entry_disassembly : null;
@@ -232,13 +235,13 @@ const ResultViewer: FC<ResultViewerProps> = ({ result, sessionId, onAskAboutCode
   // Top functions sorted by size
   const topFunctions = useMemo(() => {
     return functions
-      .filter((fn: any) => typeof fn.offset === 'number')
-      .sort((a: any, b: any) => (b.size || 0) - (a.size || 0))
+      .filter((fn: Record<string, unknown>) => typeof fn.offset === 'number')
+      .sort((a: Record<string, unknown>, b: Record<string, unknown>) => ((b.size as number) || 0) - ((a.size as number) || 0))
       .slice(0, 15)
-      .map((fn: any) => ({
-        name: fn.name || `sub_${fn.offset.toString(16)}`,
-        offset: fn.offset,
-        size: fn.size || 0,
+      .map((fn: Record<string, unknown>) => ({
+        name: (fn.name as string) || `sub_${(fn.offset as number).toString(16)}`,
+        offset: fn.offset as number,
+        size: (fn.size as number) || 0,
       }));
   }, [functions]);
 
@@ -246,7 +249,7 @@ const ResultViewer: FC<ResultViewerProps> = ({ result, sessionId, onAskAboutCode
   const interestingStrings = useMemo(() => {
     const seen = new Set<string>();
     return strings
-      .map((s: any) => s.string ?? '')
+      .map((s: Record<string, unknown>) => (s.string as string) ?? '')
       .filter((s: string) => s.length >= 4 && s.length <= 100)
       .filter((s: string) => {
         if (seen.has(s)) return false;
@@ -260,7 +263,7 @@ const ResultViewer: FC<ResultViewerProps> = ({ result, sessionId, onAskAboutCode
   const topImports = useMemo(() => {
     return imports
       .slice(0, 15)
-      .map((imp: any) => imp.name || 'unknown');
+      .map((imp: Record<string, unknown>) => (imp.name as string) || 'unknown');
   }, [imports]);
 
   const fileName = result.binary.split('/').pop() || result.binary;
@@ -452,8 +455,8 @@ const ResultViewer: FC<ResultViewerProps> = ({ result, sessionId, onAskAboutCode
               edges={angrEdges}
               functions={functionCfgs}
               radareFunctions={functions}
-              angrActive={angrDeep.active}
-              angrFound={angrDeep.found}
+              angrActive={angrActive}
+              angrFound={angrFound}
             />
           </Box>
         )}
