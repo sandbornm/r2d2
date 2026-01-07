@@ -32,6 +32,7 @@ class AnalysisSettings(BaseModel):
     timeout_deep: int = 60
     enable_angr: bool = True
     enable_ghidra: bool = False
+    enable_frida: bool = False
     require_elf: bool = True
     default_radare_profile: str = "analysis.quick"
     enable_trajectory_recording: bool = True

@@ -11,6 +11,7 @@ import {
   Alert,
   Box,
   Button,
+  Chip,
   CircularProgress,
   FormControl,
   IconButton,
@@ -1050,10 +1051,25 @@ In 2-3 sentences: what is it and what does it do? I'm ${funcCount > 0 ? 'seeing 
               {/* Content */}
               <Box sx={{ flex: 1, overflow: 'auto', p: 2 }}>
                 {activeTab === 'results' && (
-                  <ResultViewer 
-                    result={result} 
-                    sessionId={activeSessionId}
-                    onAskAboutCode={(codeOrQuestion) => {
+                  <>
+                    {health && (
+                      <Box sx={{ mb: 2, display: 'flex', alignItems: 'center', gap: 1 }}>
+                        <Typography variant="caption" color="text.secondary">
+                          Analysis powered by:
+                        </Typography>
+                        <Chip
+                          size="small"
+                          label={health.model_names?.[health.model] || health.model}
+                          color="primary"
+                          variant="outlined"
+                          sx={{ fontSize: '0.7rem', height: 20 }}
+                        />
+                      </Box>
+                    )}
+                    <ResultViewer
+                      result={result}
+                      sessionId={activeSessionId}
+                      onAskAboutCode={(codeOrQuestion) => {
                       // Switch to chat tab and send the code/question
                       setActiveTab('chat');
                       
@@ -1073,8 +1089,9 @@ In 2-3 sentences: what is it and what does it do? I'm ${funcCount > 0 ? 'seeing 
                       }
                       
                       handleSendMessage(prompt, { callLLM: true });
-                    }}
-                  />
+                      }}
+                    />
+                  </>
                 )}
                 {activeTab === 'chat' && (
                   <ChatPanel

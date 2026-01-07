@@ -16,6 +16,7 @@ from ..adapters.base import AdapterRegistry, AdapterUnavailable, AnalyzerAdapter
 from ..adapters import (
     AngrAdapter,
     CapstoneAdapter,
+    FridaAdapter,
     GhidraAdapter,
     LibmagicAdapter,
     Radare2Adapter,
@@ -66,6 +67,8 @@ class AnalysisOrchestrator:
             adapters.append(cast(AnalyzerAdapter, GhidraAdapter(env.ghidra, config.ghidra.project_dir)))
         if config.analysis.enable_angr:
             adapters.append(cast(AnalyzerAdapter, AngrAdapter()))
+        if config.analysis.enable_frida:
+            adapters.append(cast(AnalyzerAdapter, FridaAdapter()))
 
         self._registry = AdapterRegistry(adapters)
 
@@ -200,6 +203,7 @@ class AnalysisOrchestrator:
         # Only get angr adapter if run_angr is enabled in plan
         run_angr = plan.run_angr if plan else self._config.analysis.enable_angr
         angr = self._registry.get("angr") if self._has_adapter("angr") and run_angr else None
+        frida = self._registry.get("frida") if self._has_adapter("frida") and self._config.analysis.enable_frida else None
 
         if radare:
             try:
@@ -282,6 +286,25 @@ class AnalysisOrchestrator:
                     progress_callback,
                     "adapter_failed",
                     {"stage": "deep", "adapter": "angr", "error": str(exc)},
+                )
+
+        if frida:
+            try:
+                self._emit_progress(progress_callback, "adapter_started", {"stage": "deep", "adapter": "frida"})
+                frida_payload = frida.deep_scan(binary)
+                result.deep_scan["frida"] = frida_payload
+                self._record_action(trajectory, "frida.deep", frida_payload)
+                self._emit_progress(
+                    progress_callback,
+                    "adapter_completed",
+                    {"stage": "deep", "adapter": "frida", "payload": frida_payload},
+                )
+            except AdapterUnavailable as exc:
+                result.notes.append(str(exc))
+                self._emit_progress(
+                    progress_callback,
+                    "adapter_failed",
+                    {"stage": "deep", "adapter": "frida", "error": str(exc)},
                 )
 
         self._emit_progress(progress_callback, "stage_completed", {"stage": "deep"})

@@ -21,6 +21,7 @@ timeout_quick = 5
 timeout_deep = 60
 enable_angr = true
 enable_ghidra = false
+enable_frida = false
 require_elf = true
 
 default_radare_profile = "analysis.quick"

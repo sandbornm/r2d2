@@ -52,7 +52,8 @@ src/r2d2/
 │   ├── angr.py            # Symbolic execution & CFG
 │   ├── capstone.py        # Instruction-level disassembly
 │   ├── libmagic.py        # File type identification
-│   └── ghidra.py          # Headless decompilation
+│   ├── ghidra.py          # Headless decompilation
+│   └── frida.py           # Dynamic instrumentation
 ├── analysis/
 │   ├── orchestrator.py    # Multi-stage analysis pipeline
 │   └── resource_tree.py   # OFRAK-inspired binary hierarchy
@@ -168,6 +169,14 @@ R2D2_WEB_PORT=5050             # Flask port
 GHIDRA_INSTALL_DIR=/opt/ghidra # Ghidra path (optional)
 ```
 
+### Analysis Settings (in config.toml)
+```toml
+[analysis]
+enable_angr = true     # Enable angr for CFG analysis
+enable_ghidra = false  # Enable Ghidra decompilation
+enable_frida = false   # Enable Frida dynamic instrumentation
+```
+
 ### Config Files
 - `config/default_config.toml` - Default settings
 - `~/.config/r2d2/config.toml` - User overrides
@@ -210,6 +219,15 @@ sudo apt-get install radare2
 ### angr import errors
 ```bash
 uv sync --extra analyzers
+```
+
+### Frida not available
+```bash
+# Install frida-tools
+pip install frida frida-tools
+
+# On Linux, may need to run as root for certain operations
+# Enable in config: analysis.enable_frida = true
 ```
 
 ### Frontend proxy errors
