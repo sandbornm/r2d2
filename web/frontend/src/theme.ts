@@ -1,4 +1,6 @@
-import { alpha, createTheme, PaletteMode } from '@mui/material/styles';
+import { alpha, createTheme } from '@mui/material/styles';
+
+type PaletteMode = 'light' | 'dark';
 
 // Clean, minimal color palette - inspired by technical documentation
 const colors = {

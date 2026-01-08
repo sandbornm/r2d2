@@ -79,7 +79,7 @@ src/r2d2/
 web/frontend/src/
 ├── App.tsx                # Main application shell with tabs: Results, Chat, Compiler, Logs
 ├── components/
-│   ├── CFGViewer.tsx      # Control flow graph visualization (angr + radare2)
+│   ├── CFGViewer.tsx      # Control flow graph with zoom, maximize, function naming
 │   ├── CodeEditor.tsx     # C code editor + AsmViewer with syntax highlighting
 │   ├── CompilerPanel.tsx  # ARM cross-compiler UI with examples
 │   ├── DisassemblyViewer.tsx  # Annotatable disassembly with tooltips
@@ -87,7 +87,8 @@ web/frontend/src/
 │   ├── ProgressLog.tsx    # Real-time analysis events (SSE)
 │   ├── ResultViewer.tsx   # Analysis results with tabbed view
 │   ├── SessionList.tsx    # Session sidebar with new/delete
-│   └── SettingsDrawer.tsx # Configuration UI
+│   ├── SettingsDrawer.tsx # Configuration UI
+│   └── ToolAttribution.tsx # Display of analysis tools used
 ├── types.ts               # TypeScript interfaces
 └── theme.ts               # MUI theme configuration
 ```
@@ -152,6 +153,9 @@ When both radare2 and angr provide analysis, uncertainty is calculated:
 - `GET /api/compile/download/<filename>` - Download compiled binary or assembly
 - `POST /api/chats/<id>/messages` - Send a message to Claude about the binary
 - `GET /api/chats/<id>/annotations` - List annotations for a session
+- `GET /api/chats/<id>/function-names` - List custom function names for a session
+- `POST /api/chats/<id>/function-names` - Upsert a function name (LLM or human)
+- `POST /api/functions/suggest-names` - Batch LLM function naming for generic functions
 
 ### New UI Component
 1. Create in `web/frontend/src/components/`
@@ -167,6 +171,32 @@ OPENAI_API_KEY=sk-...          # OpenAI fallback
 R2D2_WEB_HOST=127.0.0.1        # Flask host
 R2D2_WEB_PORT=5050             # Flask port
 GHIDRA_INSTALL_DIR=/opt/ghidra # Ghidra path (optional)
+R2D2_DEBUG=true                # Enable debug logging (default: true)
+```
+
+### Debug Logging
+
+Debug logging is enabled by default to help track user activity and diagnose issues.
+
+**Backend (Python)**
+- Configured via `R2D2_DEBUG` environment variable (default: `true`)
+- Logs API requests/responses with timing
+- Logs analysis, chat, and session events
+- Colorized output in terminal
+
+**Frontend (TypeScript)**
+- Configured via `localStorage.r2d2_debug` (default: `true`)
+- Logs activity events (tab switches, function views, CFG interactions)
+- Logs API calls and chat messages
+- Console access: `window.r2d2Debug`
+
+**Console commands:**
+```javascript
+r2d2Debug.enable()       // Enable debug logging
+r2d2Debug.disable()      // Disable debug logging
+r2d2Debug.exportLogs()   // Download logs as JSON
+r2d2Debug.clear()        // Clear log history
+r2d2Debug.getHistory()   // Get log entries array
 ```
 
 ### Analysis Settings (in config.toml)
@@ -235,6 +265,37 @@ Ensure backend is running on :5050 before starting frontend.
 
 ### Ghidra timeouts
 Set longer timeout in config: `analysis.ghidra_timeout = 120`
+
+## UI Features
+
+### Tool Attribution
+The Summary tab displays which analysis tools were used (radare2, angr, capstone, etc.) with beginner-friendly tooltips explaining what each tool does.
+
+### CFG Viewer
+The CFG (Control Flow Graph) viewer provides visualization of function control flow:
+
+**Navigation:**
+- Mouse wheel: Zoom in/out
+- Click and drag: Pan the graph
+- `+`/`-` or `=`/`-`: Zoom in/out
+- `0`: Fit to view
+- `Escape`: Exit fullscreen mode
+- `?`: Ask Claude about the current function/block
+
+**Features:**
+- Fullscreen mode: Click the expand icon to maximize the CFG viewer
+- Ask Claude: Click the chat icon or press `?` to ask about the selected code
+- Function list: Shows all detected functions with block counts
+
+### LLM Function Naming
+Functions with generic names (sub_*, fcn.*, func_*) can be automatically renamed using AI:
+
+1. Click the magic wand icon in the functions sidebar
+2. LLM analyzes basic blocks and suggests meaningful names
+3. Names are persisted per session and shown alongside original names
+4. Click the edit icon on any function to manually override the name
+
+Original function names are always preserved for consistent reference.
 
 ## Code Style
 

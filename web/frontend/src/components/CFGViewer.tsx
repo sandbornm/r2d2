@@ -1,26 +1,37 @@
 import AccountTreeIcon from '@mui/icons-material/AccountTree';
+import AutoFixHighIcon from '@mui/icons-material/AutoFixHigh';
+import ChatBubbleOutlineIcon from '@mui/icons-material/ChatBubbleOutline';
 import ChevronRightIcon from '@mui/icons-material/ChevronRight';
+import CloseFullscreenIcon from '@mui/icons-material/CloseFullscreen';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
+import EditIcon from '@mui/icons-material/Edit';
 import FitScreenIcon from '@mui/icons-material/FitScreen';
+import FullscreenIcon from '@mui/icons-material/Fullscreen';
 import NavigateBeforeIcon from '@mui/icons-material/NavigateBefore';
 import NavigateNextIcon from '@mui/icons-material/NavigateNext';
 import ZoomInIcon from '@mui/icons-material/ZoomIn';
 import ZoomOutIcon from '@mui/icons-material/ZoomOut';
+import debug from '../debug';
 import {
   alpha,
   Box,
+  Button,
   Chip,
+  CircularProgress,
   IconButton,
   keyframes,
+  LinearProgress,
   List,
   ListItemButton,
   ListItemText,
   Paper,
   Stack,
+  TextField,
   Tooltip,
   Typography,
   useTheme,
 } from '@mui/material';
+import type { FunctionName, FunctionNameSuggestion } from '../types';
 import { FC, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 // Smooth fade-in animation
@@ -101,6 +112,18 @@ interface GraphEdge {
   type: 'jump' | 'fall' | 'call';
 }
 
+// Context for Ask Claude feature
+export interface CFGContext {
+  functionName: string | null;
+  functionOffset: string | null;
+  selectedBlock: string | null;
+  blockAssembly: Array<{ addr: string; opcode?: string }> | null;
+  visibleBlocks: Array<{
+    offset: string | null;
+    disassembly?: Array<{ addr: string; opcode?: string }>;
+  }>;
+}
+
 interface CFGViewerProps {
   nodes: CFGNode[];
   edges: CFGEdge[];
@@ -108,6 +131,8 @@ interface CFGViewerProps {
   radareFunctions?: Array<{ name?: string; offset?: number; size?: number }>;
   angrActive?: number;
   angrFound?: number;
+  onAskAboutCFG?: (context: CFGContext) => void;
+  sessionId?: string | null;
 }
 
 // Simple hierarchical layout for CFG
@@ -259,9 +284,20 @@ interface CFGGraphProps {
   edges: GraphEdge[];
   onNodeClick?: (nodeId: string) => void;
   selectedNode?: string | null;
+  isMaximized?: boolean;
+  onMaximizeToggle?: () => void;
+  onAskAboutCFG?: () => void;
 }
 
-const CFGGraph: FC<CFGGraphProps> = ({ nodes, edges, onNodeClick, selectedNode }) => {
+const CFGGraph: FC<CFGGraphProps> = ({
+  nodes,
+  edges,
+  onNodeClick,
+  selectedNode,
+  isMaximized,
+  onMaximizeToggle,
+  onAskAboutCFG,
+}) => {
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
   const containerRef = useRef<HTMLDivElement>(null);
@@ -274,12 +310,12 @@ const CFGGraph: FC<CFGGraphProps> = ({ nodes, edges, onNodeClick, selectedNode }
   // Calculate bounding box
   useEffect(() => {
     if (nodes.length === 0) return;
-    
+
     const minX = Math.min(...nodes.map(n => n.x)) - 50;
     const maxX = Math.max(...nodes.map(n => n.x + n.width)) + 50;
     const minY = Math.min(...nodes.map(n => n.y)) - 50;
     const maxY = Math.max(...nodes.map(n => n.y + n.height)) + 50;
-    
+
     setViewBox({
       x: minX,
       y: minY,
@@ -288,12 +324,72 @@ const CFGGraph: FC<CFGGraphProps> = ({ nodes, edges, onNodeClick, selectedNode }
     });
   }, [nodes]);
 
-  const handleZoomIn = () => setZoom(z => Math.min(z * 1.2, 3));
-  const handleZoomOut = () => setZoom(z => Math.max(z / 1.2, 0.3));
-  const handleFit = () => {
+  const handleZoomIn = useCallback(() => {
+    setZoom(z => {
+      const newZoom = Math.min(z * 1.2, 3);
+      debug.cfg.zoom(newZoom, 'in');
+      return newZoom;
+    });
+  }, []);
+  const handleZoomOut = useCallback(() => {
+    setZoom(z => {
+      const newZoom = Math.max(z / 1.2, 0.3);
+      debug.cfg.zoom(newZoom, 'out');
+      return newZoom;
+    });
+  }, []);
+  const handleFit = useCallback(() => {
+    debug.cfg.zoom(1, 'fit');
     setZoom(1);
     setPan({ x: 0, y: 0 });
-  };
+  }, []);
+
+  // Mouse wheel zoom
+  const handleWheel = useCallback((e: React.WheelEvent) => {
+    e.preventDefault();
+    const factor = e.deltaY > 0 ? 0.9 : 1.1;
+    setZoom(z => {
+      const newZoom = Math.max(0.3, Math.min(3, z * factor));
+      debug.cfg.zoom(newZoom, 'wheel');
+      return newZoom;
+    });
+  }, []);
+
+  // Keyboard shortcuts
+  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+    // Don't handle if in an input field
+    if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+      return;
+    }
+
+    switch (e.key) {
+      case '+':
+      case '=':
+        e.preventDefault();
+        handleZoomIn();
+        break;
+      case '-':
+        e.preventDefault();
+        handleZoomOut();
+        break;
+      case '0':
+        e.preventDefault();
+        handleFit();
+        break;
+      case 'Escape':
+        if (isMaximized && onMaximizeToggle) {
+          e.preventDefault();
+          onMaximizeToggle();
+        }
+        break;
+      case '?':
+        if (onAskAboutCFG) {
+          e.preventDefault();
+          onAskAboutCFG();
+        }
+        break;
+    }
+  }, [handleZoomIn, handleZoomOut, handleFit, isMaximized, onMaximizeToggle, onAskAboutCFG]);
 
   const handleMouseDown = (e: React.MouseEvent) => {
     if (e.button === 0) {
@@ -373,15 +469,22 @@ const CFGGraph: FC<CFGGraphProps> = ({ nodes, edges, onNodeClick, selectedNode }
   return (
     <Box
       ref={containerRef}
+      tabIndex={0}
+      onKeyDown={handleKeyDown}
+      onWheel={handleWheel}
       sx={{
         height: '100%',
         position: 'relative',
         overflow: 'hidden',
         bgcolor: isDark ? '#0d0d14' : '#f8f9fa',
         borderRadius: 1,
+        outline: 'none',
+        '&:focus-visible': {
+          boxShadow: `0 0 0 2px ${theme.palette.primary.main}`,
+        },
       }}
     >
-      {/* Zoom controls */}
+      {/* Toolbar controls */}
       <Stack
         direction="row"
         spacing={0.5}
@@ -390,26 +493,49 @@ const CFGGraph: FC<CFGGraphProps> = ({ nodes, edges, onNodeClick, selectedNode }
           top: 8,
           right: 8,
           zIndex: 10,
-          bgcolor: alpha(colors.nodeBg, 0.9),
+          bgcolor: alpha(colors.nodeBg, 0.95),
           borderRadius: 1,
           p: 0.5,
+          boxShadow: 1,
         }}
       >
-        <Tooltip title="Zoom In">
+        {onAskAboutCFG && (
+          <Tooltip title="Ask Claude about this code (?)">
+            <IconButton size="small" onClick={onAskAboutCFG} color="primary">
+              <ChatBubbleOutlineIcon sx={{ fontSize: 18 }} />
+            </IconButton>
+          </Tooltip>
+        )}
+        <Box sx={{ width: 1, bgcolor: 'divider', mx: 0.5 }} />
+        <Tooltip title="Zoom In (+)">
           <IconButton size="small" onClick={handleZoomIn}>
             <ZoomInIcon sx={{ fontSize: 18 }} />
           </IconButton>
         </Tooltip>
-        <Tooltip title="Zoom Out">
+        <Tooltip title="Zoom Out (-)">
           <IconButton size="small" onClick={handleZoomOut}>
             <ZoomOutIcon sx={{ fontSize: 18 }} />
           </IconButton>
         </Tooltip>
-        <Tooltip title="Fit">
+        <Tooltip title="Fit to View (0)">
           <IconButton size="small" onClick={handleFit}>
             <FitScreenIcon sx={{ fontSize: 18 }} />
           </IconButton>
         </Tooltip>
+        {onMaximizeToggle && (
+          <>
+            <Box sx={{ width: 1, bgcolor: 'divider', mx: 0.5 }} />
+            <Tooltip title={isMaximized ? 'Exit Fullscreen (Esc)' : 'Fullscreen'}>
+              <IconButton size="small" onClick={onMaximizeToggle}>
+                {isMaximized ? (
+                  <CloseFullscreenIcon sx={{ fontSize: 18 }} />
+                ) : (
+                  <FullscreenIcon sx={{ fontSize: 18 }} />
+                )}
+              </IconButton>
+            </Tooltip>
+          </>
+        )}
       </Stack>
 
       {/* SVG Canvas */}
@@ -599,9 +725,40 @@ const CFGViewer: FC<CFGViewerProps> = ({
   edges,
   functions = [],
   radareFunctions = [],
+  onAskAboutCFG,
+  sessionId,
 }) => {
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
+
+  // Function naming state
+  const [functionNames, setFunctionNames] = useState<Map<string, FunctionName>>(new Map());
+  const [isNamingFunctions, setIsNamingFunctions] = useState(false);
+  const [namingProgress, setNamingProgress] = useState<string | null>(null);
+  const [editingFunction, setEditingFunction] = useState<string | null>(null);
+  const [editValue, setEditValue] = useState('');
+
+  // Load function names from server
+  useEffect(() => {
+    if (!sessionId) return;
+
+    const loadFunctionNames = async () => {
+      try {
+        const response = await fetch(`/api/chats/${sessionId}/function-names`);
+        if (response.ok) {
+          const data = await response.json();
+          const names = new Map<string, FunctionName>();
+          for (const fn of data.function_names || []) {
+            names.set(fn.address, fn);
+          }
+          setFunctionNames(names);
+        }
+      } catch {
+        // Ignore errors
+      }
+    };
+    loadFunctionNames();
+  }, [sessionId]);
 
   // Combine function sources - prefer function_cfgs but fall back to radareFunctions
   const allFunctions = useMemo(() => {
@@ -619,12 +776,183 @@ const CFGViewer: FC<CFGViewerProps> = ({
       }));
   }, [functions, radareFunctions]);
 
+  // Get display name for a function (custom name or original)
+  const getDisplayName = useCallback((fn: FunctionCFG): { display: string; original: string; isRenamed: boolean; source?: string; reasoning?: string } => {
+    const fnName = functionNames.get(fn.offset);
+    if (fnName) {
+      return {
+        display: fnName.displayName,
+        original: fnName.originalName || fn.name,
+        isRenamed: true,
+        source: fnName.source,
+        reasoning: fnName.reasoning,
+      };
+    }
+    return { display: fn.name, original: fn.name, isRenamed: false };
+  }, [functionNames]);
+
   const [selectedFunction, setSelectedFunction] = useState<FunctionCFG | null>(
     allFunctions[0] ?? null
   );
   const [selectedBlockIndex, setSelectedBlockIndex] = useState(0);
   const [viewMode, setViewMode] = useState<'graph' | 'blocks'>('graph');
   const [selectedGraphNode, setSelectedGraphNode] = useState<string | null>(null);
+  const [isMaximized, setIsMaximized] = useState(false);
+
+  // Auto-name functions using LLM
+  const handleAutoNameFunctions = useCallback(async () => {
+    if (!sessionId || isNamingFunctions) return;
+
+    setIsNamingFunctions(true);
+    setNamingProgress('Analyzing functions...');
+    debug.cfg.autoName(allFunctions.length, 'start');
+
+    try {
+      // Prepare function data for the API
+      const functionsToName = allFunctions
+        .filter((fn) => /^(sub_|fcn\.|func_|FUN_)[0-9a-fA-F]+$/i.test(fn.name))
+        .slice(0, 10)
+        .map((fn) => ({
+          name: fn.name,
+          address: fn.offset,
+          blocks: fn.blocks?.slice(0, 3).map((b) => ({
+            offset: b.offset,
+            disassembly: b.disassembly?.slice(0, 10).map((d) => ({
+              addr: d.addr,
+              opcode: d.opcode,
+            })),
+          })),
+        }));
+
+      if (functionsToName.length === 0) {
+        setNamingProgress('No generic function names found');
+        setTimeout(() => setNamingProgress(null), 2000);
+        setIsNamingFunctions(false);
+        debug.cfg.autoName(0, 'complete');
+        return;
+      }
+
+      setNamingProgress(`Naming ${functionsToName.length} functions...`);
+
+      const response = await fetch('/api/functions/suggest-names', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          session_id: sessionId,
+          functions: functionsToName,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to suggest names');
+      }
+
+      const data = await response.json();
+      const suggestions: FunctionNameSuggestion[] = data.suggestions || [];
+
+      // Save each suggestion to the server
+      for (const suggestion of suggestions) {
+        const originalFn = allFunctions.find((f) => f.offset === suggestion.address);
+        if (!originalFn) continue;
+
+        await fetch(`/api/chats/${sessionId}/function-names`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            address: suggestion.address,
+            originalName: originalFn.name,
+            displayName: suggestion.name,
+            reasoning: suggestion.reasoning,
+            confidence: suggestion.confidence,
+            source: 'llm',
+          }),
+        });
+
+        // Update local state
+        setFunctionNames((prev) => {
+          const newMap = new Map(prev);
+          newMap.set(suggestion.address, {
+            id: `${sessionId}-${suggestion.address}`,
+            address: suggestion.address,
+            originalName: originalFn.name,
+            displayName: suggestion.name,
+            reasoning: suggestion.reasoning,
+            confidence: suggestion.confidence,
+            source: 'llm',
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          });
+          return newMap;
+        });
+      }
+
+      setNamingProgress(`Named ${suggestions.length} functions`);
+      debug.cfg.autoName(suggestions.length, 'complete');
+      setTimeout(() => setNamingProgress(null), 2000);
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+      debug.cfg.autoName(0, 'error', errorMessage);
+      setNamingProgress('Failed to name functions');
+      setTimeout(() => setNamingProgress(null), 2000);
+    } finally {
+      setIsNamingFunctions(false);
+    }
+  }, [sessionId, isNamingFunctions, allFunctions]);
+
+  // Save a custom function name
+  const handleSaveFunctionName = useCallback(async (fn: FunctionCFG, newName: string) => {
+    if (!sessionId || !newName.trim()) return;
+
+    try {
+      await fetch(`/api/chats/${sessionId}/function-names`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          address: fn.offset,
+          originalName: fn.name,
+          displayName: newName.trim(),
+          source: 'user',
+        }),
+      });
+
+      setFunctionNames((prev) => {
+        const newMap = new Map(prev);
+        newMap.set(fn.offset, {
+          id: `${sessionId}-${fn.offset}`,
+          address: fn.offset,
+          originalName: fn.name,
+          displayName: newName.trim(),
+          source: 'user',
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        });
+        return newMap;
+      });
+    } catch {
+      // Ignore errors
+    }
+    setEditingFunction(null);
+    setEditValue('');
+  }, [sessionId]);
+
+  // Toggle maximize state
+  const handleMaximizeToggle = useCallback(() => {
+    setIsMaximized(prev => {
+      debug.cfg.maximize(!prev);
+      return !prev;
+    });
+  }, []);
+
+  // Handle escape key at document level for maximize
+  useEffect(() => {
+    const handleEscapeKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && isMaximized) {
+        setIsMaximized(false);
+      }
+    };
+    document.addEventListener('keydown', handleEscapeKey);
+    return () => document.removeEventListener('keydown', handleEscapeKey);
+  }, [isMaximized]);
 
   // Update selected function when allFunctions changes
   useEffect(() => {
@@ -701,6 +1029,7 @@ const CFGViewer: FC<CFGViewerProps> = ({
   }, [currentBlocks.length]);
 
   const handleSelectFunction = useCallback((fn: FunctionCFG) => {
+    debug.cfg.functionSelect(fn.name, fn.offset);
     setSelectedFunction(fn);
     setSelectedBlockIndex(0);
     setSelectedGraphNode(null);
@@ -709,13 +1038,15 @@ const CFGViewer: FC<CFGViewerProps> = ({
   const handleCopyDisasm = useCallback(() => {
     if (!currentBlock) return;
 
-    const disasm = currentBlock.disassembly || currentBlock.ops;
+    // Handle both radare2 format (disassembly or ops) and angr format
+    const blockAny = currentBlock as Record<string, unknown>;
+    const disasm = (currentBlock.disassembly || blockAny.ops) as Array<Record<string, unknown>> | undefined;
     if (!disasm) return;
 
     const text = disasm
-      .map((d) => {
-        const addr = ('addr' in d ? d.addr : (d as { offset?: number }).offset?.toString(16)) || '';
-        const op = ('opcode' in d ? d.opcode : '') || '';
+      .map((d: Record<string, unknown>) => {
+        const addr = (d.addr as string) || (typeof d.offset === 'number' ? d.offset.toString(16) : '') || '';
+        const op = (d.opcode as string) || '';
         return `${addr}  ${op}`;
       })
       .join('\n');
@@ -734,6 +1065,36 @@ const CFGViewer: FC<CFGViewerProps> = ({
     [currentBlocks]
   );
 
+  // Handle Ask About CFG - collect context and call callback
+  const handleAskAboutCFGInternal = useCallback(() => {
+    if (!onAskAboutCFG) return;
+
+    // Find the selected block
+    const selectedBlock = selectedGraphNode
+      ? currentBlocks.find((b) => b.offset === selectedGraphNode)
+      : currentBlock;
+
+    // Build context
+    const context: CFGContext = {
+      functionName: selectedFunction?.name ?? null,
+      functionOffset: selectedFunction?.offset ?? null,
+      selectedBlock: selectedBlock?.offset ?? null,
+      blockAssembly: selectedBlock?.disassembly?.map((d) => ({
+        addr: d.addr,
+        opcode: d.opcode,
+      })) ?? null,
+      visibleBlocks: currentBlocks.slice(0, 5).map((b) => ({
+        offset: b.offset ?? null,
+        disassembly: b.disassembly?.slice(0, 10).map((d) => ({
+          addr: d.addr,
+          opcode: d.opcode,
+        })),
+      })),
+    };
+
+    onAskAboutCFG(context);
+  }, [onAskAboutCFG, selectedFunction, selectedGraphNode, currentBlocks, currentBlock]);
+
   // Get disassembly from current block (handle both radare2 and angr formats)
   const blockDisasm = useMemo(() => {
     if (!currentBlock) return [];
@@ -743,15 +1104,18 @@ const CFGViewer: FC<CFGViewerProps> = ({
       return currentBlock.disassembly.map((d: Record<string, unknown>) => ({
         addr: (d.addr as string) || '?',
         opcode:
-          d.opcode ||
-          (d.mnemonic ? `${d.mnemonic} ${d.op_str || ''}`.trim() : ''),
+          (d.opcode as string | undefined) ||
+          (d.mnemonic ? `${d.mnemonic} ${d.op_str || ''}`.trim() : '') ||
+          '',
         bytes: (d.bytes as string) || '',
       }));
     }
 
     // Handle radare2 ops format (from agfj command)
-    if (currentBlock.ops && currentBlock.ops.length > 0) {
-      return currentBlock.ops.map((op: Record<string, unknown>) => ({
+    const blockAny = currentBlock as Record<string, unknown>;
+    const ops = blockAny.ops as Array<Record<string, unknown>> | undefined;
+    if (ops && ops.length > 0) {
+      return ops.map((op: Record<string, unknown>) => ({
         addr:
           typeof op.offset === 'number'
             ? `0x${op.offset.toString(16)}`
@@ -881,13 +1245,14 @@ const CFGViewer: FC<CFGViewerProps> = ({
     );
   }
 
-  return (
+  // Main content component
+  const mainContent = (
     <Box sx={{ height: '100%', display: 'flex', gap: 1.5 }}>
       {/* Functions list */}
       <Paper
         variant="outlined"
         sx={{
-          width: 200,
+          width: 220,
           flexShrink: 0,
           display: 'flex',
           flexDirection: 'column',
@@ -900,67 +1265,163 @@ const CFGViewer: FC<CFGViewerProps> = ({
             <Typography variant="caption" color="text.secondary">
               Functions ({allFunctions.length})
             </Typography>
+            {sessionId && (
+              <Tooltip title="Auto-name generic functions using AI">
+                <span>
+                  <IconButton
+                    size="small"
+                    onClick={handleAutoNameFunctions}
+                    disabled={isNamingFunctions}
+                    color="primary"
+                    sx={{ p: 0.5 }}
+                  >
+                    {isNamingFunctions ? (
+                      <CircularProgress size={14} />
+                    ) : (
+                      <AutoFixHighIcon sx={{ fontSize: 14 }} />
+                    )}
+                  </IconButton>
+                </span>
+              </Tooltip>
+            )}
           </Stack>
+          {namingProgress && (
+            <Typography variant="caption" color="primary" sx={{ display: 'block', mt: 0.5, fontSize: '0.6rem' }}>
+              {namingProgress}
+            </Typography>
+          )}
         </Box>
         <Box sx={{ flex: 1, overflow: 'auto' }}>
           <List dense disablePadding>
-            {allFunctions.slice(0, 50).map((fn, idx) => (
-              <ListItemButton
-                key={`fn-${idx}`}
-                selected={selectedFunction?.offset === fn.offset}
-                onClick={() => handleSelectFunction(fn)}
-                sx={{
-                  py: 0.5,
-                  px: 1,
-                  animation: `${fadeIn} 0.2s ease-out`,
-                  animationDelay: `${Math.min(idx * 20, 200)}ms`,
-                  animationFillMode: 'backwards',
-                  transition: 'all 0.15s ease-out',
-                  '&:hover': {
-                    transform: 'translateX(2px)',
-                  },
-                  '&.Mui-selected': {
-                    borderLeft: 2,
-                    borderColor: 'primary.main',
-                  },
-                }}
-              >
-                <ListItemText
-                  primary={
-                    <Typography variant="caption" sx={{ fontFamily: 'monospace' }}>
-                      {fn.name.length > 22 ? fn.name.slice(0, 22) + '…' : fn.name}
-                    </Typography>
-                  }
-                  secondary={
-                    <Stack direction="row" spacing={0.5} alignItems="center">
-                      <Typography
-                        variant="caption"
-                        color="text.secondary"
-                        sx={{ fontSize: '0.65rem' }}
-                      >
-                        {fn.offset}
-                      </Typography>
-                      {fn.blocks && fn.blocks.length > 0 && (
-                        <Chip
+            {allFunctions.slice(0, 50).map((fn, idx) => {
+              const nameInfo = getDisplayName(fn);
+              const isEditing = editingFunction === fn.offset;
+
+              return (
+                <ListItemButton
+                  key={`fn-${idx}`}
+                  selected={selectedFunction?.offset === fn.offset}
+                  onClick={() => !isEditing && handleSelectFunction(fn)}
+                  sx={{
+                    py: 0.5,
+                    px: 1,
+                    animation: `${fadeIn} 0.2s ease-out`,
+                    animationDelay: `${Math.min(idx * 20, 200)}ms`,
+                    animationFillMode: 'backwards',
+                    transition: 'all 0.15s ease-out',
+                    '&:hover': {
+                      transform: 'translateX(2px)',
+                    },
+                    '&.Mui-selected': {
+                      borderLeft: 2,
+                      borderColor: 'primary.main',
+                    },
+                  }}
+                >
+                  <ListItemText
+                    primary={
+                      isEditing ? (
+                        <TextField
                           size="small"
-                          label={`${fn.blocks.length}b`}
-                          sx={{
-                            height: 14,
-                            fontSize: '0.55rem',
-                            '& .MuiChip-label': { px: 0.5 },
+                          value={editValue}
+                          onChange={(e) => setEditValue(e.target.value)}
+                          onBlur={() => handleSaveFunctionName(fn, editValue)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              handleSaveFunctionName(fn, editValue);
+                            } else if (e.key === 'Escape') {
+                              setEditingFunction(null);
+                              setEditValue('');
+                            }
                           }}
+                          autoFocus
+                          sx={{
+                            '& .MuiInputBase-input': {
+                              fontSize: '0.7rem',
+                              fontFamily: 'monospace',
+                              py: 0.25,
+                              px: 0.5,
+                            },
+                          }}
+                          onClick={(e) => e.stopPropagation()}
                         />
-                      )}
-                    </Stack>
-                  }
-                />
-                {fn.blocks && fn.blocks.length > 0 && (
-                  <ChevronRightIcon
-                    sx={{ fontSize: 14, color: 'text.disabled', ml: 0.5 }}
+                      ) : (
+                        <Tooltip
+                          title={
+                            nameInfo.isRenamed
+                              ? `${nameInfo.reasoning || 'Custom name'}${nameInfo.source === 'llm' ? ' (AI)' : ' (Manual)'}`
+                              : ''
+                          }
+                          placement="right"
+                        >
+                          <Stack direction="row" alignItems="center" spacing={0.5}>
+                            <Typography
+                              variant="caption"
+                              sx={{
+                                fontFamily: 'monospace',
+                                color: nameInfo.isRenamed ? 'primary.main' : 'text.primary',
+                                fontWeight: nameInfo.isRenamed ? 500 : 400,
+                              }}
+                            >
+                              {nameInfo.display.length > 20 ? nameInfo.display.slice(0, 20) + '…' : nameInfo.display}
+                            </Typography>
+                            {sessionId && selectedFunction?.offset === fn.offset && (
+                              <IconButton
+                                size="small"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setEditingFunction(fn.offset);
+                                  setEditValue(nameInfo.display);
+                                }}
+                                sx={{ p: 0, opacity: 0.5, '&:hover': { opacity: 1 } }}
+                              >
+                                <EditIcon sx={{ fontSize: 10 }} />
+                              </IconButton>
+                            )}
+                          </Stack>
+                        </Tooltip>
+                      )
+                    }
+                    secondary={
+                      <Stack direction="row" spacing={0.5} alignItems="center" flexWrap="wrap">
+                        <Typography
+                          variant="caption"
+                          color="text.secondary"
+                          sx={{ fontSize: '0.6rem' }}
+                        >
+                          {fn.offset}
+                        </Typography>
+                        {nameInfo.isRenamed && (
+                          <Typography
+                            variant="caption"
+                            color="text.disabled"
+                            sx={{ fontSize: '0.55rem' }}
+                          >
+                            ({nameInfo.original.length > 12 ? nameInfo.original.slice(0, 12) + '…' : nameInfo.original})
+                          </Typography>
+                        )}
+                        {fn.blocks && fn.blocks.length > 0 && (
+                          <Chip
+                            size="small"
+                            label={`${fn.blocks.length}b`}
+                            sx={{
+                              height: 14,
+                              fontSize: '0.5rem',
+                              '& .MuiChip-label': { px: 0.5 },
+                            }}
+                          />
+                        )}
+                      </Stack>
+                    }
                   />
-                )}
-              </ListItemButton>
-            ))}
+                  {fn.blocks && fn.blocks.length > 0 && !isEditing && (
+                    <ChevronRightIcon
+                      sx={{ fontSize: 14, color: 'text.disabled', ml: 0.5 }}
+                    />
+                  )}
+                </ListItemButton>
+              );
+            })}
           </List>
         </Box>
       </Paper>
@@ -974,9 +1435,21 @@ const CFGViewer: FC<CFGViewerProps> = ({
         >
           {selectedFunction && (
             <>
-              <Typography variant="caption" fontWeight={600} sx={{ fontFamily: 'monospace' }}>
-                {selectedFunction.name}
-              </Typography>
+              {(() => {
+                const nameInfo = getDisplayName(selectedFunction);
+                return (
+                  <>
+                    <Typography variant="caption" fontWeight={600} sx={{ fontFamily: 'monospace', color: nameInfo.isRenamed ? 'primary.main' : 'text.primary' }}>
+                      {nameInfo.display}
+                    </Typography>
+                    {nameInfo.isRenamed && (
+                      <Typography variant="caption" color="text.disabled" sx={{ fontFamily: 'monospace', fontSize: '0.65rem' }}>
+                        ({nameInfo.original})
+                      </Typography>
+                    )}
+                  </>
+                );
+              })()}
               <Typography variant="caption" color="text.secondary">
                 {selectedFunction.offset}
               </Typography>
@@ -1029,6 +1502,9 @@ const CFGViewer: FC<CFGViewerProps> = ({
                   edges={graphLayout.edges}
                   onNodeClick={handleGraphNodeClick}
                   selectedNode={selectedGraphNode}
+                  isMaximized={isMaximized}
+                  onMaximizeToggle={handleMaximizeToggle}
+                  onAskAboutCFG={onAskAboutCFG ? handleAskAboutCFGInternal : undefined}
                 />
               ) : (
                 <Box
@@ -1339,6 +1815,46 @@ const CFGViewer: FC<CFGViewerProps> = ({
       </Paper>
     </Box>
   );
+
+  // Render with optional maximize overlay
+  if (isMaximized) {
+    return (
+      <Box
+        sx={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          zIndex: 1300,
+          bgcolor: 'background.default',
+          p: 2,
+          display: 'flex',
+          flexDirection: 'column',
+        }}
+      >
+        {/* Header with close button */}
+        <Stack
+          direction="row"
+          alignItems="center"
+          justifyContent="space-between"
+          sx={{ mb: 1.5 }}
+        >
+          <Typography variant="h6" sx={{ fontFamily: 'monospace' }}>
+            CFG Viewer - {selectedFunction?.name || 'No function selected'}
+          </Typography>
+          <Tooltip title="Exit Fullscreen (Esc)">
+            <IconButton onClick={handleMaximizeToggle}>
+              <CloseFullscreenIcon />
+            </IconButton>
+          </Tooltip>
+        </Stack>
+        <Box sx={{ flex: 1, overflow: 'hidden' }}>{mainContent}</Box>
+      </Box>
+    );
+  }
+
+  return mainContent;
 };
 
 export default CFGViewer;

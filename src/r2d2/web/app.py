@@ -20,6 +20,7 @@ from ..state import AppState, build_state
 from ..storage.chat import ChatDAO
 from ..storage.models import ChatMessage as StoredChatMessage, ChatSession
 from ..utils.serialization import to_json
+from .debug import debug, setup_flask_debug
 
 
 class Job:
@@ -85,6 +86,9 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
     else:
         app = Flask(__name__)
     CORS(app)
+
+    # Set up debug logging for Flask
+    setup_flask_debug(app)
 
     jobs = JobRegistry()
     chat_dao: ChatDAO = state.chat_dao
@@ -198,6 +202,8 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
         attachments = body.get("attachments") or []
         call_llm = bool(body.get("call_llm"))
 
+        debug.chat_message(session_id, "user", content)
+
         if not content and not attachments:
             return jsonify({"error": "Message content or attachments required"}), 400
 
@@ -239,6 +245,7 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
                 assistant_response,
                 attachments=metadata_attachment,
             )
+            debug.chat_response(session_id, llm_bridge.last_provider)
             response_payload["provider"] = llm_bridge.last_provider
             response_payload["assistant"] = _message_to_dict(assistant_message)
             response_payload["messages"] = [
@@ -437,6 +444,210 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
         
         return jsonify({"activities": activities})
 
+    # ──────────────────────────────────────────────────────────────────────────
+    # Function naming endpoints
+    # ──────────────────────────────────────────────────────────────────────────
+
+    @app.get("/api/chats/<session_id>/function-names")
+    def list_function_names(session_id: str) -> Any:
+        """List all custom function names for a session."""
+        if not state.db:
+            return jsonify({"function_names": []})
+
+        session = chat_dao.get_session(session_id)
+        if not session:
+            return jsonify({"error": "session not found"}), 404
+
+        with state.db.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, address, original_name, display_name, reasoning, confidence, source, created_at, updated_at
+                FROM function_names
+                WHERE session_id = ?
+                ORDER BY address
+                """,
+                (session_id,),
+            ).fetchall()
+
+        function_names = [
+            {
+                "id": row["id"],
+                "address": row["address"],
+                "originalName": row["original_name"],
+                "displayName": row["display_name"],
+                "reasoning": row["reasoning"],
+                "confidence": row["confidence"],
+                "source": row["source"],
+                "createdAt": row["created_at"],
+                "updatedAt": row["updated_at"],
+            }
+            for row in rows
+        ]
+        return jsonify({"function_names": function_names})
+
+    @app.post("/api/chats/<session_id>/function-names")
+    def upsert_function_name(session_id: str) -> Any:
+        """Create or update a function name for a session."""
+        if not state.db:
+            return jsonify({"error": "database not configured"}), 503
+
+        session = chat_dao.get_session(session_id)
+        if not session:
+            return jsonify({"error": "session not found"}), 404
+
+        body = request.get_json(silent=True) or {}
+        address = body.get("address", "").strip()
+        original_name = body.get("originalName", "").strip()
+        display_name = body.get("displayName", "").strip()
+        reasoning = body.get("reasoning", "")
+        confidence = body.get("confidence")
+        source = body.get("source", "user")  # "user" or "llm"
+
+        if not address:
+            return jsonify({"error": "address is required"}), 400
+        if not display_name:
+            return jsonify({"error": "displayName is required"}), 400
+
+        now = datetime.now(timezone.utc).isoformat()
+        fn_id = f"{session_id}-{address}"
+
+        with state.db.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO function_names (id, session_id, address, original_name, display_name, reasoning, confidence, source, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (session_id, address) DO UPDATE SET
+                    display_name = excluded.display_name,
+                    reasoning = excluded.reasoning,
+                    confidence = excluded.confidence,
+                    source = excluded.source,
+                    updated_at = excluded.updated_at
+                """,
+                (fn_id, session_id, address, original_name, display_name, reasoning, confidence, source, now, now),
+            )
+
+        return jsonify({
+            "id": fn_id,
+            "address": address,
+            "originalName": original_name,
+            "displayName": display_name,
+            "reasoning": reasoning,
+            "confidence": confidence,
+            "source": source,
+            "createdAt": now,
+            "updatedAt": now,
+        })
+
+    @app.delete("/api/chats/<session_id>/function-names/<address>")
+    def delete_function_name(session_id: str, address: str) -> Any:
+        """Delete a function name."""
+        if not state.db:
+            return jsonify({"error": "database not configured"}), 503
+
+        session = chat_dao.get_session(session_id)
+        if not session:
+            return jsonify({"error": "session not found"}), 404
+
+        with state.db.connect() as conn:
+            conn.execute(
+                "DELETE FROM function_names WHERE session_id = ? AND address = ?",
+                (session_id, address),
+            )
+
+        return jsonify({"deleted": True, "address": address})
+
+    @app.post("/api/functions/suggest-names")
+    def suggest_function_names() -> Any:
+        """Use LLM to suggest names for functions with generic names."""
+        body = request.get_json(silent=True) or {}
+        session_id = body.get("session_id")
+        functions = body.get("functions", [])  # List of function dicts with address, name, blocks
+
+        debug.function_name_suggest(session_id or "unknown", len(functions))
+
+        if not session_id:
+            return jsonify({"error": "session_id is required"}), 400
+
+        session = chat_dao.get_session(session_id)
+        if not session:
+            return jsonify({"error": "session not found"}), 404
+
+        if not functions:
+            return jsonify({"error": "functions list is required"}), 400
+
+        # Filter to only functions with generic names
+        import re
+        generic_pattern = re.compile(r"^(sub_|fcn\.|func_|FUN_)[0-9a-fA-F]+$", re.IGNORECASE)
+        generic_functions = [
+            f for f in functions
+            if isinstance(f, dict) and generic_pattern.match(f.get("name", ""))
+        ]
+
+        if not generic_functions:
+            return jsonify({"suggestions": [], "message": "No generic function names found"})
+
+        # Limit to first 10 functions to avoid too large LLM request
+        generic_functions = generic_functions[:10]
+
+        # Build LLM prompt
+        prompt_parts = [
+            "Analyze these assembly functions and suggest meaningful names based on their behavior.",
+            "For each function, provide:",
+            "1. A concise, descriptive name (snake_case, no prefix)",
+            "2. A confidence level (high/medium/low)",
+            "3. Brief reasoning (1 sentence)",
+            "",
+            "Respond in JSON format:",
+            '{"suggestions": [{"address": "0x...", "name": "suggested_name", "confidence": "high|medium|low", "reasoning": "why"}]}',
+            "",
+            "Functions to analyze:",
+        ]
+
+        for func in generic_functions:
+            prompt_parts.append(f"\n## Function: {func.get('name', '?')} at {func.get('address', '?')}")
+            blocks = func.get("blocks", [])
+            if blocks:
+                for i, block in enumerate(blocks[:3]):  # First 3 blocks
+                    prompt_parts.append(f"### Block {i + 1} at {block.get('offset', '?')}:")
+                    disasm = block.get("disassembly", [])
+                    for instr in disasm[:10]:  # First 10 instructions per block
+                        addr = instr.get("addr", "")
+                        opcode = instr.get("opcode", "")
+                        prompt_parts.append(f"  {addr}  {opcode}")
+            else:
+                prompt_parts.append("  (no block disassembly available)")
+
+        prompt = "\n".join(prompt_parts)
+
+        # Call LLM
+        try:
+            llm_messages = [
+                LLMChatMessage(role="system", content="You are an expert reverse engineer. Analyze assembly code and suggest meaningful function names. Always respond with valid JSON."),
+                LLMChatMessage(role="user", content=prompt),
+            ]
+            response = llm_bridge.chat(llm_messages)
+
+            # Parse JSON response
+            # Try to extract JSON from the response (it might have markdown code blocks)
+            json_match = re.search(r"\{[\s\S]*\}", response)
+            if json_match:
+                result = json.loads(json_match.group())
+                suggestions = result.get("suggestions", [])
+
+                # Map confidence strings to floats
+                confidence_map = {"high": 0.9, "medium": 0.7, "low": 0.5}
+                for s in suggestions:
+                    conf = s.get("confidence", "medium")
+                    if isinstance(conf, str):
+                        s["confidence"] = confidence_map.get(conf.lower(), 0.7)
+
+                return jsonify({"suggestions": suggestions, "provider": llm_bridge.last_provider})
+            else:
+                return jsonify({"error": "Could not parse LLM response", "raw_response": response}), 500
+
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+
     # Ensure uploads directory exists
     uploads_dir = Path(state.config.output.artifacts_dir).expanduser() / "uploads"
     uploads_dir.mkdir(parents=True, exist_ok=True)
@@ -475,7 +686,13 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
         user_goal = body.get("user_goal", "").strip()
         quick_only = body.get("quick_only", False)
         enable_angr = body.get("enable_angr", True)
-        
+
+        debug.analysis_start(binary_path or "unknown", {
+            "quick_only": quick_only,
+            "enable_angr": enable_angr,
+            "user_goal": user_goal[:50] if user_goal else None,
+        })
+
         if not binary_path:
             return jsonify({"error": "Missing 'binary' in request body"}), 400
 
@@ -484,6 +701,7 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
             return jsonify({"error": f"Binary path does not exist: {binary_path}"}), 404
 
         session = chat_dao.get_or_create_session(str(path), title=path.name)
+        debug.session_create(session.session_id, str(path))
         
         # Store user goal in session metadata
         if user_goal:

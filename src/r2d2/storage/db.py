@@ -113,8 +113,36 @@ class Database:
             # Index for efficient activity lookups
             conn.execute(
                 """
-                CREATE INDEX IF NOT EXISTS idx_activity_session_time 
+                CREATE INDEX IF NOT EXISTS idx_activity_session_time
                 ON activity_events (session_id, created_at DESC)
+                """
+            )
+
+            # Function names for LLM-suggested or human-overridden function names
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS function_names (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    address TEXT NOT NULL,
+                    original_name TEXT NOT NULL,
+                    display_name TEXT NOT NULL,
+                    reasoning TEXT,
+                    confidence REAL,
+                    source TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (session_id) REFERENCES chat_sessions (session_id) ON DELETE CASCADE,
+                    UNIQUE (session_id, address)
+                )
+                """
+            )
+
+            # Index for efficient function name lookups
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_function_names_session
+                ON function_names (session_id)
                 """
             )
 

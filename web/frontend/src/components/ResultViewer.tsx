@@ -17,8 +17,9 @@ import {
 } from '@mui/material';
 import { FC, useCallback, useEffect, useMemo, useState } from 'react';
 import type { AnalysisResultPayload, AssemblyAnnotation } from '../types';
-import CFGViewer from './CFGViewer';
+import CFGViewer, { CFGContext } from './CFGViewer';
 import DisassemblyViewer from './DisassemblyViewer';
+import ToolAttribution from './ToolAttribution';
 
 // Local storage key for annotations
 const ANNOTATIONS_STORAGE_KEY = 'r2d2-annotations';
@@ -27,6 +28,7 @@ interface ResultViewerProps {
   result: AnalysisResultPayload | null;
   sessionId?: string | null;
   onAskAboutCode?: (code: string) => void;
+  onAskAboutCFG?: (context: CFGContext) => void;
 }
 
 type ViewTab = 'summary' | 'functions' | 'strings' | 'disasm' | 'cfg';
@@ -62,7 +64,7 @@ const saveAnnotations = (binaryPath: string, annotations: AssemblyAnnotation[]) 
   }
 };
 
-const ResultViewer: FC<ResultViewerProps> = ({ result, sessionId, onAskAboutCode }) => {
+const ResultViewer: FC<ResultViewerProps> = ({ result, sessionId, onAskAboutCode, onAskAboutCFG }) => {
   const theme = useTheme();
   const [view, setView] = useState<ViewTab>('summary');
   const [annotations, setAnnotations] = useState<AssemblyAnnotation[]>([]);
@@ -158,13 +160,13 @@ const ResultViewer: FC<ResultViewerProps> = ({ result, sessionId, onAskAboutCode
   const r2QuickInfo = r2Quick.info as Record<string, unknown> | undefined;
   const binInfo = (r2QuickInfo?.bin ?? {}) as Record<string, unknown>;
   const coreInfo = (r2QuickInfo?.core ?? {}) as Record<string, unknown>;
-  const rawArch = binInfo.arch ?? 'unknown';
-  const bits = binInfo.bits ?? null;
-  const machine = binInfo.machine ?? '';
-  const os = binInfo.os ?? 'unknown';
-  const binType = binInfo.bintype ?? binInfo.class ?? 'unknown';
-  const compiler = binInfo.compiler ?? '';
-  const format = coreInfo.format ?? 'unknown';
+  const rawArch = (binInfo.arch as string | undefined) ?? 'unknown';
+  const bits = (binInfo.bits as number | undefined) ?? null;
+  const machine = (binInfo.machine as string | undefined) ?? '';
+  const os = (binInfo.os as string | undefined) ?? 'unknown';
+  const binType = (binInfo.bintype as string | undefined) ?? (binInfo.class as string | undefined) ?? 'unknown';
+  const compiler = (binInfo.compiler as string | undefined) ?? '';
+  const format = (coreInfo.format as string | undefined) ?? 'unknown';
 
   // Compute a more readable architecture string
   // For ARM: bits=16 means Thumb mode (still 32-bit architecture)
@@ -306,7 +308,11 @@ const ResultViewer: FC<ResultViewerProps> = ({ result, sessionId, onAskAboutCode
       {/* Content */}
       <Box sx={{ flex: 1, overflow: 'auto', mt: 1.5 }}>
         {view === 'summary' && (
-          <Grid container spacing={1.5}>
+          <Stack spacing={1.5}>
+            {/* Tool Attribution */}
+            <ToolAttribution quickScan={quickScan} deepScan={deepScan} />
+
+            <Grid container spacing={1.5}>
             {/* Binary Info */}
             <Grid item xs={12} md={4}>
               <Paper variant="outlined" sx={{ p: 1.5, height: '100%' }}>
@@ -314,14 +320,14 @@ const ResultViewer: FC<ResultViewerProps> = ({ result, sessionId, onAskAboutCode
                   Binary Info
                 </Typography>
                 <Box sx={{ mt: 1 }}>
-                  {[
+                  {([
                     ['Format', format],
                     ['Architecture', archDisplay.full],
                     ['OS', os],
                     ['Type', binType],
-                    compiler && ['Compiler', compiler],
-                  ].filter(Boolean).map(([label, value]) => (
-                    <Box key={label as string} sx={{ display: 'flex', justifyContent: 'space-between', py: 0.25 }}>
+                    compiler ? ['Compiler', compiler] : null,
+                  ] as (readonly [string, string] | null)[]).filter((item): item is readonly [string, string] => item !== null).map(([label, value]) => (
+                    <Box key={label} sx={{ display: 'flex', justifyContent: 'space-between', py: 0.25 }}>
                       <Typography variant="caption" color="text.secondary">{label}</Typography>
                       <Typography variant="caption">{value}</Typography>
                     </Box>
@@ -391,6 +397,7 @@ const ResultViewer: FC<ResultViewerProps> = ({ result, sessionId, onAskAboutCode
               </Paper>
             </Grid>
           </Grid>
+          </Stack>
         )}
 
         {view === 'functions' && (
@@ -457,6 +464,8 @@ const ResultViewer: FC<ResultViewerProps> = ({ result, sessionId, onAskAboutCode
               radareFunctions={functions}
               angrActive={angrActive}
               angrFound={angrFound}
+              onAskAboutCFG={onAskAboutCFG}
+              sessionId={sessionId}
             />
           </Box>
         )}

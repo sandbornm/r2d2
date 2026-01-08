@@ -7,6 +7,7 @@ import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import SettingsIcon from '@mui/icons-material/Settings';
 import DarkModeIcon from '@mui/icons-material/DarkMode';
 import LightModeIcon from '@mui/icons-material/LightMode';
+import debug from './debug';
 import {
   Alert,
   Box,
@@ -36,6 +37,7 @@ import {
   useState,
 } from 'react';
 import ChatPanel from './components/ChatPanel';
+import { CFGContext } from './components/CFGViewer';
 import CompilerPanel from './components/CompilerPanel';
 import ProgressLog from './components/ProgressLog';
 import ResultViewer from './components/ResultViewer';
@@ -220,6 +222,7 @@ const AppContent = () => {
   }, []);
 
   useEffect(() => {
+    debug.system.init();
     fetchHealth();
     refreshSessions();
     return () => {
@@ -354,6 +357,14 @@ const AppContent = () => {
       return;
     }
 
+    const analysisOptions = {
+      binary: binaryPath,
+      quick_only: settings.quickScanOnly,
+      enable_angr: settings.enableAngr,
+      user_goal: userGoal.trim() || undefined,
+    };
+    debug.system.analysisStart(binaryPath, analysisOptions);
+
     closeSource();
     setStatus('running');
     setStatusMessage('Analyzing...');
@@ -362,15 +373,11 @@ const AppContent = () => {
     setActiveTab('logs');
 
     try {
+      debug.api.request('POST', '/api/analyze', analysisOptions);
       const response = await fetch('/api/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          binary: binaryPath,
-          quick_only: settings.quickScanOnly,
-          enable_angr: settings.enableAngr,
-          user_goal: userGoal.trim() || undefined,
-        }),
+        body: JSON.stringify(analysisOptions),
       });
 
       if (!response.ok) {
@@ -515,11 +522,14 @@ In 2-3 sentences: what is it and what does it do? I'm ${funcCount > 0 ? 'seeing 
   };
 
   const handleDeleteSession = async (sessionId: string) => {
+    debug.api.request('DELETE', `/api/chats/${sessionId}`);
     try {
       const response = await fetch(`/api/chats/${sessionId}`, {
         method: 'DELETE',
       });
+      debug.api.response(`/api/chats/${sessionId}`, response.status);
       if (response.ok) {
+        debug.session.delete(sessionId);
         // Remove from local state
         setSessions((prev) => prev.filter((s) => s.session_id !== sessionId));
         // If we deleted the active session, select the next one
@@ -534,15 +544,17 @@ In 2-3 sentences: what is it and what does it do? I'm ${funcCount > 0 ? 'seeing 
         }
       }
     } catch (error) {
+      debug.api.error(`/api/chats/${sessionId}`, error);
       console.error('Delete failed:', error);
     }
   };
 
   const handleSendMessage = async (content: string, options: { callLLM: boolean }) => {
     if (!activeSessionId) return;
+    debug.chat.send(activeSessionId, content);
     setSendingMessage(true);
     setChatError(null);
-    
+
     // Track the question being asked
     if (options.callLLM) {
       const topic = content.length > 50 ? content.slice(0, 50) + '...' : content;
@@ -584,6 +596,7 @@ In 2-3 sentences: what is it and what does it do? I'm ${funcCount > 0 ? 'seeing 
         throw new Error(errorBody.error ?? 'Failed');
       }
       const data: ChatPostResponse = await response.json();
+      debug.chat.receive(data.session.session_id, data.assistant ? 'assistant' : 'user');
       setActiveSessionId(data.session.session_id);
       activeSessionIdRef.current = data.session.session_id;
       setMessages(data.messages);
@@ -591,8 +604,12 @@ In 2-3 sentences: what is it and what does it do? I'm ${funcCount > 0 ? 'seeing 
         const next = prev.filter((s) => s.session_id !== data.session.session_id);
         return [data.session, ...next];
       });
-      if (data.error) setChatError(data.error);
+      if (data.error) {
+        debug.chat.error(data.session.session_id, data.error);
+        setChatError(data.error);
+      }
     } catch (error) {
+      debug.chat.error(activeSessionId, error instanceof Error ? error.message : 'Unknown error');
       console.error(error);
       const errorMsg = error instanceof Error ? error.message : 'Failed';
       // Provide better error message for common issues
@@ -608,6 +625,7 @@ In 2-3 sentences: what is it and what does it do? I'm ${funcCount > 0 ? 'seeing 
   };
 
   const handleTabChange = (_: SyntheticEvent, value: TabValue) => {
+    debug.activity.tabSwitch(activeTab, value);
     setActiveTab(value);
     // Track tab switch for activity context
     activity.setCurrentTab(value);
@@ -717,13 +735,13 @@ In 2-3 sentences: what is it and what does it do? I'm ${funcCount > 0 ? 'seeing 
 
       source.onmessage = (event) => {
         const parsed = JSON.parse(event.data);
-        setEvents((prev) => [...prev, { event: 'message', data: parsed }]);
+        setEvents((prev) => [...prev, { id: crypto.randomUUID(), event: 'job_started', data: parsed, timestamp: Date.now() }]);
       };
 
       EVENT_NAMES.forEach((eventName) => {
         source.addEventListener(eventName, (e) => {
           const payload = JSON.parse((e as MessageEvent).data);
-          setEvents((prev) => [...prev, { event: eventName, data: payload }]);
+          setEvents((prev) => [...prev, { id: crypto.randomUUID(), event: eventName, data: payload, timestamp: Date.now() }]);
 
           if (eventName === 'job_completed') {
             setStatus('done');
@@ -1089,6 +1107,41 @@ In 2-3 sentences: what is it and what does it do? I'm ${funcCount > 0 ? 'seeing 
                       }
                       
                       handleSendMessage(prompt, { callLLM: true });
+                      }}
+                      onAskAboutCFG={(context: CFGContext) => {
+                        // Switch to chat tab and ask about the CFG
+                        setActiveTab('chat');
+
+                        // Format the context into a prompt
+                        let prompt = '';
+                        if (context.functionName && context.functionOffset) {
+                          prompt += `I'm looking at the CFG for function \`${context.functionName}\` at ${context.functionOffset}.\n\n`;
+                        }
+
+                        if (context.selectedBlock && context.blockAssembly) {
+                          prompt += `Selected block at \`${context.selectedBlock}\`:\n\n\`\`\`asm\n`;
+                          prompt += context.blockAssembly
+                            .map((instr) => `${instr.addr}  ${instr.opcode || ''}`)
+                            .join('\n');
+                          prompt += '\n```\n\n';
+                        } else if (context.visibleBlocks.length > 0) {
+                          // Use visible blocks if no specific block selected
+                          prompt += 'Visible blocks:\n\n```asm\n';
+                          for (const block of context.visibleBlocks) {
+                            if (block.offset && block.disassembly) {
+                              prompt += `; Block ${block.offset}\n`;
+                              prompt += block.disassembly
+                                .map((instr) => `${instr.addr}  ${instr.opcode || ''}`)
+                                .join('\n');
+                              prompt += '\n\n';
+                            }
+                          }
+                          prompt += '```\n\n';
+                        }
+
+                        prompt += 'What does this code do? Explain the control flow and any interesting patterns.';
+
+                        handleSendMessage(prompt, { callLLM: true });
                       }}
                     />
                   </>

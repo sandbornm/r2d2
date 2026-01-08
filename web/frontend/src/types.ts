@@ -108,6 +108,33 @@ export interface AssemblyAnnotation {
   createdAt: string;
 }
 
+// Function naming types for LLM-suggested or human-overridden names
+export interface FunctionName {
+  id: string;
+  address: string;
+  originalName: string;
+  displayName: string;
+  reasoning?: string;
+  confidence?: number;
+  source: 'llm' | 'user';
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface FunctionNameSuggestion {
+  address: string;
+  name: string;
+  confidence: number;
+  reasoning: string;
+}
+
+export interface SuggestNamesResponse {
+  suggestions: FunctionNameSuggestion[];
+  provider?: string;
+  message?: string;
+  error?: string;
+}
+
 // Compiler-related types
 export interface CompileResult {
   success: boolean;

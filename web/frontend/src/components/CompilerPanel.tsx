@@ -327,7 +327,6 @@ export default function CompilerPanel({ onBinaryCompiled, onAnalyzeAndChat }: Co
         architecture,
         compiler: 'unknown',
       });
-      setOutputTab('errors');
     } finally {
       setCompiling(false);
     }
