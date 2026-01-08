@@ -45,10 +45,11 @@ class OpenAIClient:
         if OpenAI is None:
             raise OpenAIError("OpenAI package is not installed. Run: pip install openai")
 
-        api_key = os.getenv(config.llm.api_key_env)
+        api_env = config.llm.fallback_api_key_env or "OPENAI_API_KEY"
+        api_key = os.getenv(api_env)
         if not api_key:
             raise OpenAIError(
-                f"OpenAI API key not found. Set the {config.llm.api_key_env} environment variable."
+                f"OpenAI API key not found. Set the {api_env} environment variable."
             )
 
         self._client = OpenAI(api_key=api_key)

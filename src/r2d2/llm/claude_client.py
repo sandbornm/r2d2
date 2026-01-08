@@ -42,7 +42,7 @@ class ClaudeClient:
         if Anthropic is None:
             raise ClaudeError("Anthropic package is not installed. Run: pip install anthropic")
 
-        api_env = config.llm.fallback_api_key_env or "ANTHROPIC_API_KEY"
+        api_env = config.llm.api_key_env or "ANTHROPIC_API_KEY"
         api_key = os.getenv(api_env)
         if not api_key:
             raise ClaudeError(
