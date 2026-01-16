@@ -174,7 +174,11 @@ export type ActivityEventType =
   | 'search_query'
   | 'cfg_navigate'
   | 'disassembly_scroll'
-  | 'ask_claude';
+  | 'ask_claude'
+  | 'dwarf_view'          // Viewing DWARF panel
+  | 'dwarf_function_view' // Viewing a specific DWARF function
+  | 'dwarf_type_view'     // Viewing a specific DWARF type
+  | 'dwarf_ask_claude';   // Asking Claude about DWARF info
 
 export interface ActivityEvent {
   event_id?: string;
@@ -200,4 +204,100 @@ export interface CodeCitation {
   instruction?: string;
   bytes?: string;
   context_lines?: string[];  // Surrounding disassembly lines
+}
+
+// DWARF debug information types
+export interface DWARFFunction {
+  name: string;
+  offset: number;
+  low_pc: number | null;
+  high_pc: number | null;
+  size?: number;
+  is_external: boolean;
+  is_inline: boolean;
+  decl_file?: number;
+  decl_line?: number;
+  parameters: DWARFParameter[];
+  local_variables: DWARFVariable[];
+}
+
+export interface DWARFParameter {
+  name: string;
+  offset: number;
+  type_offset?: number;
+  location?: string;
+}
+
+export interface DWARFVariable {
+  name: string;
+  offset: number;
+  is_local: boolean;
+  type_offset?: number;
+  decl_file?: number;
+  decl_line?: number;
+  location?: string;
+  is_external: boolean;
+}
+
+export interface DWARFType {
+  name?: string;
+  offset: number;
+  tag: string;
+  byte_size?: number;
+  encoding?: number;
+  base_type_offset?: number;
+  members?: DWARFTypeMember[];
+  enumerators?: DWARFEnumerator[];
+}
+
+export interface DWARFTypeMember {
+  name?: string;
+  offset?: number;
+  type_offset?: number;
+}
+
+export interface DWARFEnumerator {
+  name?: string;
+  value?: number;
+}
+
+export interface DWARFCompilationUnit {
+  offset: number;
+  version?: number;
+  unit_length?: number;
+  name?: string;
+  producer?: string;
+  language?: number;
+  comp_dir?: string;
+  source_files: string[];
+  functions: DWARFFunction[];
+  variables: DWARFVariable[];
+  types: DWARFType[];
+}
+
+export interface DWARFLineEntry {
+  address: number;
+  file: number;
+  line: number;
+  column: number;
+  is_stmt: boolean;
+  end_sequence: boolean;
+}
+
+export interface DWARFLineProgram {
+  cu_offset: number;
+  entries: DWARFLineEntry[];
+  total_entries: number;
+}
+
+export interface DWARFData {
+  has_dwarf: boolean;
+  dwarf_version?: number;
+  compilation_units: DWARFCompilationUnit[];
+  functions: DWARFFunction[];
+  variables: DWARFVariable[];
+  types: DWARFType[];
+  source_files: string[];
+  line_programs: DWARFLineProgram[];
+  error?: string;
 }

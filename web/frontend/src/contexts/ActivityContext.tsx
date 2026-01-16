@@ -266,6 +266,14 @@ function describeEvent(event: ActivityEvent): string {
       return `Scrolled to ${data.address || 'new position'}`;
     case 'ask_claude':
       return `Asked about ${data.topic || 'code'}`;
+    case 'dwarf_view':
+      return `Opened DWARF debug info panel`;
+    case 'dwarf_function_view':
+      return `Viewed DWARF function ${data.function_name || 'unknown'}`;
+    case 'dwarf_type_view':
+      return `Viewed DWARF type ${data.type_name || 'unknown'}`;
+    case 'dwarf_ask_claude':
+      return `Asked Claude about DWARF ${data.topic || 'info'}`;
     default:
       return event.event_type;
   }

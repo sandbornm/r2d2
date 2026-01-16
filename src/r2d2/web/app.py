@@ -1539,11 +1539,47 @@ def _build_analysis_context(analysis: dict[str, Any]) -> str:
             for s in interesting[:8]:
                 lines.append(f"  - {s}")
     
+    # DWARF debug information (if available)
+    dwarf_data = deep.get("dwarf", {}) if isinstance(deep, dict) else {}
+    if isinstance(dwarf_data, dict) and dwarf_data.get("has_dwarf"):
+        lines.append("\n## DWARF Debug Information")
+        lines.append(f"DWARF Version: {dwarf_data.get('dwarf_version', '?')}")
+
+        dwarf_functions = dwarf_data.get("functions", [])
+        if isinstance(dwarf_functions, list) and dwarf_functions:
+            lines.append(f"\nDebug symbols for {len(dwarf_functions)} functions:")
+            for dfn in dwarf_functions[:10]:
+                if isinstance(dfn, dict):
+                    name = dfn.get("name", "?")
+                    low_pc = dfn.get("low_pc")
+                    params = dfn.get("parameters", [])
+                    param_names = ", ".join(p.get("name", "?") for p in params[:5] if isinstance(p, dict))
+                    addr_str = f"0x{low_pc:x}" if isinstance(low_pc, int) else "?"
+                    lines.append(f"  - {name}({param_names}) @ {addr_str}")
+
+        dwarf_types = dwarf_data.get("types", [])
+        if isinstance(dwarf_types, list) and dwarf_types:
+            named_types = [t for t in dwarf_types if isinstance(t, dict) and t.get("name")]
+            if named_types:
+                lines.append(f"\nDefined types ({len(named_types)}):")
+                for dtype in named_types[:8]:
+                    tag = dtype.get("tag", "").replace("DW_TAG_", "")
+                    name = dtype.get("name", "?")
+                    size = dtype.get("byte_size")
+                    size_str = f" ({size} bytes)" if size else ""
+                    lines.append(f"  - {tag}: {name}{size_str}")
+
+        source_files = dwarf_data.get("source_files", [])
+        if isinstance(source_files, list) and source_files:
+            lines.append(f"\nSource files ({len(source_files)}):")
+            for sf in source_files[:5]:
+                lines.append(f"  - {sf}")
+
     # Issues/notes
     issues = analysis.get("issues", [])
     if issues:
         lines.append(f"\nIssues: {', '.join(str(i) for i in issues[:3])}")
-    
+
     return "\n".join(lines)
 
 

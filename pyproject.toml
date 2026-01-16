@@ -27,7 +27,8 @@ analyzers = [
   "r2pipe>=1.9.0,<2",
   "capstone>=5.0.1,<6",
   "python-magic>=0.4.27,<0.5",
-  "angr>=9.2,<10"
+  "angr>=9.2,<10",
+  "pyelftools>=0.29,<0.32"
 ]
 ghidra = [
   "jep>=4.2.0,<5",

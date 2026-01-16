@@ -1,4 +1,5 @@
 import AccountTreeIcon from '@mui/icons-material/AccountTree';
+import BugReportIcon from '@mui/icons-material/BugReport';
 import CodeIcon from '@mui/icons-material/Code';
 import FunctionsIcon from '@mui/icons-material/Functions';
 import InfoIcon from '@mui/icons-material/Info';
@@ -16,9 +17,10 @@ import {
   useTheme,
 } from '@mui/material';
 import { FC, useCallback, useEffect, useMemo, useState } from 'react';
-import type { AnalysisResultPayload, AssemblyAnnotation } from '../types';
+import type { AnalysisResultPayload, AssemblyAnnotation, DWARFData } from '../types';
 import CFGViewer, { CFGContext } from './CFGViewer';
 import DisassemblyViewer from './DisassemblyViewer';
+import DWARFPanel from './DWARFPanel';
 import ToolAttribution from './ToolAttribution';
 
 // Local storage key for annotations
@@ -31,7 +33,7 @@ interface ResultViewerProps {
   onAskAboutCFG?: (context: CFGContext) => void;
 }
 
-type ViewTab = 'summary' | 'functions' | 'strings' | 'disasm' | 'cfg';
+type ViewTab = 'summary' | 'functions' | 'strings' | 'disasm' | 'cfg' | 'dwarf';
 
 const formatHex = (value: number | string | null | undefined, fallback = '?') => {
   if (value === null || value === undefined) return fallback;
@@ -155,6 +157,7 @@ const ResultViewer: FC<ResultViewerProps> = ({ result, sessionId, onAskAboutCode
   const r2Quick = (quickScan.radare2 ?? {}) as Record<string, unknown>;
   const r2Deep = (deepScan.radare2 ?? {}) as Record<string, unknown>;
   const angrDeep = (deepScan.angr ?? {}) as Record<string, unknown>;
+  const dwarfDeep = (deepScan.dwarf ?? null) as DWARFData | null;
 
   // Binary metadata
   const r2QuickInfo = r2Quick.info as Record<string, unknown> | undefined;
@@ -303,6 +306,13 @@ const ResultViewer: FC<ResultViewerProps> = ({ result, sessionId, onAskAboutCode
         <Tab value="strings" label="Strings" icon={<TextSnippetIcon sx={{ fontSize: 16 }} />} iconPosition="start" sx={{ minHeight: 36, py: 0 }} />
         <Tab value="disasm" label="Disasm" icon={<CodeIcon sx={{ fontSize: 16 }} />} iconPosition="start" sx={{ minHeight: 36, py: 0 }} />
         <Tab value="cfg" label="CFG" icon={<AccountTreeIcon sx={{ fontSize: 16 }} />} iconPosition="start" sx={{ minHeight: 36, py: 0 }} />
+        <Tab
+          value="dwarf"
+          label={dwarfDeep?.has_dwarf ? "DWARF" : "Debug"}
+          icon={<BugReportIcon sx={{ fontSize: 16 }} />}
+          iconPosition="start"
+          sx={{ minHeight: 36, py: 0 }}
+        />
       </Tabs>
 
       {/* Content */}
@@ -468,6 +478,15 @@ const ResultViewer: FC<ResultViewerProps> = ({ result, sessionId, onAskAboutCode
               sessionId={sessionId}
             />
           </Box>
+        )}
+
+        {view === 'dwarf' && (
+          <Paper variant="outlined" sx={{ height: 500, overflow: 'hidden' }}>
+            <DWARFPanel
+              data={dwarfDeep}
+              onAskClaude={(question) => onAskAboutCode?.(question)}
+            />
+          </Paper>
         )}
       </Box>
     </Box>

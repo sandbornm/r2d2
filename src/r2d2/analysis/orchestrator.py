@@ -16,6 +16,7 @@ from ..adapters.base import AdapterRegistry, AdapterUnavailable, AnalyzerAdapter
 from ..adapters import (
     AngrAdapter,
     CapstoneAdapter,
+    DWARFAdapter,
     FridaAdapter,
     GhidraAdapter,
     LibmagicAdapter,
@@ -62,6 +63,7 @@ class AnalysisOrchestrator:
         adapters.append(cast(AnalyzerAdapter, LibmagicAdapter()))
         adapters.append(cast(AnalyzerAdapter, Radare2Adapter(profile=config.analysis.default_radare_profile)))
         adapters.append(cast(AnalyzerAdapter, CapstoneAdapter()))
+        adapters.append(cast(AnalyzerAdapter, DWARFAdapter()))
 
         if config.analysis.enable_ghidra and env.ghidra:
             adapters.append(cast(AnalyzerAdapter, GhidraAdapter(env.ghidra, config.ghidra.project_dir)))
@@ -200,6 +202,7 @@ class AnalysisOrchestrator:
         radare = self._registry.get("radare2") if self._has_adapter("radare2") else None
         ghidra = self._registry.get("ghidra") if self._has_adapter("ghidra") else None
         capstone = self._registry.get("capstone") if self._has_adapter("capstone") else None
+        dwarf = self._registry.get("dwarf") if self._has_adapter("dwarf") else None
         # Only get angr adapter if run_angr is enabled in plan
         run_angr = plan.run_angr if plan else self._config.analysis.enable_angr
         angr = self._registry.get("angr") if self._has_adapter("angr") and run_angr else None
@@ -267,6 +270,25 @@ class AnalysisOrchestrator:
                     progress_callback,
                     "adapter_failed",
                     {"stage": "deep", "adapter": "capstone", "error": str(exc)},
+                )
+
+        if dwarf:
+            try:
+                self._emit_progress(progress_callback, "adapter_started", {"stage": "deep", "adapter": "dwarf"})
+                dwarf_payload = dwarf.deep_scan(binary)
+                result.deep_scan["dwarf"] = dwarf_payload
+                self._record_action(trajectory, "dwarf.deep", dwarf_payload)
+                self._emit_progress(
+                    progress_callback,
+                    "adapter_completed",
+                    {"stage": "deep", "adapter": "dwarf", "payload": dwarf_payload},
+                )
+            except AdapterUnavailable as exc:
+                result.notes.append(str(exc))
+                self._emit_progress(
+                    progress_callback,
+                    "adapter_failed",
+                    {"stage": "deep", "adapter": "dwarf", "error": str(exc)},
                 )
 
         if angr:
