@@ -21,10 +21,17 @@ class GhidraDetection:
     extension_root: Path
     issues: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    bridge_connected: bool = False
+    bridge_program_loaded: str | None = None
 
     @property
     def is_ready(self) -> bool:
         return self.install_dir is not None and self.headless_path is not None
+
+    @property
+    def bridge_ready(self) -> bool:
+        """Check if the bridge is available and connected."""
+        return self.bridge_available and self.bridge_connected
 
 
 def detect_ghidra(config: AppConfig, project_root: Path | None = None) -> GhidraDetection:
@@ -57,6 +64,9 @@ def detect_ghidra(config: AppConfig, project_root: Path | None = None) -> Ghidra
         issues.append("Ghidra installation directory not configured or not found.")
 
     bridge_available = False
+    bridge_connected = False
+    bridge_program_loaded: str | None = None
+
     if config.ghidra.use_bridge:
         try:
             importlib.import_module("ghidra_bridge")
@@ -65,6 +75,28 @@ def detect_ghidra(config: AppConfig, project_root: Path | None = None) -> Ghidra
         else:
             bridge_available = True
             notes.append("ghidra_bridge module import successful.")
+
+            # Probe bridge connectivity
+            try:
+                from ..adapters.ghidra_bridge_client import GhidraBridgeClient
+
+                client = GhidraBridgeClient(
+                    host=config.ghidra.bridge_host,
+                    port=config.ghidra.bridge_port,
+                    timeout=config.ghidra.bridge_timeout,
+                )
+                if client.connect():
+                    bridge_connected = True
+                    bridge_program_loaded = client.get_current_program_name()
+                    if bridge_program_loaded:
+                        notes.append(f"Bridge connected, program loaded: {bridge_program_loaded}")
+                    else:
+                        notes.append("Bridge connected, no program loaded.")
+                    client.disconnect()
+                else:
+                    notes.append("Bridge module available but server not reachable.")
+            except Exception as exc:
+                notes.append(f"Bridge connectivity probe failed: {exc}")
 
     if not extension_root.exists():
         issues.append(f"Extension path {extension_root} is missing; run bootstrap script.")
@@ -76,6 +108,8 @@ def detect_ghidra(config: AppConfig, project_root: Path | None = None) -> Ghidra
         extension_root=extension_root,
         issues=issues,
         notes=notes,
+        bridge_connected=bridge_connected,
+        bridge_program_loaded=bridge_program_loaded,
     )
 
 

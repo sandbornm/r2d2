@@ -59,8 +59,12 @@ class GhidraSettings(BaseModel):
     use_bridge: bool = False
     bridge_host: str = "127.0.0.1"
     bridge_port: int = 13100
+    bridge_timeout: int = 30
     install_dir: Path | None = None
     project_dir: Path = Field(default=Path("~/.local/share/r2d2/ghidra-projects").expanduser())
+    max_decompile_functions: int = 20
+    max_types: int = 100
+    max_strings: int = 200
 
 
 class AppConfig(BaseModel):

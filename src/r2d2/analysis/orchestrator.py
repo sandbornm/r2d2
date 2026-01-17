@@ -66,7 +66,11 @@ class AnalysisOrchestrator:
         adapters.append(cast(AnalyzerAdapter, DWARFAdapter()))
 
         if config.analysis.enable_ghidra and env.ghidra:
-            adapters.append(cast(AnalyzerAdapter, GhidraAdapter(env.ghidra, config.ghidra.project_dir)))
+            adapters.append(cast(AnalyzerAdapter, GhidraAdapter(
+                detection=env.ghidra,
+                project_dir=config.ghidra.project_dir,
+                settings=config.ghidra,
+            )))
         if config.analysis.enable_angr:
             adapters.append(cast(AnalyzerAdapter, AngrAdapter()))
         if config.analysis.enable_frida:

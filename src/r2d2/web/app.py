@@ -1575,6 +1575,74 @@ def _build_analysis_context(analysis: dict[str, Any]) -> str:
             for sf in source_files[:5]:
                 lines.append(f"  - {sf}")
 
+    # Ghidra decompilation (if available via bridge)
+    ghidra_data = deep.get("ghidra", {}) if isinstance(deep, dict) else {}
+    if isinstance(ghidra_data, dict) and ghidra_data.get("mode") == "bridge":
+        lines.append("\n## Ghidra Decompilation")
+        lines.append(f"Functions: {ghidra_data.get('function_count', 0)}")
+        lines.append(f"Decompiled: {ghidra_data.get('decompiled_count', 0)}")
+        lines.append(f"Types: {ghidra_data.get('type_count', 0)}")
+
+        # Top decompiled functions with C code
+        decompiled = ghidra_data.get("decompiled", [])
+        if isinstance(decompiled, list) and decompiled:
+            lines.append("\nDecompiled functions:")
+            for func in decompiled[:5]:
+                if isinstance(func, dict):
+                    name = func.get("name", "?")
+                    addr = func.get("address", "?")
+                    sig = func.get("signature", "")
+                    c_code = func.get("decompiled_c", "")
+                    lines.append(f"\n### {name} @ {addr}")
+                    if sig:
+                        lines.append(f"Signature: `{sig}`")
+                    if c_code:
+                        # Truncate long decompiled code
+                        c_lines = c_code.strip().split('\n')[:30]
+                        lines.append("```c")
+                        lines.extend(c_lines)
+                        if len(c_code.strip().split('\n')) > 30:
+                            lines.append("// ... truncated ...")
+                        lines.append("```")
+
+        # Key data structures (structs)
+        types = ghidra_data.get("types", [])
+        if isinstance(types, list) and types:
+            struct_types = [t for t in types if isinstance(t, dict) and t.get("kind") == "struct"]
+            if struct_types:
+                lines.append("\nKey data structures:")
+                for stype in struct_types[:5]:
+                    name = stype.get("name", "?")
+                    size = stype.get("size", 0)
+                    members = stype.get("members", [])
+                    lines.append(f"\n#### struct {name} ({size} bytes)")
+                    if members:
+                        for m in members[:10]:
+                            if isinstance(m, dict):
+                                mname = m.get("name", "?")
+                                mtype = m.get("type", "?")
+                                moffset = m.get("offset", 0)
+                                lines.append(f"  +{moffset}: {mtype} {mname}")
+
+        # Cross-reference summary
+        xref_map = ghidra_data.get("xref_map", {})
+        if isinstance(xref_map, dict) and xref_map:
+            lines.append("\nCross-references (key functions):")
+            for addr, refs in list(xref_map.items())[:5]:
+                if isinstance(refs, dict):
+                    to_refs = refs.get("to", [])
+                    from_refs = refs.get("from", [])
+                    if to_refs or from_refs:
+                        lines.append(f"\n{addr}:")
+                        if to_refs:
+                            callers = [r.get("from_function") or r.get("from_address") for r in to_refs[:3] if isinstance(r, dict)]
+                            if callers:
+                                lines.append(f"  Called by: {', '.join(str(c) for c in callers)}")
+                        if from_refs:
+                            callees = [r.get("to_function") or r.get("to_address") for r in from_refs[:3] if isinstance(r, dict)]
+                            if callees:
+                                lines.append(f"  Calls: {', '.join(str(c) for c in callees)}")
+
     # Issues/notes
     issues = analysis.get("issues", [])
     if issues:
