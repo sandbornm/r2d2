@@ -6,14 +6,15 @@
 [llm]
 # Claude is the primary LLM provider for binary analysis
 provider = "anthropic"
-model = "claude-sonnet-4-20250514"
+model = "claude-opus-4-5"  # Default to Opus 4.5; user can override via UI
 api_key_env = "ANTHROPIC_API_KEY"
+# Available models: claude-opus-4-5, claude-5-1, claude-sonnet-4-5
 
 # OpenAI as fallback when Claude is unavailable
 fallback_provider = "openai"
 fallback_model = "gpt-4o"
 fallback_api_key_env = "OPENAI_API_KEY"
-enable_fallback = true
+enable_fallback = false
 
 # Token limits - increase for larger binaries
 max_tokens = 8192

@@ -47,6 +47,18 @@ export interface AnalysisResultPayload {
   issues: string[];
   session_id?: string;
   trajectory_id?: string;
+  tool_availability?: Record<string, boolean>;  // Which tools were available during analysis
+}
+
+export interface ToolStatusInfo {
+  available: boolean;
+  install_hint?: string;
+  description?: string;
+  bridge_connected?: boolean;
+  bridge_available?: boolean;
+  headless_ready?: boolean;
+  docker_available?: boolean;
+  image_built?: boolean;
 }
 
 export interface HealthStatus {
@@ -56,6 +68,7 @@ export interface HealthStatus {
   available_models?: string[];
   model_names?: Record<string, string>;
   ghidra_ready: boolean;
+  tools?: Record<string, ToolStatusInfo>;
 }
 
 export interface ApiAnalysisResponse {

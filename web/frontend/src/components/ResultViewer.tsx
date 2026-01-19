@@ -50,6 +50,7 @@ const ANNOTATIONS_STORAGE_KEY = 'r2d2-annotations';
 interface ResultViewerProps {
   result: AnalysisResultPayload | null;
   sessionId?: string | null;
+  toolsInfo?: Record<string, { available: boolean; install_hint?: string }>;
   onAskAboutCode?: (code: string) => void;
   onAskAboutCFG?: (context: CFGContext) => void;
 }
@@ -87,7 +88,7 @@ const saveAnnotations = (binaryPath: string, annotations: AssemblyAnnotation[]) 
   }
 };
 
-const ResultViewer: FC<ResultViewerProps> = memo(({ result, sessionId, onAskAboutCode, onAskAboutCFG }) => {
+const ResultViewer: FC<ResultViewerProps> = memo(({ result, sessionId, toolsInfo, onAskAboutCode, onAskAboutCFG }) => {
   const theme = useTheme();
   const [view, setView] = useState<ViewTab>('summary');
   const [annotations, setAnnotations] = useState<AssemblyAnnotation[]>([]);
@@ -370,7 +371,12 @@ const ResultViewer: FC<ResultViewerProps> = memo(({ result, sessionId, onAskAbou
         {view === 'summary' && (
           <Stack spacing={1.5}>
             {/* Tool Attribution */}
-            <ToolAttribution quickScan={quickScan} deepScan={deepScan} />
+            <ToolAttribution 
+              quickScan={quickScan} 
+              deepScan={deepScan}
+              toolAvailability={result.tool_availability as Record<string, boolean> | undefined}
+              toolsInfo={toolsInfo}
+            />
 
             <Grid container spacing={1.5}>
             {/* Binary Info */}

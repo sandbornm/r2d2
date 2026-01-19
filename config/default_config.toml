@@ -1,16 +1,24 @@
+# R2D2 Configuration
+# 
+# To customize, set environment variables or create a custom config:
+#   R2D2_CONFIG=/path/to/config.toml
+#
+# Required environment variables:
+#   ANTHROPIC_API_KEY  - API key for Claude
+#   GHIDRA_INSTALL_DIR - Path to Ghidra installation (for decompilation)
+#
+# Optional:
+#   OPENAI_API_KEY     - Fallback API key
+
 [llm]
-# Claude is the primary LLM provider for binary analysis
 provider = "anthropic"
-model = "claude-sonnet-4-5"
+model = "claude-opus-4-5"
 api_key_env = "ANTHROPIC_API_KEY"
-# Available models:
-#   Claude: claude-sonnet-4-5, claude-opus-4-5
-#   OpenAI: gpt-5.2-2025-12-11
-# OpenAI as fallback when Claude is unavailable
+# Available models: claude-opus-4-5, claude-5-1, claude-sonnet-4-5
 fallback_provider = "openai"
-fallback_model = "gpt-5.2-2025-12-11"
+fallback_model = "gpt-4o"
 fallback_api_key_env = "OPENAI_API_KEY"
-enable_fallback = true
+enable_fallback = false
 max_tokens = 8192
 temperature = 0.1
 
@@ -19,16 +27,17 @@ auto_analyze = true
 max_binary_size = "5MB"
 timeout_quick = 5
 timeout_deep = 120
-enable_angr = true
-enable_ghidra = true
-enable_frida = true
-enable_gef = true
+
+# Tool toggles
+enable_angr = true      # Symbolic execution, CFG (memory-heavy)
+enable_ghidra = true    # Decompilation
+enable_frida = true     # Dynamic instrumentation
+enable_gef = true       # GDB+GEF in Docker
 gef_timeout = 60
 gef_max_instructions = 10000
+
 require_elf = true
-
 default_radare_profile = "analysis.quick"
-
 enable_trajectory_recording = true
 
 [output]
@@ -46,12 +55,26 @@ database_path = "~/.local/share/r2d2/r2d2.db"
 auto_migrate = true
 
 [ghidra]
-use_bridge = true
+# Ghidra decompilation supports two modes:
+#
+# 1. Headless Mode (default): Runs analyzeHeadless subprocess.
+#    - Set GHIDRA_INSTALL_DIR environment variable
+#    - Set JAVA_HOME for Ghidra 12+ (requires Java 21)
+#    - R2D2Headless.java script outputs JSON with functions/strings/decompiled code
+#
+# 2. Bridge Mode (richer data): Connects to running Ghidra GUI.
+#    - Requires: pip install ghidra_bridge
+#    - Run ghidra_bridge_server_background.py in Ghidra's Script Manager
+#
+# Note: PyGhidra 3.0.2 has a recursion bug with Python 3.11 when calling
+# pyghidra.start() directly. r2d2 uses subprocess-based headless mode instead.
+
+use_bridge = true  # Try bridge if available, fall back to headless
 bridge_host = "127.0.0.1"
 bridge_port = 13100
 bridge_timeout = 30
-install_dir = "/home/kali/ghidra_11.2_PUBLIC"
-project_dir = "${HOME}/.local/share/r2d2/ghidra-projects"
+
+project_dir = "~/.local/share/r2d2/ghidra-projects"
 max_decompile_functions = 20
 max_types = 100
 max_strings = 200

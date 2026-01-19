@@ -23,10 +23,22 @@ Each adapter provides a uniform interface (`AnalyzerAdapter` protocol) and can b
 | Libmagic | `r2d2.adapters.libmagic` | file identification | minimal dependencies, sanity check |
 | Radare2 | `r2d2.adapters.radare2` | metadata, CFG, functions | multi-arch baseline (x86_64/arm64/armv7) via `radare2` + `r2pipe` |
 | Capstone | `r2d2.adapters.capstone` | first-chunk disassembly | derives architecture from radare2 quick scan |
-| Ghidra | `r2d2.adapters.ghidra` | headless decompilation | opt-in (disabled by default), uses extension scripts |
+| Ghidra | `r2d2.adapters.ghidra` | decompilation, types | headless (subprocess) or bridge (RPC) modes |
 | angr | `r2d2.adapters.angr` | symbolic execution | enabled by default; heavy but fallbacks gracefully |
+| DWARF | `r2d2.adapters.dwarf` | debug symbol parsing | extracts source-level type info from binaries |
+| Frida | `r2d2.adapters.frida` | dynamic instrumentation | runtime memory/module inspection |
+| GEF | `r2d2.adapters.gef` | execution tracing | Docker-isolated GDB with register snapshots |
 
 Adapters raise `AdapterUnavailable` when prerequisites are missing to keep the orchestrator composable.
+
+### Ghidra Integration Details
+The Ghidra adapter supports two modes:
+
+1. **Headless Mode** (default): Runs `analyzeHeadless` subprocess with `R2D2Headless.java` script that outputs JSON containing functions, strings, and decompiled code. Auto-copies script to `~/ghidra_scripts/`.
+
+2. **Bridge Mode** (richer data): Connects to running Ghidra GUI via `ghidra_bridge` RPC. Provides real-time access to decompilation, types, and cross-references.
+
+> ⚠️ **Note**: PyGhidra 3.0.2 has a recursion bug with Python 3.11 in `_GhidraBundleFinder.find_spec()`. r2d2 uses subprocess-based headless mode which works correctly.
 
 ## Environment Sentinel
 - **Module**: `r2d2.environment.detectors`

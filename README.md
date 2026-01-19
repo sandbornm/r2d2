@@ -23,43 +23,43 @@ Reverse engineering is hard. You need to juggle multiple tools (disassemblers, d
 ```mermaid
 flowchart TB
     subgraph Frontend["Frontend (React + Vite)"]
-        UI[Web UI :5173]
-        Tabs[Tabs: Summary | Profile | Functions | Disasm | CFG | Decompiler | Dynamic]
-        Chat[Chat Panel]
-        Compiler[ARM Compiler]
+        UI["Web UI :5173"]
+        Tabs["Summary / Profile / Functions / Disasm / CFG / Decompiler / Dynamic"]
+        Chat["Chat Panel"]
+        Compiler["ARM Compiler"]
     end
 
     subgraph Backend["Backend (Flask :5050)"]
-        API[REST API]
-        SSE[SSE Progress Stream]
-        Orchestrator[Analysis Orchestrator]
-        LLM[LLM Bridge]
+        API["REST API"]
+        SSE["SSE Progress Stream"]
+        Orchestrator["Analysis Orchestrator"]
+        LLM["LLM Bridge"]
     end
 
     subgraph Adapters["Analysis Adapters"]
-        AutoProfile[AutoProfile<br/>Security features, strings, risk]
-        R2[radare2<br/>Disassembly, functions, imports]
-        Angr[angr<br/>CFG, symbolic execution]
-        Capstone[Capstone<br/>Instruction decoding]
-        Ghidra[Ghidra<br/>Decompilation, types]
-        DWARF[DWARF<br/>Debug symbols]
-        Frida[Frida<br/>Dynamic instrumentation]
-        GEF[GEF/GDB<br/>Execution tracing]
-        Libmagic[libmagic<br/>File identification]
+        AutoProfile["AutoProfile<br/>Security features, strings, risk"]
+        R2["radare2<br/>Disassembly, functions, imports"]
+        Angr["angr<br/>CFG, symbolic execution"]
+        Capstone["Capstone<br/>Instruction decoding"]
+        GhidraAdapter["Ghidra<br/>Decompilation, types"]
+        DWARF["DWARF<br/>Debug symbols"]
+        Frida["Frida<br/>Dynamic instrumentation"]
+        GEF["GEF/GDB<br/>Execution tracing"]
+        Libmagic["libmagic<br/>File identification"]
     end
 
     subgraph External["External Services"]
-        Claude[Claude API]
-        OpenAI[OpenAI API<br/>fallback]
-        GhidraBridge[Ghidra Bridge<br/>RPC :13100]
-        Docker[Docker<br/>GEF container]
+        Claude["Claude API"]
+        OpenAI["OpenAI API fallback"]
+        GhidraBridge["Ghidra Bridge RPC :13100"]
+        Docker["Docker GEF container"]
     end
 
     subgraph Storage["Persistence"]
-        SQLite[(SQLite DB)]
-        Trajectories[Trajectories]
-        Sessions[Chat Sessions]
-        Annotations[Annotations]
+        SQLite[("SQLite DB")]
+        Trajectories["Trajectories"]
+        Sessions["Chat Sessions"]
+        Annotations["Annotations"]
     end
 
     UI --> API
@@ -74,13 +74,13 @@ flowchart TB
     Orchestrator --> R2
     Orchestrator --> Angr
     Orchestrator --> Capstone
-    Orchestrator --> Ghidra
+    Orchestrator --> GhidraAdapter
     Orchestrator --> DWARF
     Orchestrator --> Frida
     Orchestrator --> GEF
     Orchestrator --> Libmagic
 
-    Ghidra -.-> GhidraBridge
+    GhidraAdapter -.-> GhidraBridge
     GEF -.-> Docker
     LLM --> Claude
     LLM -.-> OpenAI
@@ -171,32 +171,34 @@ cd ../..
 
 ### Step 4: Configure Ghidra (Optional but Recommended)
 
-**For headless analysis:**
+Ghidra provides decompilation, type recovery, and cross-references. r2d2 supports two modes:
+
+**Headless Mode (Default)** - Runs `analyzeHeadless` subprocess:
 ```bash
-# Download Ghidra 11.x from https://ghidra-sre.org/
-# Extract to /home/kali/ghidra_11.2_PUBLIC (or your preferred location)
+# Download Ghidra 12.x from https://ghidra-sre.org/
+# Extract to your preferred location
 
-# Set environment variable
-export GHIDRA_INSTALL_DIR=/home/kali/ghidra_11.2_PUBLIC
+# Set environment variable in your .env or shell:
+export GHIDRA_INSTALL_DIR=/path/to/ghidra_12.0.1_PUBLIC
+export JAVA_HOME=/path/to/jdk-21  # Ghidra 12 requires Java 21
 
-# Or update config/default_config.toml:
-#   [ghidra]
-#   install_dir = "/home/kali/ghidra_11.2_PUBLIC"
+# The R2D2Headless.java script outputs JSON with functions, strings, 
+# and decompiled code. It's automatically copied to ~/ghidra_scripts/
 ```
 
-**For Ghidra Bridge (richer decompilation data):**
+**Bridge Mode (Richer Data)** - Connects to running Ghidra GUI:
 ```bash
-# 1. Start Ghidra GUI and load your binary
-# 2. In Ghidra: Window → Script Manager → Search "bridge"
-# 3. Run: ghidra_bridge_server_background.py
-# 4. Bridge will listen on port 13100
+# 1. Install ghidra_bridge: pip install ghidra_bridge
+# 2. Copy server script to ~/ghidra_scripts/:
+cp .venv/lib/python*/site-packages/ghidra_bridge/server/*.py ~/ghidra_scripts/
 
-# Config is already set in default_config.toml:
-#   [ghidra]
-#   use_bridge = true
-#   bridge_host = "127.0.0.1"
-#   bridge_port = 13100
+# 3. Start Ghidra GUI and load your binary
+# 4. In Ghidra: Window → Script Manager → Add ~/ghidra_scripts
+# 5. Run: ghidra_bridge_server_background.py
+# 6. Bridge listens on port 13100
 ```
+
+> ⚠️ **PyGhidra Note**: PyGhidra 3.0.2 has a recursion bug with Python 3.11 when calling `pyghidra.start()` directly. The bug is in `_GhidraBundleFinder.find_spec()` which triggers infinite recursion during import. r2d2 uses `analyzeHeadless` subprocess instead, which works correctly. See [PyGhidra README](https://github.com/NationalSecurityAgency/ghidra/blob/master/Ghidra/Features/PyGhidra/src/main/py/README.md) for the official launcher approach.
 
 ### Step 5: Build GEF Docker Image (Optional)
 
@@ -286,7 +288,7 @@ uv run r2d2 env
 
 ## Configuration
 
-Configuration is loaded from `config/default_config.toml` with user overrides from `~/.config/r2d2/config.toml`.
+Configuration is loaded from `config/default_config.toml`. Machine-specific paths should be set via environment variables (in `.env` or shell).
 
 ### Key Settings
 
@@ -299,10 +301,10 @@ enable_gef = true       # GDB execution tracing (requires Docker)
 timeout_deep = 120      # Seconds for deep analysis stage
 
 [ghidra]
-use_bridge = true                              # Use Ghidra bridge for richer data
+use_bridge = true       # Use Ghidra bridge for richer data (if available)
 bridge_host = "127.0.0.1"
 bridge_port = 13100
-install_dir = "/home/kali/ghidra_11.2_PUBLIC"  # For headless fallback
+# install_dir set via GHIDRA_INSTALL_DIR env var
 
 [llm]
 provider = "anthropic"
@@ -312,10 +314,15 @@ model = "claude-sonnet-4-5"
 ### Environment Variables
 
 ```bash
-ANTHROPIC_API_KEY=sk-ant-...    # Required for Claude
-OPENAI_API_KEY=sk-...           # Optional fallback
-GHIDRA_INSTALL_DIR=/path/to/ghidra  # Optional, can be set in config
-R2D2_DEBUG=true                 # Enable debug logging
+# Required
+ANTHROPIC_API_KEY=sk-ant-...        # Required for Claude
+
+# Optional
+OPENAI_API_KEY=sk-...               # Fallback LLM provider
+GHIDRA_INSTALL_DIR=/path/to/ghidra  # Path to Ghidra installation
+JAVA_HOME=/path/to/jdk-21           # Required for Ghidra 12+
+R2D2_DEBUG=true                     # Enable debug logging
+R2D2_CONFIG=/path/to/config.toml    # Custom config file path
 ```
 
 ## Project Structure
@@ -349,10 +356,30 @@ sudo apt-get install radare2
 uv sync --extra analyzers
 ```
 
+### "Ghidra not ready" / "analyzeHeadless not found"
+```bash
+# Ensure GHIDRA_INSTALL_DIR is set
+export GHIDRA_INSTALL_DIR=/path/to/ghidra_12.0.1_PUBLIC
+
+# Verify the script exists
+ls $GHIDRA_INSTALL_DIR/support/analyzeHeadless
+
+# For Ghidra 12+, ensure Java 21 is available
+export JAVA_HOME=/path/to/jdk-21
+```
+
 ### "Ghidra bridge not connected"
 1. Start Ghidra GUI with your binary loaded
-2. Run `ghidra_bridge_server_background.py` in Script Manager
-3. Test: `python scripts/test_ghidra_bridge.py`
+2. Add `~/ghidra_scripts` to Script Manager directories
+3. Run `ghidra_bridge_server_background.py` in Script Manager
+4. Test: `python scripts/test_ghidra_bridge.py`
+
+### "PyGhidra RecursionError"
+This is a known bug in PyGhidra 3.0.2 with Python 3.11. The `_GhidraBundleFinder.find_spec()` method causes infinite recursion when calling `pyghidra.start()` directly. **Workaround**: r2d2 uses `analyzeHeadless` subprocess instead, which works correctly. If you need PyGhidra directly, use the launcher module:
+```bash
+python -m pyghidra.ghidra_launch --install-dir $GHIDRA_INSTALL_DIR \
+  ghidra.app.util.headless.AnalyzeHeadless /tmp/project proj -import binary.elf
+```
 
 ### "Frontend proxy errors"
 Ensure backend is running on :5050 before starting frontend.

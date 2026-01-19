@@ -46,6 +46,7 @@ class AnalysisResult:
     deep_scan: dict[str, Any] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
     issues: list[str] = field(default_factory=list)
+    tool_availability: dict[str, bool] = field(default_factory=dict)  # Which tools were available
 
 
 class AnalysisOrchestrator:
@@ -108,6 +109,13 @@ class AnalysisOrchestrator:
         if self._config.analysis.require_elf:
             self._ensure_elf(binary)
         result = AnalysisResult(binary=binary, plan=plan)
+
+        # Collect tool availability info for transparency
+        for adapter in self._registry._adapters:
+            try:
+                result.tool_availability[adapter.name] = adapter.is_available()
+            except Exception:
+                result.tool_availability[adapter.name] = False
 
         self._emit_progress(
             progress_callback,

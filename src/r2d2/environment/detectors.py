@@ -70,6 +70,14 @@ def _check_python_module(module: str) -> ToolCheck:
         __import__(module)
     except ModuleNotFoundError:
         return ToolCheck(name=module, command=module, available=False)
+    except Exception as exc:
+        # Handle import errors from broken dependencies (e.g. angr + msgspec mismatch)
+        return ToolCheck(
+            name=module,
+            command=module,
+            available=False,
+            details=f"Import failed: {type(exc).__name__}: {exc}",
+        )
     return ToolCheck(name=module, command=module, available=True)
 
 

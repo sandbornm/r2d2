@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib
 import os
 import platform
 from dataclasses import dataclass, field
@@ -18,31 +17,39 @@ class GhidraDetection:
     install_dir: Path | None
     headless_path: Path | None
     bridge_available: bool
+    bridge_connected: bool
     extension_root: Path
     issues: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
-    bridge_connected: bool = False
     bridge_program_loaded: str | None = None
 
     @property
     def is_ready(self) -> bool:
-        return self.install_dir is not None and self.headless_path is not None
+        """Check if Ghidra headless mode is available."""
+        return self.headless_path is not None
+
+    @property
+    def headless_ready(self) -> bool:
+        """Check if headless mode is available."""
+        return self.headless_path is not None
 
     @property
     def bridge_ready(self) -> bool:
-        """Check if the bridge is available and connected."""
-        return self.bridge_available and self.bridge_connected
+        """Check if the bridge is available AND connected with a program loaded."""
+        return self.bridge_available and self.bridge_connected and self.bridge_program_loaded is not None
 
 
 def detect_ghidra(config: AppConfig, project_root: Path | None = None) -> GhidraDetection:
-    """Inspect available Ghidra installation and extension layout."""
-
-    # Navigate from src/r2d2/environment/ghidra.py to project root
-    # __file__ = src/r2d2/environment/ghidra.py
-    # parents[3] = project root (r2d2/)
+    """Inspect available Ghidra installation and extension layout.
+    
+    Detection priority:
+    1. Headless mode (analyzeHeadless) - always works if Ghidra installed
+    2. Bridge mode - only if user has Ghidra GUI running with bridge server
+    """
     project_root = project_root or Path(__file__).resolve().parents[3]
     extension_root = project_root / "ghidra" / "extensions" / "r2d2"
 
+    # Find Ghidra installation
     configured_dir = config.ghidra.install_dir
     env_dir = os.environ.get("GHIDRA_INSTALL_DIR")
 
@@ -56,71 +63,64 @@ def detect_ghidra(config: AppConfig, project_root: Path | None = None) -> Ghidra
     issues: list[str] = []
     notes: list[str] = []
 
+    # Check for headless analyzer (primary method)
     if install_dir:
-        candidate = install_dir / "support" / ("analyzeHeadless.bat" if platform.system() == "Windows" else "analyzeHeadless")
+        script_name = "analyzeHeadless.bat" if platform.system() == "Windows" else "analyzeHeadless"
+        candidate = install_dir / "support" / script_name
         if candidate.exists():
             headless_path = candidate
-            notes.append(f"Found analyzeHeadless at {candidate}")
+            notes.append(f"Ghidra headless ready: {candidate}")
         else:
-            issues.append("Could not locate analyzeHeadless script in Ghidra install.")
+            issues.append("analyzeHeadless not found in Ghidra install.")
     else:
-        issues.append("Ghidra installation directory not configured or not found.")
+        issues.append("Set GHIDRA_INSTALL_DIR to enable Ghidra decompilation.")
 
+    # Check for bridge (optional enhancement - requires Ghidra GUI running)
     bridge_available = False
     bridge_connected = False
     bridge_program_loaded: str | None = None
 
     if config.ghidra.use_bridge:
         try:
-            importlib.import_module("ghidra_bridge")
-        except ModuleNotFoundError:
-            issues.append("ghidra_bridge requested but not importable; install optional dependency 'ghidra'.")
-        else:
+            import ghidra_bridge  # noqa: F401
             bridge_available = True
-            notes.append("ghidra_bridge module import successful.")
-
-            # Probe bridge connectivity
+            
+            # Only probe if module is available
             try:
                 from ..adapters.ghidra_bridge_client import GhidraBridgeClient
-
                 client = GhidraBridgeClient(
                     host=config.ghidra.bridge_host,
                     port=config.ghidra.bridge_port,
-                    timeout=config.ghidra.bridge_timeout,
+                    timeout=5,  # Short timeout for probe
                 )
                 if client.connect():
-                    bridge_connected = True
                     bridge_program_loaded = client.get_current_program_name()
                     if bridge_program_loaded:
-                        notes.append(f"Bridge connected, program loaded: {bridge_program_loaded}")
-                    else:
-                        notes.append("Bridge connected, no program loaded.")
+                        bridge_connected = True
+                        notes.append(f"Bridge active: {bridge_program_loaded}")
                     client.disconnect()
-                else:
-                    notes.append("Bridge module available but server not reachable.")
-            except Exception as exc:
-                notes.append(f"Bridge connectivity probe failed: {exc}")
-
-    if not extension_root.exists():
-        issues.append(f"Extension path {extension_root} is missing; run bootstrap script.")
+            except Exception:
+                pass  # Bridge not running, that's fine
+                
+        except ImportError:
+            pass  # ghidra_bridge not installed
 
     return GhidraDetection(
         install_dir=install_dir,
         headless_path=headless_path,
         bridge_available=bridge_available,
+        bridge_connected=bridge_connected,
         extension_root=extension_root,
         issues=issues,
         notes=notes,
-        bridge_connected=bridge_connected,
         bridge_program_loaded=bridge_program_loaded,
     )
 
 
 def extension_build_command(detection: GhidraDetection) -> list[str]:
     """Return gradle command to build the Ghidra extension."""
-
     gradle_cmd = "gradle"
-    if platform.system() == "Windows":  # pragma: no cover - windows specific
+    if platform.system() == "Windows":
         gradle_cmd = "gradlew.bat"
 
     return [

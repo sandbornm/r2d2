@@ -21,10 +21,12 @@ class LLMBridge:
     """Facade that attempts the configured provider then falls back if necessary."""
 
     # Available models for selection (provider, model_id, display_name)
+    # Default is Claude 4.5 Opus; user can override with 5.1 or Sonnet
+    DEFAULT_MODEL = "claude-opus-4-5"
     AVAILABLE_MODELS = [
-        ("anthropic", "claude-sonnet-4-5", "Claude Sonnet 4.5"),
         ("anthropic", "claude-opus-4-5", "Claude Opus 4.5"),
-        ("openai", "gpt-5.2-2025-12-11", "GPT-5.2"),
+        ("anthropic", "claude-5-1", "Claude 5.1"),
+        ("anthropic", "claude-sonnet-4-5", "Claude Sonnet 4.5"),
     ]
 
     def __init__(self, config: AppConfig) -> None:

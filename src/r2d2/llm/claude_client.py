@@ -52,10 +52,11 @@ class ClaudeClient:
         self._client = Anthropic(api_key=api_key)
         self._config = config
         # Support both primary and fallback model configuration
+        # Default to Opus 4.5 if no model specified
         if config.llm.provider and config.llm.provider.lower() in {"anthropic", "claude"}:
-            self._model = config.llm.model or "claude-sonnet-4-20250514"
+            self._model = config.llm.model or "claude-opus-4-5"
         else:
-            self._model = config.llm.fallback_model or "claude-sonnet-4-20250514"
+            self._model = config.llm.fallback_model or "claude-opus-4-5"
 
     def chat(self, messages: Iterable[ChatMessage] | Iterable[dict[str, str]]) -> str:
         """Send a chat conversation to Claude and return the assistant reply."""

@@ -109,6 +109,9 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
 
     @app.get("/api/health")
     def health() -> Any:
+        # Check tool availability with install hints
+        tools_status = _get_tools_status(state)
+        
         return jsonify({
             "status": "ok",
             "model": llm_bridge.model,
@@ -116,7 +119,106 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
             "available_models": llm_bridge.available_models,
             "model_names": llm_bridge.model_display_names,
             "ghidra_ready": bool(state.env.ghidra and state.env.ghidra.is_ready),
+            "tools": tools_status,
         })
+
+    def _get_tools_status(state: AppState) -> dict[str, Any]:
+        """Get detailed status of all analysis tools."""
+        tools: dict[str, Any] = {}
+        
+        # Check Python packages
+        def check_import(module: str) -> bool:
+            try:
+                __import__(module)
+                return True
+            except ImportError:
+                return False
+        
+        # radare2/r2pipe
+        tools["radare2"] = {
+            "available": check_import("r2pipe"),
+            "install_hint": "uv sync --extra analyzers",
+            "description": "Disassembly, functions, imports, strings",
+        }
+        
+        # angr
+        tools["angr"] = {
+            "available": check_import("angr"),
+            "install_hint": "uv sync --extra analyzers",
+            "description": "CFG analysis, symbolic execution",
+        }
+        
+        # Capstone
+        tools["capstone"] = {
+            "available": check_import("capstone"),
+            "install_hint": "uv sync --extra analyzers",
+            "description": "Instruction-level disassembly",
+        }
+        
+        # python-magic
+        tools["libmagic"] = {
+            "available": check_import("magic"),
+            "install_hint": "uv sync --extra analyzers; brew install libmagic (macOS)",
+            "description": "File type identification",
+        }
+        
+        # Frida
+        tools["frida"] = {
+            "available": check_import("frida"),
+            "install_hint": "uv sync --extra analyzers",
+            "description": "Dynamic instrumentation",
+        }
+        
+        # pyelftools (for DWARF)
+        tools["dwarf"] = {
+            "available": check_import("elftools"),
+            "install_hint": "uv sync --extra analyzers",
+            "description": "Debug symbol parsing",
+        }
+        
+        # GEF/GDB (requires Docker image)
+        import shutil
+        import subprocess
+        docker_available = shutil.which("docker") is not None
+        gef_image_available = False
+        if docker_available:
+            try:
+                result = subprocess.run(
+                    ["docker", "image", "inspect", "r2d2-gef"],
+                    capture_output=True,
+                    timeout=5,
+                )
+                gef_image_available = result.returncode == 0
+            except Exception:
+                pass
+        
+        tools["gef"] = {
+            "available": docker_available and gef_image_available,
+            "docker_available": docker_available,
+            "image_built": gef_image_available,
+            "install_hint": "docker build -t r2d2-gef -f Dockerfile.gef .",
+            "description": "Dynamic execution tracing with GDB",
+        }
+        
+        # Ghidra
+        ghidra_env = state.env.ghidra
+        tools["ghidra"] = {
+            "available": ghidra_env.is_ready or ghidra_env.bridge_available if ghidra_env else False,
+            "headless_ready": ghidra_env.is_ready if ghidra_env else False,
+            "bridge_available": ghidra_env.bridge_available if ghidra_env else False,
+            "bridge_connected": ghidra_env.bridge_connected if ghidra_env else False,
+            "install_hint": "Set GHIDRA_INSTALL_DIR or start Ghidra Bridge server",
+            "description": "Decompilation, type recovery",
+        }
+        
+        # AutoProfile (always available - pure Python)
+        tools["autoprofile"] = {
+            "available": True,
+            "install_hint": None,
+            "description": "Security profile, strings analysis",
+        }
+        
+        return tools
 
     @app.get("/api/models")
     def list_models() -> Any:
@@ -686,10 +788,16 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
         user_goal = body.get("user_goal", "").strip()
         quick_only = body.get("quick_only", False)
         enable_angr = body.get("enable_angr", True)
+        enable_ghidra = body.get("enable_ghidra", True)
+        enable_gef = body.get("enable_gef", True)
+        enable_frida = body.get("enable_frida", True)
 
         debug.analysis_start(binary_path or "unknown", {
             "quick_only": quick_only,
             "enable_angr": enable_angr,
+            "enable_ghidra": enable_ghidra,
+            "enable_gef": enable_gef,
+            "enable_frida": enable_frida,
             "user_goal": user_goal[:50] if user_goal else None,
         })
 
@@ -726,7 +834,14 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
         def _worker() -> None:
             job.put("job_started", {"binary": str(path), "session_id": job.session_id})
             try:
-                orchestrator = AnalysisOrchestrator(state.config, state.env, trajectory_dao=state.dao)
+                # Override config settings based on frontend request
+                request_config = state.config.model_copy(deep=True)
+                request_config.analysis.enable_angr = enable_angr
+                request_config.analysis.enable_ghidra = enable_ghidra
+                request_config.analysis.enable_gef = enable_gef
+                request_config.analysis.enable_frida = enable_frida
+                
+                orchestrator = AnalysisOrchestrator(request_config, state.env, trajectory_dao=state.dao)
                 # Create custom analysis plan respecting frontend settings
                 plan = orchestrator.create_plan(quick_only=quick_only)
                 plan.run_angr = enable_angr and not quick_only
@@ -755,6 +870,7 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
                     "trajectory_id": result.trajectory_id,
                     "snippets": snippets,
                     "snippet_count": len(snippets),
+                    "tool_availability": result.tool_availability,
                 }
                 chat_dao.append_message(
                     updated_session.session_id,
@@ -1220,8 +1336,8 @@ Generate ONLY the script code, no explanations before or after. The script shoul
                 LLMChatMessage(role="user", content=prompt),
             ]
 
-            response = llm_bridge.complete(llm_messages)
-            script = response.content.strip()
+            response = llm_bridge.chat(llm_messages)
+            script = response.strip()
 
             # Clean up script (remove markdown code blocks if present)
             if script.startswith("```"):

@@ -180,6 +180,11 @@ class DebugLogger:
         """Log activity event."""
         log_request("activity", f"[{session_id[:8]}] {event_type}", data)
 
+    # Generic log method for ad-hoc logging
+    def log(self, category: str, message: str, data: dict[str, Any] | None = None) -> None:
+        """Generic log method for arbitrary categories."""
+        log_request(category, message, data)
+
 
 # Global debug logger instance
 debug = DebugLogger()

@@ -79,7 +79,7 @@ def test_config(tmp_path: Path) -> AppConfig:
     )
     config.llm = LLMSettings(
         provider="anthropic",
-        model="claude-sonnet-4-5",
+        model="claude-opus-4-5",
         enable_fallback=False,
     )
     return config

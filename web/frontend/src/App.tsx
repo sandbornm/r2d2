@@ -43,6 +43,7 @@ import ProgressLog from './components/ProgressLog';
 import ResultViewer from './components/ResultViewer';
 import SessionList from './components/SessionList';
 import SettingsDrawer, { AnalysisSettings } from './components/SettingsDrawer';
+import TrajectoryPanel from './components/TrajectoryPanel';
 import { ActivityProvider, useActivity } from './contexts/ActivityContext';
 import { TrajectoryProvider, useTrajectory, useTrajectoryActions } from './trajectory';
 import { useThemeMode } from './main';
@@ -83,6 +84,9 @@ type SSEHandlers = Partial<Record<ProgressEventName, (payload: ProgressEventPayl
 const DEFAULT_SETTINGS: AnalysisSettings = {
   quickScanOnly: false,
   enableAngr: true,
+  enableGhidra: true,
+  enableGef: true,
+  enableFrida: true,
   autoAskLLM: false,
   selectedModel: 'claude-opus-4-5',
 };
@@ -365,6 +369,9 @@ const AppContent = () => {
       binary: binaryPath,
       quick_only: settings.quickScanOnly,
       enable_angr: settings.enableAngr,
+      enable_ghidra: settings.enableGhidra,
+      enable_gef: settings.enableGef,
+      enable_frida: settings.enableFrida,
       user_goal: userGoal.trim() || undefined,
     };
     debug.system.analysisStart(binaryPath, analysisOptions);
@@ -1062,6 +1069,13 @@ In 2-3 sentences: what is it and what does it do? I'm ${funcCount > 0 ? 'seeing 
                 </Tabs>
               </Box>
 
+              {/* Trajectory Panel - Collapsible analysis progress tracker */}
+              {trajectory.snapshot && activeSessionId && (
+                <Box sx={{ px: 2, pt: 1 }}>
+                  <TrajectoryPanel snapshot={trajectory.snapshot} compact />
+                </Box>
+              )}
+
               {/* Content */}
               <Box sx={{ flex: 1, overflow: 'auto', p: 2 }}>
                 {activeTab === 'results' && (
@@ -1083,6 +1097,7 @@ In 2-3 sentences: what is it and what does it do? I'm ${funcCount > 0 ? 'seeing 
                     <ResultViewer
                       result={result}
                       sessionId={activeSessionId}
+                      toolsInfo={health?.tools}
                       onAskAboutCode={(codeOrQuestion) => {
                       // Switch to chat tab and send the code/question
                       setActiveTab('chat');

@@ -104,12 +104,18 @@ const GhidraScriptingPanel: FC<GhidraScriptingPanelProps> = memo(({
         }),
       });
 
-      if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.error || 'Failed to generate script');
+      // Check content type before parsing
+      const contentType = response.headers.get('content-type');
+      if (!contentType || !contentType.includes('application/json')) {
+        throw new Error('Server returned non-JSON response. Is the backend running?');
       }
 
       const data = await response.json();
+      
+      if (!response.ok) {
+        throw new Error(data.error || `Server error (${response.status})`);
+      }
+
       setCurrentScript(data.script);
 
       // Add to history
@@ -123,7 +129,13 @@ const GhidraScriptingPanel: FC<GhidraScriptingPanelProps> = memo(({
       };
       setTaskHistory(prev => [newTask, ...prev].slice(0, 20)); // Keep last 20
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to generate script');
+      const errorMsg = err instanceof Error ? err.message : 'Failed to generate script';
+      // Provide helpful error messages
+      if (errorMsg.includes('Unexpected token') || errorMsg.includes('JSON')) {
+        setError('Cannot connect to backend. Make sure the Flask server is running.');
+      } else {
+        setError(errorMsg);
+      }
     } finally {
       setGenerating(false);
     }
@@ -150,12 +162,17 @@ const GhidraScriptingPanel: FC<GhidraScriptingPanelProps> = memo(({
         }),
       });
 
-      if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.error || 'Failed to execute script');
+      // Check content type before parsing
+      const contentType = response.headers.get('content-type');
+      if (!contentType || !contentType.includes('application/json')) {
+        throw new Error('Server returned non-JSON response. Is the backend running?');
       }
 
       const data = await response.json();
+      
+      if (!response.ok) {
+        throw new Error(data.error || `Execution failed (${response.status})`);
+      }
       setExecutionResult(data.output);
 
       // Update history with result
@@ -187,7 +204,11 @@ const GhidraScriptingPanel: FC<GhidraScriptingPanelProps> = memo(({
         });
       }
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Failed to execute script';
+      let errorMessage = err instanceof Error ? err.message : 'Failed to execute script';
+      // Provide helpful error messages
+      if (errorMessage.includes('Unexpected token') || errorMessage.includes('JSON')) {
+        errorMessage = 'Cannot connect to backend. Make sure the Flask server is running.';
+      }
       setError(errorMessage);
       setExecutionResult(null);
 

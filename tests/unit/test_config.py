@@ -49,8 +49,8 @@ class TestLLMSettings:
         settings = LLMSettings()
 
         assert settings.provider == "anthropic"
-        assert "claude" in settings.model
-        assert settings.enable_fallback is True
+        assert settings.model == "claude-opus-4-5"  # Default to Opus 4.5
+        assert settings.enable_fallback is False  # Disabled by default
         assert settings.max_tokens > 0
         assert 0 <= settings.temperature <= 1
 
