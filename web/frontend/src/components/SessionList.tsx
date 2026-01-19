@@ -12,7 +12,7 @@ import {
 } from '@mui/material';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
-import { FC, MouseEvent, useState } from 'react';
+import { FC, memo, MouseEvent, useCallback, useMemo, useState } from 'react';
 import type { ChatSessionSummary } from '../types';
 
 dayjs.extend(relativeTime);
@@ -24,7 +24,7 @@ interface SessionListProps {
   onDelete?: (sessionId: string) => void;
 }
 
-export const SessionList: FC<SessionListProps> = ({
+export const SessionList: FC<SessionListProps> = memo(({
   sessions,
   activeSessionId,
   onSelect,
@@ -33,23 +33,32 @@ export const SessionList: FC<SessionListProps> = ({
   const [menuAnchor, setMenuAnchor] = useState<null | HTMLElement>(null);
   const [menuSessionId, setMenuSessionId] = useState<string | null>(null);
 
-  const handleMenuOpen = (event: MouseEvent<HTMLButtonElement>, sessionId: string) => {
+  const handleMenuOpen = useCallback((event: MouseEvent<HTMLButtonElement>, sessionId: string) => {
     event.stopPropagation();
     setMenuAnchor(event.currentTarget);
     setMenuSessionId(sessionId);
-  };
+  }, []);
 
-  const handleMenuClose = () => {
+  const handleMenuClose = useCallback(() => {
     setMenuAnchor(null);
     setMenuSessionId(null);
-  };
+  }, []);
 
-  const handleDelete = () => {
+  const handleDelete = useCallback(() => {
     if (menuSessionId && onDelete) {
       onDelete(menuSessionId);
     }
     handleMenuClose();
-  };
+  }, [menuSessionId, onDelete, handleMenuClose]);
+
+  // Memoize session items with pre-computed file names
+  const sessionItems = useMemo(() =>
+    sessions.map(session => ({
+      ...session,
+      fileName: session.title ?? session.binary_path.split('/').pop() ?? 'Unknown',
+    })),
+    [sessions]
+  );
 
   if (sessions.length === 0) {
     return (
@@ -64,9 +73,8 @@ export const SessionList: FC<SessionListProps> = ({
   return (
     <>
       <List sx={{ py: 0.5, px: 0.5 }} dense>
-        {sessions.map((session) => {
+        {sessionItems.map((session) => {
           const isActive = session.session_id === activeSessionId;
-          const fileName = session.title ?? session.binary_path.split('/').pop() ?? 'Unknown';
 
           return (
             <ListItemButton
@@ -95,7 +103,7 @@ export const SessionList: FC<SessionListProps> = ({
                       display: 'block',
                     }}
                   >
-                    {fileName}
+                    {session.fileName}
                   </Typography>
                 }
                 secondary={
@@ -134,6 +142,6 @@ export const SessionList: FC<SessionListProps> = ({
       </Menu>
     </>
   );
-};
+});
 
 export default SessionList;

@@ -37,8 +37,8 @@ import {
   useState,
 } from 'react';
 import ChatPanel from './components/ChatPanel';
-import { CFGContext } from './components/CFGViewer';
 import CompilerPanel from './components/CompilerPanel';
+import type { CFGContext } from './components/ResultViewer';
 import ProgressLog from './components/ProgressLog';
 import ResultViewer from './components/ResultViewer';
 import SessionList from './components/SessionList';
@@ -57,6 +57,7 @@ import type {
   ProgressEventName,
   ProgressEventPayload,
 } from './types';
+import { CacheKeys, getFromCache, setInCache } from './utils/cache';
 
 const EVENT_NAMES: ProgressEventName[] = [
   'analysis_started',
@@ -426,13 +427,15 @@ const AppContent = () => {
         analysis_result: (payload) => {
           const analysis = payload as unknown as AnalysisResponseEvent;
           setResult(analysis);
+          // Cache the analysis result for faster switching
           if (analysis.session_id) {
+            setInCache(CacheKeys.analysisResult(analysis.session_id), analysis);
             lastSyncedSessionIdRef.current = null;
             setActiveSessionId(analysis.session_id);
             activeSessionIdRef.current = analysis.session_id;
             refreshSessions();
             loadSessionMessages(analysis.session_id).catch(console.error);
-            
+
             // Auto-ask with the actual analysis data for context
             setTimeout(() => {
               handleAutoAskLLM(analysis.session_id!, analysis);
@@ -519,6 +522,14 @@ In 2-3 sentences: what is it and what does it do? I'm ${funcCount > 0 ? 'seeing 
     setBinaryPath(session.binary_path);
     setFileName(session.title ?? session.binary_path.split('/').pop() ?? null);
     lastSyncedSessionIdRef.current = session.session_id;
+
+    // Try to load cached analysis result for faster switching
+    const cachedResult = getFromCache<AnalysisResultPayload>(
+      CacheKeys.analysisResult(session.session_id)
+    );
+    if (cachedResult) {
+      setResult(cachedResult);
+    }
   };
 
   const handleDeleteSession = async (sessionId: string) => {

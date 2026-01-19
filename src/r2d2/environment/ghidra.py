@@ -37,7 +37,10 @@ class GhidraDetection:
 def detect_ghidra(config: AppConfig, project_root: Path | None = None) -> GhidraDetection:
     """Inspect available Ghidra installation and extension layout."""
 
-    project_root = project_root or Path(__file__).resolve().parents[2]
+    # Navigate from src/r2d2/environment/ghidra.py to project root
+    # __file__ = src/r2d2/environment/ghidra.py
+    # parents[3] = project root (r2d2/)
+    project_root = project_root or Path(__file__).resolve().parents[3]
     extension_root = project_root / "ghidra" / "extensions" / "r2d2"
 
     configured_dir = config.ghidra.install_dir

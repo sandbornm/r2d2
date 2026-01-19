@@ -19,7 +19,8 @@ dependencies = [
   "sqlite-utils>=3.36,<4",
   "Flask>=3.0,<4",
   "flask-cors>=4.0,<5",
-  "python-dotenv>=1.0,<2"
+  "python-dotenv>=1.0,<2",
+  "ghidra-bridge>=1.0.0",
 ]
 
 [project.optional-dependencies]

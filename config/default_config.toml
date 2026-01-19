@@ -18,10 +18,13 @@ temperature = 0.1
 auto_analyze = true
 max_binary_size = "5MB"
 timeout_quick = 5
-timeout_deep = 60
+timeout_deep = 120
 enable_angr = true
-enable_ghidra = false
-enable_frida = false
+enable_ghidra = true
+enable_frida = true
+enable_gef = true
+gef_timeout = 60
+gef_max_instructions = 10000
 require_elf = true
 
 default_radare_profile = "analysis.quick"
@@ -43,11 +46,11 @@ database_path = "~/.local/share/r2d2/r2d2.db"
 auto_migrate = true
 
 [ghidra]
-use_bridge = false
+use_bridge = true
 bridge_host = "127.0.0.1"
 bridge_port = 13100
 bridge_timeout = 30
-install_dir = ""
+install_dir = "/home/kali/ghidra_11.2_PUBLIC"
 project_dir = "${HOME}/.local/share/r2d2/ghidra-projects"
 max_decompile_functions = 20
 max_types = 100

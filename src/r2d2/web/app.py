@@ -975,7 +975,7 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
         """
         body = request.get_json(silent=True) or {}
         asm_source = body.get("asm", "").strip()
-        original_binary = body.get("original_binary", "").strip()
+        body.get("original_binary", "").strip()
         architecture = body.get("architecture", "arm64")
 
         if not asm_source:
@@ -1059,7 +1059,7 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
         
         try:
             # Use Docker container for cross-arch objdump
-            objdump_cmd = f"aarch64-linux-gnu-objdump" if arch == "aarch64" else "arm-linux-gnueabihf-objdump"
+            objdump_cmd = "aarch64-linux-gnu-objdump" if arch == "aarch64" else "arm-linux-gnueabihf-objdump"
             docker_cmd = [
                 "docker", "run", "--rm",
                 "-v", f"{file_path.parent}:/data:ro",
@@ -1160,7 +1160,356 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
             "raw": raw_output[:50000] if len(raw_output) > 50000 else raw_output,  # Limit raw output
         })
 
+    # ──────────────────────────────────────────────────────────────────────────
+    # Ghidra Scripting endpoints
+    # ──────────────────────────────────────────────────────────────────────────
+
+    @app.post("/api/ghidra/generate-script")
+    def generate_ghidra_script() -> Any:
+        """Generate a Ghidra script based on task description using LLM."""
+        data = request.get_json() or {}
+        session_id = data.get("session_id")
+        task_description = data.get("task_description", "")
+        language = data.get("language", "python")  # python or java
+        data.get("binary_path")
+
+        if not session_id:
+            return jsonify({"error": "session_id is required"}), 400
+        if not task_description.strip():
+            return jsonify({"error": "task_description is required"}), 400
+        if language not in ("python", "java"):
+            return jsonify({"error": "language must be 'python' or 'java'"}), 400
+
+        # Build context for script generation
+        history = chat_dao.list_messages(session_id, limit=10)
+        analysis = _extract_latest_analysis(history)
+
+        # Build prompt for LLM
+        script_template = _get_ghidra_script_template(language)
+        binary_info = ""
+        if analysis:
+            quick = analysis.get("quick_scan", {})
+            r2_info = quick.get("radare2", {}).get("info", {})
+            binary_info = f"""
+Binary Information:
+- File: {analysis.get('binary', 'unknown')}
+- Architecture: {r2_info.get('arch', 'unknown')}
+- Bits: {r2_info.get('bits', 'unknown')}
+- Format: {r2_info.get('bintype', 'unknown')}
+"""
+
+        prompt = f"""Generate a Ghidra {language.capitalize()} script to accomplish the following task:
+
+Task: {task_description}
+{binary_info}
+Requirements:
+1. The script must be complete and runnable in Ghidra
+2. Use proper Ghidra API calls
+3. Include helpful comments explaining what the code does
+4. Handle errors gracefully
+5. Print results in a readable format
+
+{script_template}
+
+Generate ONLY the script code, no explanations before or after. The script should start immediately with the code."""
+
+        try:
+            # Use LLM to generate script
+            llm_messages = [
+                LLMChatMessage(role="system", content="You are a Ghidra scripting expert. Generate clean, well-documented scripts."),
+                LLMChatMessage(role="user", content=prompt),
+            ]
+
+            response = llm_bridge.complete(llm_messages)
+            script = response.content.strip()
+
+            # Clean up script (remove markdown code blocks if present)
+            if script.startswith("```"):
+                lines = script.split("\n")
+                # Remove first and last line if they're code block markers
+                if lines[0].startswith("```"):
+                    lines = lines[1:]
+                if lines and lines[-1].strip() == "```":
+                    lines = lines[:-1]
+                script = "\n".join(lines)
+
+            # Record this task in trajectory
+            if state.dao:
+                state.dao.record_action(
+                    trajectory_id=session_id,
+                    adapter="ghidra_scripting",
+                    stage="script_generation",
+                    payload={
+                        "task": task_description,
+                        "language": language,
+                        "script_length": len(script),
+                    },
+                )
+
+            debug.log("ghidra_script", f"Generated {language} script for: {task_description[:50]}...")
+
+            return jsonify({
+                "script": script,
+                "language": language,
+                "task": task_description,
+            })
+
+        except Exception as exc:
+            debug.log("ghidra_script_error", str(exc))
+            return jsonify({"error": str(exc)}), 500
+
+    @app.post("/api/ghidra/execute-script")
+    def execute_ghidra_script() -> Any:
+        """Execute a Ghidra script via bridge or headless mode."""
+        data = request.get_json() or {}
+        session_id = data.get("session_id")
+        script = data.get("script", "")
+        language = data.get("language", "python")
+        binary_path = data.get("binary_path")
+        task_description = data.get("task_description", "")
+
+        if not session_id:
+            return jsonify({"error": "session_id is required"}), 400
+        if not script.strip():
+            return jsonify({"error": "script is required"}), 400
+
+        try:
+            # Try to execute via bridge if available
+            if state.config.ghidra.use_bridge and state.env.ghidra.bridge_connected:
+                output = _execute_script_via_bridge(script, language, state)
+            else:
+                # Fall back to headless execution
+                output = _execute_script_headless(script, language, binary_path, state)
+
+            # Record execution in trajectory
+            if state.dao:
+                state.dao.record_action(
+                    trajectory_id=session_id,
+                    adapter="ghidra_scripting",
+                    stage="script_execution",
+                    payload={
+                        "task": task_description,
+                        "language": language,
+                        "script_length": len(script),
+                        "output_length": len(output),
+                        "success": True,
+                    },
+                )
+
+            # Store in chat for history
+            chat_dao.append_message(
+                session_id,
+                "system",
+                f"Ghidra script executed: {task_description[:100]}",
+                attachments=[{
+                    "type": "ghidra_script_result",
+                    "task": task_description,
+                    "language": language,
+                    "output": output[:5000],  # Limit stored output
+                }],
+            )
+
+            debug.log("ghidra_execute", f"Executed {language} script successfully")
+
+            return jsonify({
+                "output": output,
+                "language": language,
+                "success": True,
+            })
+
+        except Exception as exc:
+            debug.log("ghidra_execute_error", str(exc))
+
+            # Record failure
+            if state.dao:
+                state.dao.record_action(
+                    trajectory_id=session_id,
+                    adapter="ghidra_scripting",
+                    stage="script_execution",
+                    payload={
+                        "task": task_description,
+                        "language": language,
+                        "error": str(exc),
+                        "success": False,
+                    },
+                )
+
+            return jsonify({"error": str(exc)}), 500
+
+    @app.get("/api/ghidra/status")
+    def ghidra_status() -> Any:
+        """Get Ghidra integration status."""
+        ghidra_env = state.env.ghidra
+        return jsonify({
+            "available": ghidra_env.is_ready or ghidra_env.bridge_available,
+            "bridge_available": ghidra_env.bridge_available,
+            "bridge_connected": ghidra_env.bridge_connected,
+            "bridge_program": ghidra_env.bridge_program_loaded,
+            "headless_available": ghidra_env.is_ready,
+            "install_dir": str(ghidra_env.install_dir) if ghidra_env.install_dir else None,
+            "issues": ghidra_env.issues,
+            "notes": ghidra_env.notes,
+        })
+
     return app
+
+
+def _get_ghidra_script_template(language: str) -> str:
+    """Get a template/guidelines for Ghidra script generation."""
+    if language == "python":
+        return """
+Python Script Guidelines:
+- Use `currentProgram` to access the loaded program
+- Use `getMonitor()` for progress tracking
+- Use `FlatProgramAPI` for common operations
+- Import from `ghidra.program.model.*` for data types
+- Use `println()` or `print()` for output
+
+Example structure:
+```python
+# Ghidra Python Script
+from ghidra.program.model.listing import *
+from ghidra.program.model.symbol import *
+
+def run():
+    program = currentProgram
+    listing = program.getListing()
+    # Your analysis code here
+    pass
+
+run()
+```
+"""
+    else:
+        return """
+Java Script Guidelines:
+- Extend `GhidraScript` class
+- Override `run()` method
+- Use `currentProgram` to access the loaded program
+- Use `monitor` for progress tracking
+- Use `println()` for output
+
+Example structure:
+```java
+// Ghidra Java Script
+import ghidra.app.script.GhidraScript;
+import ghidra.program.model.listing.*;
+
+public class AnalysisScript extends GhidraScript {
+    @Override
+    public void run() throws Exception {
+        // Your analysis code here
+    }
+}
+```
+"""
+
+
+def _execute_script_via_bridge(script: str, language: str, state: AppState) -> str:
+    """Execute script via Ghidra bridge connection."""
+    try:
+        from ..adapters.ghidra_bridge_client import GhidraBridgeClient
+
+        client = GhidraBridgeClient(
+            host=state.config.ghidra.bridge_host,
+            port=state.config.ghidra.bridge_port,
+            timeout=state.config.ghidra.bridge_timeout,
+        )
+
+        if not client.connect():
+            raise RuntimeError("Failed to connect to Ghidra bridge")
+
+        # For Python scripts, we can execute directly via the bridge
+        if language == "python":
+            # Execute via bridge's remote execution
+            bridge = client._bridge
+            if bridge is None:
+                raise RuntimeError("Bridge not initialized")
+
+            # Execute the script remotely
+            try:
+                # Escape single quotes in the script
+                escaped_script = script.replace("'", "\\'")
+                # Use bridge to run script with output capture
+                remote_code = f"""
+import io
+import sys
+_output = io.StringIO()
+_old_stdout = sys.stdout
+sys.stdout = _output
+try:
+    exec('''{escaped_script}''')
+finally:
+    sys.stdout = _old_stdout
+_output.getvalue()
+"""
+                result = bridge.remote_eval(remote_code)
+                return str(result) if result else "Script executed successfully (no output)"
+            except Exception as e:
+                return f"Script execution error: {str(e)}"
+        else:
+            # For Java, we'd need to compile and run via Ghidra's script manager
+            raise NotImplementedError("Java script execution via bridge not yet supported")
+
+    except ImportError:
+        raise RuntimeError("ghidra_bridge module not available")
+    finally:
+        if 'client' in locals():
+            client.disconnect()
+
+
+def _execute_script_headless(script: str, language: str, binary_path: str | None, state: AppState) -> str:
+    """Execute script via Ghidra headless analyzer."""
+    import subprocess
+    import tempfile
+
+    if not state.env.ghidra.is_ready:
+        raise RuntimeError("Ghidra headless not available")
+
+    if not binary_path:
+        raise RuntimeError("binary_path required for headless execution")
+
+    # Write script to temp file
+    ext = ".py" if language == "python" else ".java"
+    with tempfile.NamedTemporaryFile(mode='w', suffix=ext, delete=False) as f:
+        f.write(script)
+        script_path = f.name
+
+    try:
+        # Build headless command
+        headless_path = state.env.ghidra.headless_path
+        project_dir = Path(state.config.ghidra.project_dir).expanduser()
+        project_dir.mkdir(parents=True, exist_ok=True)
+
+        cmd = [
+            str(headless_path),
+            str(project_dir),
+            "r2d2_scripting",
+            "-import", binary_path,
+            "-postScript", script_path,
+            "-deleteProject",  # Clean up after
+        ]
+
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+
+        output = result.stdout
+        if result.stderr:
+            output += "\n\nStderr:\n" + result.stderr
+
+        return output
+
+    finally:
+        # Clean up temp script
+        import os
+        try:
+            os.unlink(script_path)
+        except Exception:
+            pass
 
 
 def _session_to_dict(session: ChatSession) -> dict[str, Any]:
@@ -1352,11 +1701,34 @@ def _build_llm_messages(
 ## Your Role
 Help users understand binaries at their level. Start simple, go deeper when asked.
 
+## Common Use Cases
+1. **Analyze a specific block**: User selects code, asks about a function or basic block
+2. **Open-ended exploration**: User asks broad questions, needs help narrowing down to interesting code
+3. **Instrumentation planning**: User wants to hook/instrument specific code, needs to identify targets
+4. **Educational**: User is learning about binary representation levels (source → assembly → machine code)
+
+## Analysis Tools Available
+The analysis uses multiple tools, each providing different insights:
+- **radare2**: Disassembly, function discovery, imports, strings
+- **angr**: Control Flow Graphs (CFG), symbolic execution paths
+- **Capstone**: Instruction-level decoding with operand details
+- **Ghidra**: Decompilation to C-like pseudocode, type recovery
+- **AutoProfile**: Security features (NX, PIE, RELRO), risk assessment
+- **DWARF**: Debug symbols, type info, source mappings (if available)
+- **Frida**: Runtime instrumentation, dynamic analysis (if enabled)
+- **GEF/GDB**: Execution tracing, register snapshots (if enabled)
+
+When explaining, mention which tool provided specific information to help users understand the analysis.
+
 ## Frontend Tools (mention these naturally when helpful)
 - **Summary**: Quick view of binary info, functions, imports, strings
+- **Profile**: Security features, risk assessment, interesting strings
 - **Disassembly**: Hover any ARM/x86 instruction for docs • Drag to select code • "Ask Claude" to explain
-- **CFG**: Control flow graph with function list
-- **Annotations**: Click 📝 or drag-select to add notes that persist
+- **CFG**: Control flow graph with function list and block details
+- **Decompiler**: C-like pseudocode from Ghidra (if enabled)
+- **Dynamic**: Execution traces and register snapshots (if GEF enabled)
+- **DWARF**: Debug symbols and source mappings (if available)
+- **Annotations**: Click or drag-select to add notes that persist
 
 ## Style
 - First response: 2-3 sentences max. What is it? What stands out?
@@ -1364,6 +1736,7 @@ Help users understand binaries at their level. Start simple, go deeper when aske
 - Use code blocks for assembly snippets
 - Reference addresses like `0x1234` and function names so the user can hover them for context
 - If binary looks packed/encrypted/unusual, say so upfront
+- When explaining code, relate assembly to higher-level concepts when helpful
 
 ## Address Citations
 When referencing specific addresses in your response, always use the format `0x...` (e.g., `0x401000`).
@@ -1411,11 +1784,46 @@ This helps users follow along with your explanations in the disassembly view."""
 
 
 def _build_analysis_context(analysis: dict[str, Any]) -> str:
-    """Build a compact analysis context for the LLM including actual disassembly."""
+    """Build a compact analysis context for the LLM including actual disassembly.
+
+    This context is critical for:
+    1. Providing the LLM with binary details to answer questions
+    2. Recording trajectories of analysis for learning
+    3. Supporting educational use cases (explaining representation levels)
+    """
     quick = analysis.get("quick_scan") or {}
     deep = analysis.get("deep_scan") or {}
-    
+
     lines = ["## Analysis Results"]
+
+    # Tool Attribution - document which tools contributed to the analysis
+    # This helps the LLM explain what information comes from where
+    tools_used = []
+    tool_descriptions = {
+        "autoprofile": "AutoProfile (security features, strings, risk analysis)",
+        "radare2": "radare2 (disassembly, functions, imports, binary metadata)",
+        "angr": "angr (CFG, symbolic execution, path analysis)",
+        "capstone": "Capstone (instruction-level decoding)",
+        "ghidra": "Ghidra (decompilation to C, type recovery)",
+        "frida": "Frida (dynamic instrumentation, runtime info)",
+        "gef": "GEF/GDB (execution tracing, register snapshots)",
+        "dwarf": "DWARF (debug symbols, source mappings)",
+        "identification": "libmagic (file type identification)",
+    }
+
+    for key in quick.keys():
+        if key.lower() in tool_descriptions:
+            tools_used.append(tool_descriptions[key.lower()])
+    for key in deep.keys():
+        if key.lower() in tool_descriptions and tool_descriptions[key.lower()] not in tools_used:
+            tools_used.append(tool_descriptions[key.lower()])
+
+    if tools_used:
+        lines.append("\n### Tools Used")
+        lines.append("The following analysis tools contributed to this session:")
+        for tool in tools_used:
+            lines.append(f"  - {tool}")
+        lines.append("")
     
     # Binary info
     r2_quick = quick.get("radare2", {}) if isinstance(quick, dict) else {}

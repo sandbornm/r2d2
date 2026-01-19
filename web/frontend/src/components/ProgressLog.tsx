@@ -19,10 +19,10 @@ import BugReportIcon from '@mui/icons-material/BugReport';
 import SearchIcon from '@mui/icons-material/Search';
 import MemoryIcon from '@mui/icons-material/Memory';
 import CodeIcon from '@mui/icons-material/Code';
-import { FC } from 'react';
+import { FC, memo, useMemo } from 'react';
 import type { ProgressEventEntry } from '../types';
 
-// Pulse animation for active items
+// Pulse animation for active items (defined outside component to avoid recreation)
 const pulse = keyframes`
   0%, 100% { opacity: 1; }
   50% { opacity: 0.6; }
@@ -98,7 +98,7 @@ const ActiveIndicator: FC<{ color: string }> = ({ color }) => (
   />
 );
 
-const LogEntry: FC<{ entry: ProgressEventEntry; isLatest: boolean }> = ({ entry, isLatest }) => {
+const LogEntry: FC<{ entry: ProgressEventEntry; isLatest: boolean }> = memo(({ entry, isLatest }) => {
   const theme = useTheme();
   const { event, data } = entry;
 
@@ -231,10 +231,19 @@ const LogEntry: FC<{ entry: ProgressEventEntry; isLatest: boolean }> = ({ entry,
       </Stack>
     </Paper>
   );
-};
+});
 
-export const ProgressLog: FC<ProgressLogProps> = ({ entries }) => {
+export const ProgressLog: FC<ProgressLogProps> = memo(({ entries }) => {
   const theme = useTheme();
+
+  // Memoize isRunning check
+  const { lastEntry, isRunning } = useMemo(() => {
+    const last = entries[entries.length - 1];
+    return {
+      lastEntry: last,
+      isRunning: last ? !['job_completed', 'job_failed'].includes(last.event) : false,
+    };
+  }, [entries]);
 
   if (!entries.length) {
     return (
@@ -258,10 +267,6 @@ export const ProgressLog: FC<ProgressLogProps> = ({ entries }) => {
       </Box>
     );
   }
-
-  // Find if there's an active operation
-  const lastEntry = entries[entries.length - 1];
-  const isRunning = !['job_completed', 'job_failed'].includes(lastEntry.event);
 
   return (
     <Stack spacing={1.5}>
@@ -293,6 +298,6 @@ export const ProgressLog: FC<ProgressLogProps> = ({ entries }) => {
       ))}
     </Stack>
   );
-};
+});
 
 export default ProgressLog;

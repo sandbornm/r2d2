@@ -15,9 +15,11 @@ from .resource_tree import BinaryResource, FunctionResource, Resource
 from ..adapters.base import AdapterRegistry, AdapterUnavailable, AnalyzerAdapter
 from ..adapters import (
     AngrAdapter,
+    AutoProfileAdapter,
     CapstoneAdapter,
     DWARFAdapter,
     FridaAdapter,
+    GEFAdapter,
     GhidraAdapter,
     LibmagicAdapter,
     Radare2Adapter,
@@ -60,6 +62,8 @@ class AnalysisOrchestrator:
         self._trajectory_dao = trajectory_dao
 
         adapters: list[AnalyzerAdapter] = []
+        # AutoProfile runs first for quick characterization
+        adapters.append(cast(AnalyzerAdapter, AutoProfileAdapter()))
         adapters.append(cast(AnalyzerAdapter, LibmagicAdapter()))
         adapters.append(cast(AnalyzerAdapter, Radare2Adapter(profile=config.analysis.default_radare_profile)))
         adapters.append(cast(AnalyzerAdapter, CapstoneAdapter()))
@@ -75,6 +79,11 @@ class AnalysisOrchestrator:
             adapters.append(cast(AnalyzerAdapter, AngrAdapter()))
         if config.analysis.enable_frida:
             adapters.append(cast(AnalyzerAdapter, FridaAdapter()))
+        if config.analysis.enable_gef:
+            adapters.append(cast(AnalyzerAdapter, GEFAdapter(
+                timeout=config.analysis.gef_timeout,
+                max_instructions=config.analysis.gef_max_instructions,
+            )))
 
         self._registry = AdapterRegistry(adapters)
 
@@ -142,8 +151,29 @@ class AnalysisOrchestrator:
         _LOGGER.info("Starting quick scan: %s", binary)
         self._emit_progress(progress_callback, "stage_started", {"stage": "quick"})
 
+        autoprofile = self._registry.get("autoprofile") if self._has_adapter("autoprofile") else None
         libmagic = self._registry.get("libmagic") if self._has_adapter("libmagic") else None
         radare = self._registry.get("radare2") if self._has_adapter("radare2") else None
+
+        # Run autoprofile first for quick characterization
+        if autoprofile:
+            try:
+                self._emit_progress(progress_callback, "adapter_started", {"stage": "quick", "adapter": "autoprofile"})
+                profile = autoprofile.quick_scan(binary)
+                result.quick_scan["autoprofile"] = profile
+                self._record_action(trajectory, "autoprofile.quick", profile)
+                self._emit_progress(
+                    progress_callback,
+                    "adapter_completed",
+                    {"stage": "quick", "adapter": "autoprofile", "payload": profile},
+                )
+            except AdapterUnavailable as exc:
+                result.notes.append(str(exc))
+                self._emit_progress(
+                    progress_callback,
+                    "adapter_failed",
+                    {"stage": "quick", "adapter": "autoprofile", "error": str(exc)},
+                )
 
         if libmagic:
             try:
@@ -211,6 +241,7 @@ class AnalysisOrchestrator:
         run_angr = plan.run_angr if plan else self._config.analysis.enable_angr
         angr = self._registry.get("angr") if self._has_adapter("angr") and run_angr else None
         frida = self._registry.get("frida") if self._has_adapter("frida") and self._config.analysis.enable_frida else None
+        gef = self._registry.get("gef") if self._has_adapter("gef") and self._config.analysis.enable_gef else None
 
         if radare:
             try:
@@ -331,6 +362,25 @@ class AnalysisOrchestrator:
                     progress_callback,
                     "adapter_failed",
                     {"stage": "deep", "adapter": "frida", "error": str(exc)},
+                )
+
+        if gef:
+            try:
+                self._emit_progress(progress_callback, "adapter_started", {"stage": "deep", "adapter": "gef"})
+                gef_payload = gef.deep_scan(binary)
+                result.deep_scan["gef"] = gef_payload
+                self._record_action(trajectory, "gef.deep", gef_payload)
+                self._emit_progress(
+                    progress_callback,
+                    "adapter_completed",
+                    {"stage": "deep", "adapter": "gef", "payload": gef_payload},
+                )
+            except AdapterUnavailable as exc:
+                result.notes.append(str(exc))
+                self._emit_progress(
+                    progress_callback,
+                    "adapter_failed",
+                    {"stage": "deep", "adapter": "gef", "error": str(exc)},
                 )
 
         self._emit_progress(progress_callback, "stage_completed", {"stage": "deep"})

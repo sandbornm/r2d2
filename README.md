@@ -1,214 +1,389 @@
 # r2d2
 
-**Learn ARM Reverse Engineering with AI** — A production-ready binary analysis copilot that pairs fast local tooling with Claude-powered insights. Perfect for learning ARM assembly, CTF challenges, and malware analysis.
+**Learn ARM Reverse Engineering with AI** — A production-ready binary analysis copilot that pairs fast local tooling with Claude-powered insights. Perfect for learning ARM assembly, CTF challenges, malware analysis, and understanding how programs work at the machine level.
 
 ## Why r2d2?
-- **ARM-first design**: Full support for ARM32 (Thumb mode), ARM64, and x86. Built for learning ARM reverse engineering on Raspberry Pi, Apple Silicon, or cloud servers.
-- **Interactive disassembly**: Drag to select assembly, annotate instructions, and ask Claude about specific code blocks. Hover for instant ARM/x86 instruction documentation with links to [official ARM docs](https://developer.arm.com/documentation/dui0489/h/arm-and-thumb-instructions/instruction-summary).
-- **Claude-powered analysis**: Anthropic Claude is the primary LLM with OpenAI fallback. Context is maintained throughout conversations for coherent analysis sessions.
-- **Explainable automation**: Every adapter emission is persisted to SQLite with replayable trajectories and linked chat history.
-- **Sleek browser cockpit**: React dashboard with CFG viewer, annotatable disassembly, and analysis-aware chat panel.
-- **Ship-anywhere**: Docker multi-arch (arm64/amd64), uv-managed Python, ready for cloud deployment.
 
-## Repository layout
-- `src/r2d2/` – Python package with CLI, orchestrator, adapters, storage, utilities.
-- `config/default_config.toml` – baseline settings (LLM, analysis, cache, Ghidra).
-- `scripts/` – unified setup (`setup.sh`) plus backend/frontend installers, diagnostics, and Ghidra bootstrap helpers.
-- `ghidra/extensions/r2d2/` – Gradle project + scripts for a minimal R2D2 headless extension.
-- `PRD.md` – product requirements source of truth.
+Reverse engineering is hard. You need to juggle multiple tools (disassemblers, decompilers, debuggers), understand complex file formats, and interpret low-level assembly—all while trying to answer high-level questions like "what does this malware do?" or "where's the vulnerability?"
 
-## Prerequisites
+**r2d2 solves this by:**
 
-Install system dependencies before running the Python setup:
+1. **Unified Tool Orchestration**: Instead of manually running radare2, Ghidra, angr, and GDB separately, r2d2 orchestrates them automatically and presents unified results.
 
-```bash
-# macOS (Homebrew)
-brew install radare2 libmagic
+2. **AI-Powered Understanding**: Claude explains assembly code in plain English, identifies patterns, and helps you understand what you're looking at. The LLM has full context of the analysis—functions, strings, security features, CFG—so its answers are grounded in actual data.
 
-# Ubuntu/Debian
-sudo apt-get install radare2 libmagic-dev
+3. **Learning-Focused Design**: Hover over any instruction for documentation. Select code and ask "what does this do?" Annotations persist so you can build understanding over time. Perfect for learning ARM assembly.
 
-# Fedora
-sudo dnf install radare2 file-devel
+4. **Multiple Representation Levels**: See your code as C source, assembly, and machine bytes. Understand the transformation pipeline from high-level to low-level.
+
+5. **Trajectory Recording**: Every analysis step is recorded to SQLite. Replay sessions, audit decisions, and build training data for future automation.
+
+## System Architecture
+
+```mermaid
+flowchart TB
+    subgraph Frontend["Frontend (React + Vite)"]
+        UI[Web UI :5173]
+        Tabs[Tabs: Summary | Profile | Functions | Disasm | CFG | Decompiler | Dynamic]
+        Chat[Chat Panel]
+        Compiler[ARM Compiler]
+    end
+
+    subgraph Backend["Backend (Flask :5050)"]
+        API[REST API]
+        SSE[SSE Progress Stream]
+        Orchestrator[Analysis Orchestrator]
+        LLM[LLM Bridge]
+    end
+
+    subgraph Adapters["Analysis Adapters"]
+        AutoProfile[AutoProfile<br/>Security features, strings, risk]
+        R2[radare2<br/>Disassembly, functions, imports]
+        Angr[angr<br/>CFG, symbolic execution]
+        Capstone[Capstone<br/>Instruction decoding]
+        Ghidra[Ghidra<br/>Decompilation, types]
+        DWARF[DWARF<br/>Debug symbols]
+        Frida[Frida<br/>Dynamic instrumentation]
+        GEF[GEF/GDB<br/>Execution tracing]
+        Libmagic[libmagic<br/>File identification]
+    end
+
+    subgraph External["External Services"]
+        Claude[Claude API]
+        OpenAI[OpenAI API<br/>fallback]
+        GhidraBridge[Ghidra Bridge<br/>RPC :13100]
+        Docker[Docker<br/>GEF container]
+    end
+
+    subgraph Storage["Persistence"]
+        SQLite[(SQLite DB)]
+        Trajectories[Trajectories]
+        Sessions[Chat Sessions]
+        Annotations[Annotations]
+    end
+
+    UI --> API
+    Chat --> API
+    Compiler --> API
+
+    API --> Orchestrator
+    API --> LLM
+    API --> SSE
+
+    Orchestrator --> AutoProfile
+    Orchestrator --> R2
+    Orchestrator --> Angr
+    Orchestrator --> Capstone
+    Orchestrator --> Ghidra
+    Orchestrator --> DWARF
+    Orchestrator --> Frida
+    Orchestrator --> GEF
+    Orchestrator --> Libmagic
+
+    Ghidra -.-> GhidraBridge
+    GEF -.-> Docker
+    LLM --> Claude
+    LLM -.-> OpenAI
+
+    Orchestrator --> SQLite
+    API --> SQLite
+    SQLite --> Trajectories
+    SQLite --> Sessions
+    SQLite --> Annotations
 ```
 
-## Setup
+## Key Features
+
+### Multi-Tool Analysis Pipeline
+| Tool | Purpose | Output |
+|------|---------|--------|
+| **AutoProfile** | Quick binary characterization | Security features (NX, PIE, RELRO), interesting strings, risk assessment |
+| **radare2** | Primary disassembler | Functions, imports, strings, disassembly, binary metadata |
+| **angr** | Symbolic execution | Control Flow Graphs (CFG), reachability analysis, path constraints |
+| **Capstone** | Instruction decoding | Detailed operand information for each instruction |
+| **Ghidra** | Decompilation | C-like pseudocode, type recovery, cross-references |
+| **DWARF** | Debug info parsing | Source symbols, type definitions, line mappings |
+| **Frida** | Dynamic instrumentation | Runtime module info, memory layout, hook points |
+| **GEF/GDB** | Execution tracing | Register snapshots, memory maps, instruction traces |
+| **libmagic** | File identification | File type, MIME type, encoding |
+
+### Interactive Web UI
+- **Disassembly View**: Syntax highlighting, instruction hover docs, drag-to-select, annotations
+- **CFG Explorer**: Visual control flow graphs with function navigation
+- **Decompiler Panel**: Ghidra-powered C pseudocode with "Ask Claude" integration
+- **Dynamic Analysis**: GEF execution traces with register timeline
+- **ARM Compiler**: Write C, compile to ARM, see assembly (Godbolt-style)
+- **Chat Panel**: Claude conversation with full analysis context
+
+### AI Integration
+- **Claude-powered analysis** with automatic fallback to OpenAI
+- **Context-aware responses**: LLM sees functions, strings, security features, disassembly
+- **Activity tracking**: LLM knows what you've been exploring for relevant answers
+- **Trajectory recording**: Every analysis step is logged for reproducibility
+
+## Full Setup Guide
+
+### Prerequisites
+
 ```bash
-# 1. Provide LLM credentials (optional but recommended)
-cp .env.example .env && $EDITOR .env
+# System dependencies
+sudo apt-get update
+sudo apt-get install -y radare2 libmagic-dev python3.11 python3.11-venv docker.io
 
-# 2. Install uv once (https://github.com/astral-sh/uv) then bootstrap
-scripts/setup.sh
+# Install uv (Python package manager)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+source ~/.bashrc
 
-# 2b. Or run individual setup stages when needed
-scripts/setup_backend.sh
-scripts/setup_frontend.sh
+# Install Node.js 18+ (for frontend)
+curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+sudo apt-get install -y nodejs
+```
 
-# 3. Sync dependencies with uv (includes analyzer extras)
+### Step 1: Clone and Configure
+
+```bash
+git clone https://github.com/your-org/r2d2.git
+cd r2d2
+
+# Set up environment variables
+cp .env.example .env
+# Edit .env and add your API key:
+#   ANTHROPIC_API_KEY=sk-ant-...
+```
+
+### Step 2: Install Python Dependencies
+
+```bash
+# Install all dependencies including analyzers
 uv sync --extra analyzers
 
-# 4. Run diagnostics (writes .dry_run_env.json)
-scripts/dry_run.sh
-
-# 5. Verify backend wiring + adapters
-uv run scripts/check_setup.py
-
-# 6. Run backend unit tests
-uv run pytest -q
-
-# 7. (Optional) Run frontend unit tests
-cd web/frontend && npm test
-```
-> **Tip:** place a sample binary at `./sample.bin` to let `scripts/dry_run.sh` exercise the pipeline automatically.
-
-After the checks succeed you can launch the backend with `uv run r2d2-web` and bring up the React UI via `npm run dev` inside `web/frontend` (see [Web UI](#web-ui)).
-
-## Quick start
-```bash
-# Run a quick analysis on sample.bin
-uv run r2d2 analyze sample.bin --quick
-
-# Full analysis (quick + deep stages)
-uv run r2d2 analyze path/to/binary
-
-# Emit JSON output
-uv run r2d2 analyze sample.bin --quick --json
-
-# Ask the LLM (OpenAI with Claude fallback)
-uv run r2d2 analyze path/to/binary --ask "what does this do?"
-
-# Check environment and tool availability
+# Verify installation
 uv run r2d2 env
 ```
 
-## Commands
-- `r2d2 analyze <binary>` – full pipeline (quick + deep)
-- `r2d2 analyze <binary> --quick` – skip deep stage (no Ghidra/angr)
-- `r2d2 analyze <binary> --json` – emit JSON payload
-- `r2d2 analyze <binary> --ask "question"` – run analysis then ask the LLM
-- `r2d2 env` – environment diagnostics, including dependency status and Ghidra readiness
-- `r2d2 trajectories` – list persisted analysis runs (requires SQLite enabled)
-
-## Core flow
-1. **Config** – `config/default_config.toml` merged with `~/.config/r2d2/config.toml`.
-2. **Environment check** – verifies uv, radare2, libmagic, angr, optional Ghidra, qemu/frida hints.
-3. **Quick scan** – libmagic + radare2 metadata + strings.
-4. **Deep scan** – radare2 analysis, capstone disassembly, angr symbolic pivots; Ghidra is opt-in for headless workflows.
-5. **Storage** – trajectory + actions persisted to SQLite (optional).
-6. **LLM** – on demand, uses OpenAI Chat Completions with structured summary context.
-
-## Ghidra integration
-- Gradle project at `ghidra/extensions/r2d2` packaging a minimal headless analyzer.
-- `scripts/bootstrap_ghidra_extension.sh` builds the extension and exports `r2d2.zip` ready for drop-in.
-- CLI deep stage returns the exact `analyzeHeadless` command so you can dry-run or execute.
-- Optional `ghidra_bridge` support: enable by setting `ghidra.use_bridge = true` and installing the `ghidra` extra via uv.
-- The default workflow relies on radare2, capstone, and angr; enable Ghidra only when you need heavy decompilation.
-
-## Storage & replay
-- SQLite database path configurable via `[storage]` settings.
-- `TrajectoryDAO` records ordered actions (`libmagic.quick`, `radare2.deep`, `angr.deep`, ...).
-- `ChatDAO` mirrors every trajectory with rich message history, attachments, and LLM responses for auditability.
-- Future replay tooling can iterate actions from the DB and reapply against similar binaries.
-
-## Web UI
-
-### Quick Start
-
-Run backend and frontend in separate terminals:
+### Step 3: Install Frontend
 
 ```bash
-# Terminal 1 - Backend
-scripts/run_backend.sh
+cd web/frontend
+npm install
+cd ../..
+```
 
-# Terminal 2 - Frontend  
-scripts/run_frontend.sh
+### Step 4: Configure Ghidra (Optional but Recommended)
+
+**For headless analysis:**
+```bash
+# Download Ghidra 11.x from https://ghidra-sre.org/
+# Extract to /home/kali/ghidra_11.2_PUBLIC (or your preferred location)
+
+# Set environment variable
+export GHIDRA_INSTALL_DIR=/home/kali/ghidra_11.2_PUBLIC
+
+# Or update config/default_config.toml:
+#   [ghidra]
+#   install_dir = "/home/kali/ghidra_11.2_PUBLIC"
+```
+
+**For Ghidra Bridge (richer decompilation data):**
+```bash
+# 1. Start Ghidra GUI and load your binary
+# 2. In Ghidra: Window → Script Manager → Search "bridge"
+# 3. Run: ghidra_bridge_server_background.py
+# 4. Bridge will listen on port 13100
+
+# Config is already set in default_config.toml:
+#   [ghidra]
+#   use_bridge = true
+#   bridge_host = "127.0.0.1"
+#   bridge_port = 13100
+```
+
+### Step 5: Build GEF Docker Image (Optional)
+
+```bash
+# For dynamic analysis with execution tracing
+docker build -t r2d2-gef -f Dockerfile.gef .
+```
+
+### Step 6: Install Frida (Optional)
+
+```bash
+# For dynamic instrumentation
+pip install frida frida-tools
+```
+
+### Step 7: Run the Application
+
+**Terminal 1 - Backend:**
+```bash
+uv run r2d2-web
+# Flask API running on http://127.0.0.1:5050
+```
+
+**Terminal 2 - Frontend:**
+```bash
+cd web/frontend
+npm run dev
+# Vite dev server on http://localhost:5173
 ```
 
 Open http://localhost:5173 in your browser.
 
-### Alternative: Single command
-
-**Terminal 1 – Backend (Flask API on :5050):**
-```bash
-cd /path/to/r2d2
-uv run r2d2-web
-```
-
-**Terminal 2 – Frontend (Vite dev server on :5173):**
-```bash
-cd /path/to/r2d2/web/frontend
-npm install   # first time only
-npm run dev
-```
-
-Vite proxies `/api` calls to Flask at `http://127.0.0.1:5050`.
-
-### Production bundle
-```bash
-cd web/frontend && npm run build
-uv run r2d2-web  # serves static assets from web/frontend/dist
-```
-Open http://localhost:5050 directly.
-
-### Features
-
-- **Interactive Disassembly**:
-  - Syntax highlighting for ARM32/64 and x86
-  - Hover tooltips with instruction documentation
-  - Click-through to [ARM Developer docs](https://developer.arm.com/documentation/dui0489/h/arm-and-thumb-instructions/instruction-summary)
-  - **Annotation**: Click 📝 to annotate any instruction, or drag to select a range
-  - **Ask Claude**: Select code → "Ask Claude" to explain selected assembly
-
-- **ARM Compiler** (dedicated tab):
-  - Write C code with syntax highlighting
-  - Compile to ARM32/ARM64 via Docker cross-compiler
-  - **Godbolt-style assembly view** with syntax highlighting (instructions, registers, labels, directives)
-  - Download binaries and `.s` assembly files
-  - Example templates: Hello World, Fibonacci, Loops, Memory operations
-  - Auto-analyze compiled binaries with one click
-
-- **CFG Explorer**: OFRAK-style navigation through functions and basic blocks with disassembly views. Debug panel shows why CFG data may be missing. Supports angr symbolic execution when enabled.
-
-- **Session Management**:
-  - Create new sessions with the "+" button
-  - Switch between analysis sessions in the sidebar
-  - Delete sessions when no longer needed
-
-- **Analysis Persistence**: Annotations and code snippets are saved to SQLite and sync across sessions.
-
-- **Chat Panel**: Claude-powered conversation with full analysis context maintained throughout.
-
-- **Progress Log**: Real-time SSE events with timestamps and adapter status.
-
-## Containerized deployment
-Multi-arch Dockerfiles are provided for back-end and front-end workloads.
+### Verification
 
 ```bash
-# Build and start both services (backend exposes :5050, frontend :5173)
-docker-compose up --build
+# Check all tools are detected
+uv run r2d2 env
 
-# Tail logs
-docker-compose logs -f backend
+# Test Ghidra bridge (if configured)
+python scripts/test_ghidra_bridge.py
+
+# Run quick analysis on a sample
+uv run r2d2 analyze samples/bin/arm64/hello --quick
 ```
 
-Backend image pulls `radare2`, `libmagic`, and installs Python dependencies via `uv`, making it compatible with amd64, arm64 (Apple Silicon), and armv7 (Raspberry Pi 4). Frontend image runs the Vite dev server; use `npm run build` + backend-only container for a slim production deployment.
+## Usage Examples
 
-## Next steps
-- Flesh out adapters with richer parsing + error handling (radare2 JSON, Ghidra artifact ingestion).
-- Add textual terminal UI using the `tui` extra (Textual).
-- Extend trajectory schema to capture diffable artifacts and caching metadata.
-- Integrate angr selectively (per function) once performance budgets are profiled.
+### CLI Analysis
 
-## Recent Updates (2025-12-28)
+```bash
+# Quick scan (fast, basic info)
+uv run r2d2 analyze binary.elf --quick
 
-- **ARM Compiler Tab**: Dedicated compiler panel with syntax-highlighted assembly output (Godbolt-style)
-- **Session Management**: New Session button for quick session creation
-- **CFG Viewer**: Improved angr CFG integration with debug diagnostics
-- **Download Artifacts**: Download compiled binaries and assembly files directly from the UI
+# Full analysis (includes CFG, deeper disassembly)
+uv run r2d2 analyze binary.elf
 
-## TODO
+# JSON output for scripting
+uv run r2d2 analyze binary.elf --json
 
-- [ ] Record trajectory replay (generate equivalent Python script for each run)
-- [ ] Improve logging, performance, and support additional LLM providers
-- [ ] Add symbolic execution insights from angr to chat context
-- [ ] Textual TUI for terminal-based workflows
+# Ask Claude about the binary
+uv run r2d2 analyze binary.elf --ask "What does this binary do?"
+
+# Check environment
+uv run r2d2 env
+```
+
+### Web UI Workflow
+
+1. **Upload binary**: Drag and drop or click to browse
+2. **Click Analyze**: Watch progress in the Logs tab
+3. **Explore Results**:
+   - Summary: Overview with tool attribution
+   - Profile: Security features, risk assessment
+   - Disasm: Interactive disassembly with annotations
+   - CFG: Control flow graph visualization
+   - Decompiler: C pseudocode (requires Ghidra)
+4. **Ask Claude**: Select code → "Ask Claude" or use the Chat tab
+5. **Annotate**: Click any instruction to add notes
+
+### Compile and Analyze C Code
+
+1. Go to the **Compiler** tab
+2. Write or paste C code
+3. Select architecture (ARM32/ARM64)
+4. Click **Compile** to see assembly output
+5. Click **Analyze & Chat** to analyze the compiled binary
+
+## Configuration
+
+Configuration is loaded from `config/default_config.toml` with user overrides from `~/.config/r2d2/config.toml`.
+
+### Key Settings
+
+```toml
+[analysis]
+enable_angr = true      # Symbolic execution and CFG
+enable_ghidra = true    # Decompilation (requires Ghidra)
+enable_frida = true     # Dynamic instrumentation
+enable_gef = true       # GDB execution tracing (requires Docker)
+timeout_deep = 120      # Seconds for deep analysis stage
+
+[ghidra]
+use_bridge = true                              # Use Ghidra bridge for richer data
+bridge_host = "127.0.0.1"
+bridge_port = 13100
+install_dir = "/home/kali/ghidra_11.2_PUBLIC"  # For headless fallback
+
+[llm]
+provider = "anthropic"
+model = "claude-sonnet-4-5"
+```
+
+### Environment Variables
+
+```bash
+ANTHROPIC_API_KEY=sk-ant-...    # Required for Claude
+OPENAI_API_KEY=sk-...           # Optional fallback
+GHIDRA_INSTALL_DIR=/path/to/ghidra  # Optional, can be set in config
+R2D2_DEBUG=true                 # Enable debug logging
+```
+
+## Project Structure
+
+```
+r2d2/
+├── src/r2d2/
+│   ├── adapters/           # Tool adapters (radare2, angr, ghidra, etc.)
+│   ├── analysis/           # Orchestrator and resource tree
+│   ├── llm/                # Claude/OpenAI integration
+│   ├── storage/            # SQLite persistence
+│   ├── web/                # Flask API
+│   └── cli.py              # Typer CLI
+├── web/frontend/           # React + Vite + MUI
+├── config/                 # Default configuration
+├── samples/                # Sample binaries and C source
+├── scripts/                # Setup and utility scripts
+└── tests/                  # pytest test suite
+```
+
+## Troubleshooting
+
+### "radare2 not found"
+```bash
+sudo apt-get install radare2
+# or on macOS: brew install radare2
+```
+
+### "angr import errors"
+```bash
+uv sync --extra analyzers
+```
+
+### "Ghidra bridge not connected"
+1. Start Ghidra GUI with your binary loaded
+2. Run `ghidra_bridge_server_background.py` in Script Manager
+3. Test: `python scripts/test_ghidra_bridge.py`
+
+### "Frontend proxy errors"
+Ensure backend is running on :5050 before starting frontend.
+
+### "GEF/Docker errors"
+```bash
+# Build the GEF image
+docker build -t r2d2-gef -f Dockerfile.gef .
+
+# Verify Docker is running
+docker ps
+```
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Run tests: `uv run pytest`
+4. Run linting: `uv run ruff check src/`
+5. Submit a pull request
+
+## License
+
+MIT License - see LICENSE file for details.
+
+## Acknowledgments
+
+r2d2 builds on excellent open-source tools:
+- [radare2](https://rada.re/) - Reverse engineering framework
+- [angr](https://angr.io/) - Binary analysis platform
+- [Ghidra](https://ghidra-sre.org/) - NSA's software reverse engineering suite
+- [Capstone](https://www.capstone-engine.org/) - Disassembly framework
+- [Frida](https://frida.re/) - Dynamic instrumentation toolkit
+- [GEF](https://gef.readthedocs.io/) - GDB Enhanced Features

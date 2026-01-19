@@ -301,3 +301,176 @@ export interface DWARFData {
   line_programs: DWARFLineProgram[];
   error?: string;
 }
+
+// Auto-profiling types for quick binary characterization
+export interface SecurityFeatures {
+  relro: 'none' | 'partial' | 'full' | 'unknown';
+  stack_canary: boolean | null;
+  nx: boolean | null;
+  pie: boolean | null;
+  fortify: boolean | null;
+  rpath: boolean | null;
+  runpath: boolean | null;
+}
+
+export interface EmbeddedFile {
+  offset: number;
+  description: string;
+}
+
+export interface AutoProfileData {
+  mode: 'autoprofile';
+  profile: {
+    file_type: string;
+    architecture: string;
+    bits: number | null;
+    endian: 'little' | 'big' | 'unknown';
+    is_stripped: boolean | null;
+    has_debug_info: boolean | null;
+    security: SecurityFeatures;
+    total_strings: number;
+    network_strings: string[];
+    crypto_strings: string[];
+    file_io_strings: string[];
+    dangerous_functions: string[];
+    suspicious_strings: string[];
+    embedded_files: EmbeddedFile[];
+    has_compressed_data: boolean;
+    has_encrypted_data: boolean;
+    risk_level: 'low' | 'medium' | 'high';
+    risk_factors: string[];
+  };
+  error?: string;
+}
+
+// Ghidra decompilation types
+export interface GhidraDecompiledFunction {
+  name: string;
+  address: string;
+  signature: string;
+  decompiled_c: string;
+  parameters: Array<{ name: string; type: string; index: number }>;
+  return_type: string;
+  calling_convention: string | null;
+}
+
+export interface GhidraTypeInfo {
+  name: string;
+  category: string;
+  size: number;
+  kind: 'struct' | 'enum' | 'typedef' | 'pointer' | 'array' | 'primitive';
+  members: Array<{
+    name: string;
+    type?: string;
+    offset?: number;
+    size?: number;
+    value?: number;
+  }>;
+}
+
+export interface GhidraXref {
+  from_address?: string;
+  to_address?: string;
+  ref_type: string;
+  from_function?: string | null;
+  to_function?: string | null;
+}
+
+export interface GhidraData {
+  mode: 'bridge' | 'headless';
+  functions?: Array<{
+    name: string;
+    address: number;
+    size: number;
+    signature?: string;
+    calling_convention?: string;
+    is_thunk?: boolean;
+    comment?: string;
+  }>;
+  function_count?: number;
+  decompiled: GhidraDecompiledFunction[];
+  decompiled_count: number;
+  types: GhidraTypeInfo[];
+  type_count: number;
+  strings?: Array<{
+    address: number;
+    value: string;
+    length: number;
+    type?: string;
+  }>;
+  string_count?: number;
+  xref_map?: Record<string, { to: GhidraXref[]; from: GhidraXref[] }>;
+  binary: string;
+  error?: string;
+}
+
+// GEF/GDB dynamic analysis types
+export interface RegisterSnapshot {
+  pc: number;
+  sp: number;
+  registers: Record<string, number>;
+}
+
+export interface GEFMemoryRegion {
+  start: string;
+  end: string;
+  size: string;
+  offset: string;
+  permissions: string;
+  name: string;
+}
+
+export interface GEFExecutionTrace {
+  entry_point?: string;
+  register_snapshots: RegisterSnapshot[];
+  memory_maps: GEFMemoryRegion[];
+  instruction_count: number;
+  exit_code?: number;
+  error?: string;
+}
+
+export interface GEFData {
+  mode: 'gef';
+  binary: string;
+  returncode: number;
+  trace: GEFExecutionTrace;
+  error?: string;
+}
+
+// Ghidra Scripting types
+export interface GhidraScriptTask {
+  id: string;
+  description: string;
+  language: 'python' | 'java';
+  script: string;
+  status: 'pending' | 'generating' | 'ready' | 'running' | 'completed' | 'failed';
+  result?: string;
+  error?: string;
+  createdAt: string;
+  executedAt?: string;
+}
+
+export interface GhidraScriptGenerateResponse {
+  script: string;
+  language: string;
+  task: string;
+  error?: string;
+}
+
+export interface GhidraScriptExecuteResponse {
+  output: string;
+  language: string;
+  success: boolean;
+  error?: string;
+}
+
+export interface GhidraStatusResponse {
+  available: boolean;
+  bridge_available: boolean;
+  bridge_connected: boolean;
+  bridge_program?: string | null;
+  headless_available: boolean;
+  install_dir?: string | null;
+  issues: string[];
+  notes: string[];
+}

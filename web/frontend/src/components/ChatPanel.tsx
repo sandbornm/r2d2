@@ -22,7 +22,7 @@ import {
 } from '@mui/material';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
-import { FC, FormEvent, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { FC, FormEvent, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ChatAttachment, ChatMessageItem, ChatSessionSummary } from '../types';
 import MarkdownRenderer from './MarkdownRenderer';
 
@@ -40,14 +40,14 @@ interface ChatPanelProps {
   onNavigateToAddress?: (address: string) => void;
 }
 
-const CopyButton: FC<{ text: string }> = ({ text }) => {
+const CopyButton: FC<{ text: string }> = memo(({ text }) => {
   const [copied, setCopied] = useState(false);
 
-  const handleCopy = () => {
+  const handleCopy = useCallback(() => {
     navigator.clipboard.writeText(text);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
-  };
+  }, [text]);
 
   return (
     <Tooltip title={copied ? 'Copied!' : 'Copy'}>
@@ -60,7 +60,7 @@ const CopyButton: FC<{ text: string }> = ({ text }) => {
       </IconButton>
     </Tooltip>
   );
-};
+});
 
 interface MessageBubbleProps {
   message: ChatMessageItem;
@@ -68,7 +68,7 @@ interface MessageBubbleProps {
   onNavigateToAddress?: (address: string) => void;
 }
 
-const MessageBubble: FC<MessageBubbleProps> = ({ message, disassembly, onNavigateToAddress }) => {
+const MessageBubble: FC<MessageBubbleProps> = memo(({ message, disassembly, onNavigateToAddress }) => {
   const theme = useTheme();
   const isUser = message.role === 'user';
   const isSystem = message.role === 'system';
@@ -237,9 +237,9 @@ const MessageBubble: FC<MessageBubbleProps> = ({ message, disassembly, onNavigat
       )}
     </Stack>
   );
-};
+});
 
-export const ChatPanel: FC<ChatPanelProps> = ({
+export const ChatPanel: FC<ChatPanelProps> = memo(({
   session,
   messages,
   onSend,
@@ -255,15 +255,20 @@ export const ChatPanel: FC<ChatPanelProps> = ({
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [shouldAutoScroll, setShouldAutoScroll] = useState(true);
 
-  // Check if user is near bottom
-  const handleScroll = () => {
-    const container = scrollContainerRef.current;
-    if (!container) return;
-    
-    const { scrollTop, scrollHeight, clientHeight } = container;
-    const isNearBottom = scrollHeight - scrollTop - clientHeight < 100;
-    setShouldAutoScroll(isNearBottom);
-  };
+  // Check if user is near bottom (throttled to avoid excessive state updates)
+  const scrollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const handleScroll = useCallback(() => {
+    if (scrollTimeoutRef.current) return; // Throttle
+    scrollTimeoutRef.current = setTimeout(() => {
+      const container = scrollContainerRef.current;
+      if (container) {
+        const { scrollTop, scrollHeight, clientHeight } = container;
+        const isNearBottom = scrollHeight - scrollTop - clientHeight < 100;
+        setShouldAutoScroll(isNearBottom);
+      }
+      scrollTimeoutRef.current = null;
+    }, 100);
+  }, []);
 
   // Auto-scroll to bottom when messages change
   useLayoutEffect(() => {
@@ -310,13 +315,16 @@ export const ChatPanel: FC<ChatPanelProps> = ({
     );
   }
 
-  // Filter out system messages that aren't analysis completions
-  const visibleMessages = messages.filter(msg => {
-    if (msg.role === 'system') {
-      return msg.attachments.some(a => a.type === 'analysis_result');
-    }
-    return true;
-  });
+  // Filter out system messages that aren't analysis completions (memoized)
+  const visibleMessages = useMemo(() =>
+    messages.filter(msg => {
+      if (msg.role === 'system') {
+        return msg.attachments.some(a => a.type === 'analysis_result');
+      }
+      return true;
+    }),
+    [messages]
+  );
 
   return (
     <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
@@ -435,6 +443,6 @@ export const ChatPanel: FC<ChatPanelProps> = ({
       </Paper>
     </Box>
   );
-};
+});
 
 export default ChatPanel;

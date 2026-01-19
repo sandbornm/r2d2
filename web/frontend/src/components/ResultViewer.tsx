@@ -4,10 +4,14 @@ import CodeIcon from '@mui/icons-material/Code';
 import FunctionsIcon from '@mui/icons-material/Functions';
 import InfoIcon from '@mui/icons-material/Info';
 import MemoryIcon from '@mui/icons-material/Memory';
+import PlayArrowIcon from '@mui/icons-material/PlayArrow';
+import SecurityIcon from '@mui/icons-material/Security';
+import TerminalIcon from '@mui/icons-material/Terminal';
 import TextSnippetIcon from '@mui/icons-material/TextSnippet';
 import {
   Box,
   Chip,
+  CircularProgress,
   Grid,
   Paper,
   Stack,
@@ -16,12 +20,28 @@ import {
   Typography,
   useTheme,
 } from '@mui/material';
-import { FC, useCallback, useEffect, useMemo, useState } from 'react';
-import type { AnalysisResultPayload, AssemblyAnnotation, DWARFData } from '../types';
-import CFGViewer, { CFGContext } from './CFGViewer';
+import { FC, Suspense, lazy, memo, useCallback, useEffect, useMemo, useState } from 'react';
+import type { AnalysisResultPayload, AssemblyAnnotation, AutoProfileData, DWARFData, GEFData, GhidraData } from '../types';
+import AutoProfilePanel from './AutoProfilePanel';
 import DisassemblyViewer from './DisassemblyViewer';
-import DWARFPanel from './DWARFPanel';
 import ToolAttribution from './ToolAttribution';
+
+// Lazy load heavy components for better initial load performance
+const CFGViewer = lazy(() => import('./CFGViewer'));
+const DecompilerPanel = lazy(() => import('./DecompilerPanel'));
+const DWARFPanel = lazy(() => import('./DWARFPanel'));
+const GEFPanel = lazy(() => import('./GEFPanel'));
+const GhidraScriptingPanel = lazy(() => import('./GhidraScriptingPanel'));
+
+// Re-export CFGContext type for consumers
+export type { CFGContext } from './CFGViewer';
+
+// Loading fallback for lazy components
+const ComponentLoader = () => (
+  <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: 300 }}>
+    <CircularProgress size={32} />
+  </Box>
+);
 
 // Local storage key for annotations
 const ANNOTATIONS_STORAGE_KEY = 'r2d2-annotations';
@@ -33,7 +53,7 @@ interface ResultViewerProps {
   onAskAboutCFG?: (context: CFGContext) => void;
 }
 
-type ViewTab = 'summary' | 'functions' | 'strings' | 'disasm' | 'cfg' | 'dwarf';
+type ViewTab = 'summary' | 'profile' | 'functions' | 'strings' | 'disasm' | 'cfg' | 'decompiler' | 'scripting' | 'dynamic' | 'dwarf';
 
 const formatHex = (value: number | string | null | undefined, fallback = '?') => {
   if (value === null || value === undefined) return fallback;
@@ -66,7 +86,7 @@ const saveAnnotations = (binaryPath: string, annotations: AssemblyAnnotation[]) 
   }
 };
 
-const ResultViewer: FC<ResultViewerProps> = ({ result, sessionId, onAskAboutCode, onAskAboutCFG }) => {
+const ResultViewer: FC<ResultViewerProps> = memo(({ result, sessionId, onAskAboutCode, onAskAboutCFG }) => {
   const theme = useTheme();
   const [view, setView] = useState<ViewTab>('summary');
   const [annotations, setAnnotations] = useState<AssemblyAnnotation[]>([]);
@@ -158,6 +178,9 @@ const ResultViewer: FC<ResultViewerProps> = ({ result, sessionId, onAskAboutCode
   const r2Deep = (deepScan.radare2 ?? {}) as Record<string, unknown>;
   const angrDeep = (deepScan.angr ?? {}) as Record<string, unknown>;
   const dwarfDeep = (deepScan.dwarf ?? null) as DWARFData | null;
+  const ghidraDeep = (deepScan.ghidra ?? null) as GhidraData | null;
+  const gefDeep = (deepScan.gef ?? null) as GEFData | null;
+  const autoprofileQuick = (quickScan.autoprofile ?? null) as AutoProfileData | null;
 
   // Binary metadata
   const r2QuickInfo = r2Quick.info as Record<string, unknown> | undefined;
@@ -302,10 +325,36 @@ const ResultViewer: FC<ResultViewerProps> = ({ result, sessionId, onAskAboutCode
         sx={{ borderBottom: 1, borderColor: 'divider', minHeight: 36 }}
       >
         <Tab value="summary" label="Summary" icon={<InfoIcon sx={{ fontSize: 16 }} />} iconPosition="start" sx={{ minHeight: 36, py: 0 }} />
+        <Tab value="profile" label="Profile" icon={<SecurityIcon sx={{ fontSize: 16 }} />} iconPosition="start" sx={{ minHeight: 36, py: 0 }} />
         <Tab value="functions" label="Functions" icon={<FunctionsIcon sx={{ fontSize: 16 }} />} iconPosition="start" sx={{ minHeight: 36, py: 0 }} />
         <Tab value="strings" label="Strings" icon={<TextSnippetIcon sx={{ fontSize: 16 }} />} iconPosition="start" sx={{ minHeight: 36, py: 0 }} />
         <Tab value="disasm" label="Disasm" icon={<CodeIcon sx={{ fontSize: 16 }} />} iconPosition="start" sx={{ minHeight: 36, py: 0 }} />
         <Tab value="cfg" label="CFG" icon={<AccountTreeIcon sx={{ fontSize: 16 }} />} iconPosition="start" sx={{ minHeight: 36, py: 0 }} />
+        {ghidraDeep && ghidraDeep.decompiled_count > 0 && (
+          <Tab
+            value="decompiler"
+            label="Decompiler"
+            icon={<CodeIcon sx={{ fontSize: 16 }} />}
+            iconPosition="start"
+            sx={{ minHeight: 36, py: 0 }}
+          />
+        )}
+        <Tab
+          value="scripting"
+          label="Scripting"
+          icon={<TerminalIcon sx={{ fontSize: 16 }} />}
+          iconPosition="start"
+          sx={{ minHeight: 36, py: 0 }}
+        />
+        {gefDeep && gefDeep.trace && (
+          <Tab
+            value="dynamic"
+            label="Dynamic"
+            icon={<PlayArrowIcon sx={{ fontSize: 16 }} />}
+            iconPosition="start"
+            sx={{ minHeight: 36, py: 0 }}
+          />
+        )}
         <Tab
           value="dwarf"
           label={dwarfDeep?.has_dwarf ? "DWARF" : "Debug"}
@@ -410,6 +459,12 @@ const ResultViewer: FC<ResultViewerProps> = ({ result, sessionId, onAskAboutCode
           </Stack>
         )}
 
+        {view === 'profile' && (
+          <Paper variant="outlined" sx={{ height: 500, overflow: 'hidden' }}>
+            <AutoProfilePanel data={autoprofileQuick} />
+          </Paper>
+        )}
+
         {view === 'functions' && (
           <Paper variant="outlined" sx={{ p: 1.5 }}>
             {topFunctions.length > 0 ? (
@@ -467,30 +522,64 @@ const ResultViewer: FC<ResultViewerProps> = ({ result, sessionId, onAskAboutCode
 
         {view === 'cfg' && (
           <Box sx={{ height: 500 }}>
-            <CFGViewer
-              nodes={angrNodes}
-              edges={angrEdges}
-              functions={functionCfgs}
-              radareFunctions={functions}
-              angrActive={angrActive}
-              angrFound={angrFound}
-              onAskAboutCFG={onAskAboutCFG}
-              sessionId={sessionId}
-            />
+            <Suspense fallback={<ComponentLoader />}>
+              <CFGViewer
+                nodes={angrNodes}
+                edges={angrEdges}
+                functions={functionCfgs}
+                radareFunctions={functions}
+                angrActive={angrActive}
+                angrFound={angrFound}
+                onAskAboutCFG={onAskAboutCFG}
+                sessionId={sessionId}
+              />
+            </Suspense>
           </Box>
+        )}
+
+        {view === 'decompiler' && (
+          <Paper variant="outlined" sx={{ height: 500, overflow: 'hidden' }}>
+            <Suspense fallback={<ComponentLoader />}>
+              <DecompilerPanel
+                data={ghidraDeep}
+                onAskClaude={(question) => onAskAboutCode?.(question)}
+              />
+            </Suspense>
+          </Paper>
+        )}
+
+        {view === 'scripting' && (
+          <Paper variant="outlined" sx={{ height: 500, overflow: 'hidden' }}>
+            <Suspense fallback={<ComponentLoader />}>
+              <GhidraScriptingPanel
+                sessionId={sessionId}
+                binaryPath={result?.binary}
+              />
+            </Suspense>
+          </Paper>
+        )}
+
+        {view === 'dynamic' && (
+          <Paper variant="outlined" sx={{ height: 500, overflow: 'hidden' }}>
+            <Suspense fallback={<ComponentLoader />}>
+              <GEFPanel data={gefDeep} />
+            </Suspense>
+          </Paper>
         )}
 
         {view === 'dwarf' && (
           <Paper variant="outlined" sx={{ height: 500, overflow: 'hidden' }}>
-            <DWARFPanel
-              data={dwarfDeep}
-              onAskClaude={(question) => onAskAboutCode?.(question)}
-            />
+            <Suspense fallback={<ComponentLoader />}>
+              <DWARFPanel
+                data={dwarfDeep}
+                onAskClaude={(question) => onAskAboutCode?.(question)}
+              />
+            </Suspense>
           </Paper>
         )}
       </Box>
     </Box>
   );
-};
+});
 
 export default ResultViewer;

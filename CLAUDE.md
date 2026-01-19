@@ -35,6 +35,12 @@ uv run r2d2 env                             # Environment diagnostics
 
 # Compilation (for ARM samples)
 uv run r2d2 compile samples/c/hello.c --arch arm   # Compile C to ARM
+
+# Optional: Build GEF Docker image for dynamic analysis
+docker build -t r2d2-gef -f Dockerfile.gef .
+
+# Optional: Test Ghidra bridge connectivity
+python scripts/test_ghidra_bridge.py
 ```
 
 ## Architecture
@@ -48,12 +54,15 @@ src/r2d2/
 ├── state.py               # Application state container
 ├── adapters/              # Analysis tool adapters
 │   ├── base.py            # AdapterRegistry and base classes
+│   ├── autoprofile.py     # Quick profiling (file, strings, checksec, binwalk)
 │   ├── radare2.py         # Primary disassembly (r2pipe)
 │   ├── angr.py            # Symbolic execution & CFG
 │   ├── capstone.py        # Instruction-level disassembly
 │   ├── libmagic.py        # File type identification
-│   ├── ghidra.py          # Headless decompilation
-│   └── frida.py           # Dynamic instrumentation
+│   ├── ghidra.py          # Headless decompilation + bridge mode
+│   ├── ghidra_bridge_client.py  # RPC client for Ghidra bridge
+│   ├── frida.py           # Dynamic instrumentation
+│   └── gef.py             # GDB/GEF dynamic analysis (Docker)
 ├── analysis/
 │   ├── orchestrator.py    # Multi-stage analysis pipeline
 │   └── resource_tree.py   # OFRAK-inspired binary hierarchy
@@ -79,16 +88,20 @@ src/r2d2/
 web/frontend/src/
 ├── App.tsx                # Main application shell with tabs: Results, Chat, Compiler, Logs
 ├── components/
-│   ├── CFGViewer.tsx      # Control flow graph with zoom, maximize, function naming
-│   ├── CodeEditor.tsx     # C code editor + AsmViewer with syntax highlighting
-│   ├── CompilerPanel.tsx  # ARM cross-compiler UI with examples
+│   ├── AutoProfilePanel.tsx   # Security profile, strings analysis, risk indicators
+│   ├── CFGViewer.tsx          # Control flow graph with zoom, maximize, function naming
+│   ├── CodeEditor.tsx         # C code editor + AsmViewer with syntax highlighting
+│   ├── CompilerPanel.tsx      # ARM cross-compiler UI with examples
+│   ├── DecompilerPanel.tsx    # Ghidra decompiled C code viewer with types
 │   ├── DisassemblyViewer.tsx  # Annotatable disassembly with tooltips
-│   ├── ChatPanel.tsx      # AI conversation interface
-│   ├── ProgressLog.tsx    # Real-time analysis events (SSE)
-│   ├── ResultViewer.tsx   # Analysis results with tabbed view
-│   ├── SessionList.tsx    # Session sidebar with new/delete
-│   ├── SettingsDrawer.tsx # Configuration UI
-│   └── ToolAttribution.tsx # Display of analysis tools used
+│   ├── DWARFPanel.tsx         # Debug information viewer
+│   ├── GEFPanel.tsx           # Dynamic analysis: registers, memory, execution trace
+│   ├── ChatPanel.tsx          # AI conversation interface
+│   ├── ProgressLog.tsx        # Real-time analysis events (SSE)
+│   ├── ResultViewer.tsx       # Analysis results with tabbed view
+│   ├── SessionList.tsx        # Session sidebar with new/delete
+│   ├── SettingsDrawer.tsx     # Configuration UI
+│   └── ToolAttribution.tsx    # Display of analysis tools used
 ├── types.ts               # TypeScript interfaces
 └── theme.ts               # MUI theme configuration
 ```
@@ -166,12 +179,12 @@ When both radare2 and angr provide analysis, uncertainty is calculated:
 
 ### Environment Variables
 ```bash
-ANTHROPIC_API_KEY=sk-ant-...   # Claude API key
-OPENAI_API_KEY=sk-...          # OpenAI fallback
-R2D2_WEB_HOST=127.0.0.1        # Flask host
-R2D2_WEB_PORT=5050             # Flask port
-GHIDRA_INSTALL_DIR=/opt/ghidra # Ghidra path (optional)
-R2D2_DEBUG=true                # Enable debug logging (default: true)
+ANTHROPIC_API_KEY=sk-ant-...                     # Claude API key
+OPENAI_API_KEY=sk-...                            # OpenAI fallback
+R2D2_WEB_HOST=127.0.0.1                          # Flask host
+R2D2_WEB_PORT=5050                               # Flask port
+GHIDRA_INSTALL_DIR=/home/kali/ghidra_11.2_PUBLIC # Ghidra path
+R2D2_DEBUG=true                                  # Enable debug logging (default: true)
 ```
 
 ### Debug Logging
@@ -202,9 +215,17 @@ r2d2Debug.getHistory()   // Get log entries array
 ### Analysis Settings (in config.toml)
 ```toml
 [analysis]
-enable_angr = true     # Enable angr for CFG analysis
-enable_ghidra = false  # Enable Ghidra decompilation
-enable_frida = false   # Enable Frida dynamic instrumentation
+enable_angr = true           # Enable angr for CFG analysis
+enable_ghidra = false        # Enable Ghidra decompilation
+enable_frida = false         # Enable Frida dynamic instrumentation
+enable_gef = false           # Enable GEF/GDB dynamic analysis (requires Docker)
+gef_timeout = 60             # Timeout for GEF analysis in seconds
+gef_max_instructions = 10000 # Max instructions to trace
+
+[ghidra]
+use_bridge = false           # Use Ghidra bridge instead of headless
+bridge_host = "127.0.0.1"    # Ghidra bridge host
+bridge_port = 13100          # Ghidra bridge port
 ```
 
 ### Config Files
@@ -296,6 +317,37 @@ Functions with generic names (sub_*, fcn.*, func_*) can be automatically renamed
 4. Click the edit icon on any function to manually override the name
 
 Original function names are always preserved for consistent reference.
+
+### Auto Profile Panel
+The Profile tab provides quick binary characterization:
+- **Binary Info**: File type, architecture, bits, endianness, stripped status
+- **Security Features**: RELRO, Stack Canary, NX, PIE, FORTIFY with color-coded badges
+- **Risk Analysis**: Automatic risk level assessment with specific factors
+- **Interesting Strings**: Categorized into network, crypto, file I/O, dangerous functions
+- **Embedded Data**: Detection of compressed/encrypted sections via binwalk
+
+### Decompiler Panel (Ghidra Bridge)
+When Ghidra bridge is enabled and connected, the Decompiler tab shows:
+- **Function List**: Sidebar with all decompiled functions
+- **Decompiled Code**: Syntax-highlighted C code with "Ask Claude" button
+- **Types Explorer**: Structs and enums from Ghidra's type system
+
+To use the Ghidra bridge:
+1. Start Ghidra with your binary loaded
+2. Run `ghidra_bridge_server_background.py` in Ghidra's Script Manager
+3. Enable in config: `ghidra.use_bridge = true`
+4. Test with: `python scripts/test_ghidra_bridge.py`
+
+### Dynamic Analysis Panel (GEF)
+When GEF is enabled, the Dynamic tab shows execution trace data:
+- **Overview**: Entry point, instruction count, exit code, memory region summary
+- **Registers**: Timeline of register snapshots with PC/SP highlighting
+- **Memory**: Memory map with permission highlighting (r/w/x)
+
+To use GEF dynamic analysis:
+1. Build the Docker image: `docker build -t r2d2-gef -f Dockerfile.gef .`
+2. Enable in config: `analysis.enable_gef = true`
+3. Analysis runs in isolated container with network disabled
 
 ## Code Style
 
