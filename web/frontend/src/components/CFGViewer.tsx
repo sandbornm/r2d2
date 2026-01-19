@@ -15,12 +15,10 @@ import debug from '../debug';
 import {
   alpha,
   Box,
-  Button,
   Chip,
   CircularProgress,
   IconButton,
   keyframes,
-  LinearProgress,
   List,
   ListItemButton,
   ListItemText,

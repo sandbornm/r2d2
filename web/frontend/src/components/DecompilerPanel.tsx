@@ -13,6 +13,7 @@ import {
   ListItemText,
   Paper,
   Stack,
+  Theme,
   Tooltip,
   Typography,
   useTheme,
@@ -26,7 +27,7 @@ interface DecompilerPanelProps {
 }
 
 // Simple syntax highlighting for C code
-const highlightCCode = (code: string, theme: ReturnType<typeof useTheme>) => {
+const highlightCCode = (code: string, theme: Theme): string => {
   const isDark = theme.palette.mode === 'dark';
 
   // Colors for syntax highlighting

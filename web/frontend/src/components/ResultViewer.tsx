@@ -33,8 +33,9 @@ const DWARFPanel = lazy(() => import('./DWARFPanel'));
 const GEFPanel = lazy(() => import('./GEFPanel'));
 const GhidraScriptingPanel = lazy(() => import('./GhidraScriptingPanel'));
 
-// Re-export CFGContext type for consumers
-export type { CFGContext } from './CFGViewer';
+// Import and re-export CFGContext type for consumers
+import type { CFGContext } from './CFGViewer';
+export type { CFGContext };
 
 // Loading fallback for lazy components
 const ComponentLoader = () => (

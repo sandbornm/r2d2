@@ -1,10 +1,13 @@
 /**
- * Activity tracking context for context engineering.
- * 
- * Tracks user activities (tab visits, function views, selections, etc.)
- * and provides this context to the LLM for better responses.
+ * Activity tracking context for backend synchronization.
+ *
+ * This is a lightweight context that tracks user events and syncs them to the backend.
+ * The primary user activity tracking for LLM context is handled by TrajectoryContext.
+ * This context focuses on:
+ * - Backend synchronization of events
+ * - Simple event tracking for analytics
  */
-import { createContext, FC, ReactNode, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import { createContext, FC, ReactNode, useCallback, useContext, useRef, useState } from 'react';
 import type { ActivityEvent, ActivityEventType } from '../types';
 
 interface ActivityContextState {
@@ -27,9 +30,7 @@ interface ActivityContextValue extends ActivityContextState {
 
 const ActivityContext = createContext<ActivityContextValue | null>(null);
 
-// Maximum events to keep in memory
 const MAX_EVENTS = 100;
-// Time window for "recent" events (5 minutes)
 const RECENT_WINDOW_MS = 5 * 60 * 1000;
 
 export const ActivityProvider: FC<{ children: ReactNode }> = ({ children }) => {
@@ -40,58 +41,43 @@ export const ActivityProvider: FC<{ children: ReactNode }> = ({ children }) => {
     lastViewedAddress: null,
     sessionStartTime: Date.now(),
   });
-  
+
   const lastTabRef = useRef<string>('results');
   const lastTabTimeRef = useRef<number>(Date.now());
   const pendingEventsRef = useRef<ActivityEvent[]>([]);
 
-  // Track an activity event
   const trackEvent = useCallback((type: ActivityEventType, data: Record<string, unknown> = {}) => {
-    const now = Date.now();
     const event: ActivityEvent = {
       event_type: type,
       event_data: data,
-      created_at: new Date(now).toISOString(),
+      created_at: new Date().toISOString(),
     };
-    
+
     setState(prev => {
       const events = [...prev.events, event];
-      // Keep only the last MAX_EVENTS
-      if (events.length > MAX_EVENTS) {
-        events.shift();
-      }
+      if (events.length > MAX_EVENTS) events.shift();
       return { ...prev, events };
     });
-    
-    // Queue for backend sync
+
     pendingEventsRef.current.push(event);
   }, []);
 
-  // Set current tab and track the switch
   const setCurrentTab = useCallback((tab: string) => {
-    const now = Date.now();
-    const duration = now - lastTabTimeRef.current;
-    
-    // Track the tab switch with duration on previous tab
+    const duration = Date.now() - lastTabTimeRef.current;
+
     trackEvent('tab_switch', {
       from_tab: lastTabRef.current,
       to_tab: tab,
       time_on_previous_ms: duration,
     });
-    
+
     lastTabRef.current = tab;
-    lastTabTimeRef.current = now;
-    
+    lastTabTimeRef.current = Date.now();
     setState(prev => ({ ...prev, currentTab: tab }));
   }, [trackEvent]);
 
-  // Track function view
   const setViewedFunction = useCallback((name: string, address?: string) => {
-    trackEvent('function_view', {
-      function_name: name,
-      address: address,
-    });
-    
+    trackEvent('function_view', { function_name: name, address });
     setState(prev => ({
       ...prev,
       lastViewedFunction: name,
@@ -99,33 +85,28 @@ export const ActivityProvider: FC<{ children: ReactNode }> = ({ children }) => {
     }));
   }, [trackEvent]);
 
-  // Track address view
   const setViewedAddress = useCallback((address: string) => {
     trackEvent('address_hover', { address });
     setState(prev => ({ ...prev, lastViewedAddress: address }));
   }, [trackEvent]);
 
-  // Get recent events within time window
-  const getRecentContext = useCallback((limit: number = 20): ActivityEvent[] => {
+  const getRecentContext = useCallback((limit = 20): ActivityEvent[] => {
     const cutoff = Date.now() - RECENT_WINDOW_MS;
     return state.events
       .filter(e => new Date(e.created_at).getTime() > cutoff)
       .slice(-limit);
   }, [state.events]);
 
-  // Generate a human-readable context summary for the LLM
   const getContextSummary = useCallback((): string => {
     const recent = getRecentContext(15);
-    if (recent.length === 0) {
-      return "User just started the session.";
-    }
+    if (recent.length === 0) return 'User just started the session.';
 
-    const lines: string[] = [];
     const sessionDuration = Math.floor((Date.now() - state.sessionStartTime) / 1000);
-    
-    lines.push(`Session duration: ${formatDuration(sessionDuration)}`);
-    lines.push(`Current view: ${state.currentTab}`);
-    
+    const lines = [
+      `Session duration: ${formatDuration(sessionDuration)}`,
+      `Current view: ${state.currentTab}`,
+    ];
+
     if (state.lastViewedFunction) {
       lines.push(`Last viewed function: ${state.lastViewedFunction}`);
     }
@@ -133,73 +114,32 @@ export const ActivityProvider: FC<{ children: ReactNode }> = ({ children }) => {
       lines.push(`Last viewed address: ${state.lastViewedAddress}`);
     }
 
-    // Summarize activity patterns
-    const tabSwitches = recent.filter(e => e.event_type === 'tab_switch');
-    const functionViews = recent.filter(e => e.event_type === 'function_view');
-    const codeSelects = recent.filter(e => e.event_type === 'code_select');
-    const questions = recent.filter(e => e.event_type === 'ask_claude');
-
-    if (tabSwitches.length > 0) {
-      const tabs = tabSwitches.map(e => e.event_data.to_tab).filter(Boolean);
-      const uniqueTabs = [...new Set(tabs)];
-      if (uniqueTabs.length > 1) {
-        lines.push(`Recently visited tabs: ${uniqueTabs.join(', ')}`);
-      }
-    }
-
-    if (functionViews.length > 0) {
-      const funcs = functionViews.map(e => e.event_data.function_name).filter(Boolean);
-      const uniqueFuncs = [...new Set(funcs)].slice(-5);
-      if (uniqueFuncs.length > 0) {
-        lines.push(`Recently explored functions: ${uniqueFuncs.join(', ')}`);
-      }
-    }
-
-    if (codeSelects.length > 0) {
-      lines.push(`Selected code ${codeSelects.length} time(s) recently`);
-    }
-
-    if (questions.length > 0) {
-      lines.push(`Asked ${questions.length} question(s) in this session`);
-    }
-
-    // Add recent activity timeline (last 5 events)
     const recentFive = recent.slice(-5);
     if (recentFive.length > 0) {
       lines.push('\nRecent activity:');
-      for (const event of recentFive) {
-        const ago = formatTimeAgo(event.created_at);
-        lines.push(`  - ${ago}: ${describeEvent(event)}`);
-      }
+      recentFive.forEach(event => {
+        lines.push(`  - ${formatTimeAgo(event.created_at)}: ${describeEvent(event)}`);
+      });
     }
 
     return lines.join('\n');
   }, [state, getRecentContext]);
 
-  // Sync pending events to backend
   const syncToBackend = useCallback(async (sessionId: string) => {
     const events = pendingEventsRef.current;
     if (events.length === 0 || !sessionId) return;
-    
+
     pendingEventsRef.current = [];
-    
+
     try {
       await fetch(`/api/chats/${sessionId}/activities`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ events }),
       });
-    } catch (error) {
-      // Re-queue events on failure
+    } catch {
       pendingEventsRef.current = [...events, ...pendingEventsRef.current];
-      console.warn('Failed to sync activity events:', error);
     }
-  }, []);
-
-  // Auto-sync every 30 seconds
-  useEffect(() => {
-    // We need sessionId from outside - this will be called manually
-    // when sending messages
   }, []);
 
   const value: ActivityContextValue = {
@@ -228,7 +168,6 @@ export const useActivity = (): ActivityContextValue => {
   return context;
 };
 
-// Helper functions
 function formatDuration(seconds: number): string {
   if (seconds < 60) return `${seconds}s`;
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;

@@ -44,6 +44,7 @@ import ResultViewer from './components/ResultViewer';
 import SessionList from './components/SessionList';
 import SettingsDrawer, { AnalysisSettings } from './components/SettingsDrawer';
 import { ActivityProvider, useActivity } from './contexts/ActivityContext';
+import { TrajectoryProvider, useTrajectory, useTrajectoryActions } from './trajectory';
 import { useThemeMode } from './main';
 import type {
   AnalysisResultPayload,
@@ -100,6 +101,8 @@ const AppContent = () => {
   const { mode, toggleTheme } = useThemeMode();
   const isDark = mode === 'dark';
   const activity = useActivity();
+  const trajectory = useTrajectory();
+  const trajectoryActions = useTrajectoryActions();
 
   const [binaryPath, setBinaryPath] = useState('');
   const [fileName, setFileName] = useState<string | null>(null);
@@ -523,6 +526,9 @@ In 2-3 sentences: what is it and what does it do? I'm ${funcCount > 0 ? 'seeing 
     setFileName(session.title ?? session.binary_path.split('/').pop() ?? null);
     lastSyncedSessionIdRef.current = session.session_id;
 
+    // Start trajectory for this session
+    trajectory.startTrajectory(session.session_id);
+
     // Try to load cached analysis result for faster switching
     const cachedResult = getFromCache<AnalysisResultPayload>(
       CacheKeys.analysisResult(session.session_id)
@@ -570,8 +576,9 @@ In 2-3 sentences: what is it and what does it do? I'm ${funcCount > 0 ? 'seeing 
     if (options.callLLM) {
       const topic = content.length > 50 ? content.slice(0, 50) + '...' : content;
       activity.trackEvent('ask_claude', { topic, content_length: content.length });
+      trajectoryActions.askQuestion(content);
     }
-    
+
     // Sync activity context to backend before sending (best effort)
     activity.syncToBackend(activeSessionId).catch(() => {});
     
@@ -640,6 +647,7 @@ In 2-3 sentences: what is it and what does it do? I'm ${funcCount > 0 ? 'seeing 
     setActiveTab(value);
     // Track tab switch for activity context
     activity.setCurrentTab(value);
+    trajectory.setCurrentView(value);
   };
 
   // Extract disassembly from analysis result for address hover citations
@@ -681,7 +689,6 @@ In 2-3 sentences: what is it and what does it do? I'm ${funcCount > 0 ? 'seeing 
   };
 
   const handleNewSession = () => {
-    // Clear current state for a fresh start
     setActiveSessionId(null);
     activeSessionIdRef.current = null;
     lastSyncedSessionIdRef.current = null;
@@ -694,7 +701,6 @@ In 2-3 sentences: what is it and what does it do? I'm ${funcCount > 0 ? 'seeing 
     setStatus('idle');
     setStatusMessage(null);
     setActiveTab('results');
-    setStatusMessage(null);
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
@@ -744,67 +750,46 @@ In 2-3 sentences: what is it and what does it do? I'm ${funcCount > 0 ? 'seeing 
       const source = new EventSource(`/api/jobs/${data.job_id}/stream`);
       sourceRef.current = source;
 
-      source.onmessage = (event) => {
-        const parsed = JSON.parse(event.data);
-        setEvents((prev) => [...prev, { id: crypto.randomUUID(), event: 'job_started', data: parsed, timestamp: Date.now() }]);
-      };
-
-      EVENT_NAMES.forEach((eventName) => {
-        source.addEventListener(eventName, (e) => {
-          const payload = JSON.parse((e as MessageEvent).data);
-          setEvents((prev) => [...prev, { id: crypto.randomUUID(), event: eventName, data: payload, timestamp: Date.now() }]);
-
-          if (eventName === 'job_completed') {
-            setStatus('done');
-            setStatusMessage('Done');
-            closeSource();
-            // Switch to chat tab and auto-ask
-            setActiveTab('chat');
-            if (payload.session_id) {
-              setActiveSessionId(payload.session_id);
-              activeSessionIdRef.current = payload.session_id;
-              // Trigger auto-ask about the compiled binary
-              setTimeout(() => {
-                const sessionId = payload.session_id;
-                const prompt = `Help me understand this compiled ARM binary (${filename}). What patterns do you see in the assembly?`;
-                setSendingMessage(true);
-                fetch(`/api/chats/${sessionId}/messages`, {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ content: prompt, call_llm: true }),
-                })
-                  .then((res) => res.ok ? res.json() : Promise.reject(res))
-                  .then((data) => {
-                    if (data?.messages) setMessages(data.messages);
-                    if (data?.error) setChatError(data.error);
-                  })
-                  .catch((err) => {
-                    console.error('Auto-ask failed:', err);
-                    setChatError('Failed to get LLM response');
-                  })
-                  .finally(() => setSendingMessage(false));
-              }, 500);
-            }
-          } else if (eventName === 'analysis_result') {
-            setResult(payload);
-          } else if (eventName === 'job_failed') {
-            setStatus('error');
-            setStatusMessage(payload.error ?? 'Failed');
-            closeSource();
+      const handlers: SSEHandlers = {
+        job_completed: (payload) => {
+          setStatus('done');
+          setStatusMessage('Done');
+          closeSource();
+          setActiveTab('chat');
+          if (payload.session_id) {
+            setActiveSessionId(payload.session_id);
+            activeSessionIdRef.current = payload.session_id;
+            // Auto-ask about the compiled binary
+            const prompt = `Help me understand this compiled ARM binary (${filename}). What patterns do you see in the assembly?`;
+            setSendingMessage(true);
+            fetch(`/api/chats/${payload.session_id}/messages`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ content: prompt, call_llm: true }),
+            })
+              .then((res) => res.ok ? res.json() : Promise.reject(res))
+              .then((responseData) => {
+                if (responseData?.messages) setMessages(responseData.messages);
+                if (responseData?.error) setChatError(responseData.error);
+              })
+              .catch(() => setChatError('Failed to get LLM response'))
+              .finally(() => setSendingMessage(false));
           }
-        });
-      });
-
-      source.onerror = () => {
-        setStatus('error');
-        setStatusMessage('Connection lost');
-        closeSource();
+        },
+        analysis_result: (payload) => setResult(payload as unknown as AnalysisResultPayload),
+        job_failed: (payload) => {
+          setStatus('error');
+          setStatusMessage(payload.error ?? 'Failed');
+          closeSource();
+        },
       };
+
+      attachEventHandlers(source, handlers);
     } catch (error) {
       setStatus('error');
       setStatusMessage(error instanceof Error ? error.message : 'Analysis failed');
     }
-  }, [refreshSessions, loadSessionMessages]);
+  }, [refreshSessions, loadSessionMessages, attachEventHandlers]);
 
   return (
     <Box
@@ -1166,6 +1151,7 @@ In 2-3 sentences: what is it and what does it do? I'm ${funcCount > 0 ? 'seeing 
                     error={chatError}
                     disassembly={disassemblyContext}
                     onNavigateToAddress={handleNavigateToAddress}
+                    trajectoryContext={trajectory.getLLMContext()}
                   />
                 )}
                 {activeTab === 'compiler' && (
@@ -1181,11 +1167,13 @@ In 2-3 sentences: what is it and what does it do? I'm ${funcCount > 0 ? 'seeing 
   );
 };
 
-// Wrap AppContent with ActivityProvider for activity tracking context
+// Wrap AppContent with providers for activity and trajectory tracking
 const App = () => {
   return (
     <ActivityProvider>
-      <AppContent />
+      <TrajectoryProvider>
+        <AppContent />
+      </TrajectoryProvider>
     </ActivityProvider>
   );
 };
