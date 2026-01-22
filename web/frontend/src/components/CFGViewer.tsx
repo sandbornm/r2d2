@@ -12,6 +12,7 @@ import NavigateNextIcon from '@mui/icons-material/NavigateNext';
 import ZoomInIcon from '@mui/icons-material/ZoomIn';
 import ZoomOutIcon from '@mui/icons-material/ZoomOut';
 import debug from '../debug';
+import { useActivity } from '../contexts/ActivityContext';
 import {
   alpha,
   Box,
@@ -30,7 +31,7 @@ import {
   useTheme,
 } from '@mui/material';
 import type { FunctionName, FunctionNameSuggestion } from '../types';
-import { FC, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { FC, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 // Smooth fade-in animation
 const fadeIn = keyframes`
@@ -287,7 +288,7 @@ interface CFGGraphProps {
   onAskAboutCFG?: () => void;
 }
 
-const CFGGraph: FC<CFGGraphProps> = ({
+const CFGGraphBase: FC<CFGGraphProps> = ({
   nodes,
   edges,
   onNodeClick,
@@ -398,10 +399,18 @@ const CFGGraph: FC<CFGGraphProps> = ({
 
   const handleMouseMove = (e: React.MouseEvent) => {
     if (isPanning) {
-      setPan({
+      const newPan = {
         x: e.clientX - panStart.x,
         y: e.clientY - panStart.y,
-      });
+      };
+      setPan(newPan);
+
+      // Throttle pan logging (only every 100ms)
+      const now = Date.now();
+      if (now - lastPanLog.current > 100) {
+        debug.cfg.pan(newPan.x, newPan.y);
+        lastPanLog.current = now;
+      }
     }
   };
 
@@ -718,6 +727,9 @@ const CFGGraph: FC<CFGGraphProps> = ({
   );
 };
 
+// Memoize CFG Graph to prevent unnecessary re-renders
+const CFGGraph = memo(CFGGraphBase);
+
 const CFGViewer: FC<CFGViewerProps> = ({
   nodes,
   edges,
@@ -728,6 +740,7 @@ const CFGViewer: FC<CFGViewerProps> = ({
 }) => {
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
+  const activity = useActivity();
 
   // Function naming state
   const [functionNames, setFunctionNames] = useState<Map<string, FunctionName>>(new Map());
@@ -796,6 +809,7 @@ const CFGViewer: FC<CFGViewerProps> = ({
   const [viewMode, setViewMode] = useState<'graph' | 'blocks'>('graph');
   const [selectedGraphNode, setSelectedGraphNode] = useState<string | null>(null);
   const [isMaximized, setIsMaximized] = useState(false);
+  const lastPanLog = useRef<number>(0);
 
   // Auto-name functions using LLM
   const handleAutoNameFunctions = useCallback(async () => {
@@ -936,10 +950,15 @@ const CFGViewer: FC<CFGViewerProps> = ({
   // Toggle maximize state
   const handleMaximizeToggle = useCallback(() => {
     setIsMaximized(prev => {
-      debug.cfg.maximize(!prev);
-      return !prev;
+      const newMaximized = !prev;
+      debug.cfg.maximize(newMaximized);
+      activity.trackEvent('cfg_navigate', {
+        action: newMaximized ? 'maximize' : 'minimize',
+        function: selectedFunction?.name,
+      });
+      return newMaximized;
     });
-  }, []);
+  }, [activity, selectedFunction]);
 
   // Handle escape key at document level for maximize
   useEffect(() => {
@@ -1028,10 +1047,15 @@ const CFGViewer: FC<CFGViewerProps> = ({
 
   const handleSelectFunction = useCallback((fn: FunctionCFG) => {
     debug.cfg.functionSelect(fn.name, fn.offset);
+    activity.trackEvent('cfg_navigate', {
+      function: fn.name,
+      offset: fn.offset,
+      block_count: fn.block_count,
+    });
     setSelectedFunction(fn);
     setSelectedBlockIndex(0);
     setSelectedGraphNode(null);
-  }, []);
+  }, [activity]);
 
   const handleCopyDisasm = useCallback(() => {
     if (!currentBlock) return;
@@ -1054,14 +1078,24 @@ const CFGViewer: FC<CFGViewerProps> = ({
   const handleGraphNodeClick = useCallback(
     (nodeId: string) => {
       setSelectedGraphNode(nodeId);
+      activity.trackEvent('cfg_navigate', {
+        block: nodeId,
+        function: selectedFunction?.name,
+      });
       // Find block index
       const idx = currentBlocks.findIndex((b) => b.offset === nodeId);
       if (idx >= 0) {
         setSelectedBlockIndex(idx);
       }
     },
-    [currentBlocks]
+    [currentBlocks, activity, selectedFunction]
   );
+
+  // Handle view mode switch
+  const handleViewModeSwitch = useCallback((newMode: 'graph' | 'blocks') => {
+    debug.cfg.viewModeSwitch(viewMode, newMode);
+    setViewMode(newMode);
+  }, [viewMode]);
 
   // Handle Ask About CFG - collect context and call callback
   const handleAskAboutCFGInternal = useCallback(() => {
@@ -1090,8 +1124,18 @@ const CFGViewer: FC<CFGViewerProps> = ({
       })),
     };
 
+    // Track activity
+    activity.trackEvent('ask_claude', {
+      topic: 'cfg',
+      function: selectedFunction?.name,
+      block: selectedBlock?.offset,
+      has_context: Boolean(selectedBlock?.disassembly?.length),
+    });
+
+    debug.cfg.askClaude(context);
+
     onAskAboutCFG(context);
-  }, [onAskAboutCFG, selectedFunction, selectedGraphNode, currentBlocks, currentBlock]);
+  }, [onAskAboutCFG, selectedFunction, selectedGraphNode, currentBlocks, currentBlock, activity]);
 
   // Get disassembly from current block (handle both radare2 and angr formats)
   const blockDisasm = useMemo(() => {
@@ -1465,7 +1509,7 @@ const CFGViewer: FC<CFGViewerProps> = ({
             <Chip
               size="small"
               label="Graph"
-              onClick={() => setViewMode('graph')}
+              onClick={() => handleViewModeSwitch('graph')}
               variant={viewMode === 'graph' ? 'filled' : 'outlined'}
               color={viewMode === 'graph' ? 'primary' : 'default'}
               sx={{ height: 22, cursor: 'pointer' }}
@@ -1473,7 +1517,7 @@ const CFGViewer: FC<CFGViewerProps> = ({
             <Chip
               size="small"
               label="Blocks"
-              onClick={() => setViewMode('blocks')}
+              onClick={() => handleViewModeSwitch('blocks')}
               variant={viewMode === 'blocks' ? 'filled' : 'outlined'}
               color={viewMode === 'blocks' ? 'primary' : 'default'}
               sx={{ height: 22, cursor: 'pointer' }}

@@ -149,6 +149,9 @@ export const debug = {
     zoom: (level: number, action: 'in' | 'out' | 'wheel' | 'fit') => {
       log('debug', 'cfg', `Zoom ${action}: ${level.toFixed(2)}`, { level, action });
     },
+    pan: (x: number, y: number) => {
+      log('debug', 'cfg', `Pan to (${x.toFixed(0)}, ${y.toFixed(0)})`, { x, y });
+    },
     maximize: (isMaximized: boolean) => {
       log('info', 'cfg', `Maximize: ${isMaximized}`, { isMaximized });
     },
@@ -157,6 +160,9 @@ export const debug = {
     },
     askClaude: (context: unknown) => {
       log('info', 'cfg', 'Ask Claude about CFG', context);
+    },
+    viewModeSwitch: (from: 'graph' | 'blocks', to: 'graph' | 'blocks') => {
+      log('info', 'cfg', `View mode: ${from} → ${to}`, { from, to });
     },
   },
 
