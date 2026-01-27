@@ -502,3 +502,38 @@ export interface ToolsStatusResponse {
   available_count: number;
   total_count: number;
 }
+
+// Script execution types for chat-driven tool use
+export interface ScriptValidationError {
+  message: string;
+  location?: string;
+  severity: string;
+  suggestion?: string;
+}
+
+export interface ScriptValidationResult {
+  valid: boolean;
+  errors: ScriptValidationError[];
+  warnings: ScriptValidationError[];
+  error_summary: string;
+}
+
+export interface ScriptExecutionResult {
+  status: 'success' | 'error' | 'timeout' | 'connection_lost';
+  duration_ms: number;
+  stdout?: string;
+  stderr?: string;
+  exception?: string;
+  traceback?: string;
+}
+
+// Chat attachment for script execution results
+export interface ScriptExecutionAttachment extends ChatAttachment {
+  type: 'script_execution';
+  tool: string;
+  language: string;
+  script: string;
+  intent?: string;
+  validation: ScriptValidationResult | null;
+  execution: ScriptExecutionResult | null;
+}

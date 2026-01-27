@@ -28,8 +28,9 @@ import {
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
 import { FC, FormEvent, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { ChatAttachment, ChatMessageItem, ChatSessionSummary } from '../types';
+import type { ChatAttachment, ChatMessageItem, ChatSessionSummary, ScriptExecutionAttachment } from '../types';
 import MarkdownRenderer from './MarkdownRenderer';
+import ScriptExecutionBlock from './ScriptExecutionBlock';
 
 dayjs.extend(relativeTime);
 
@@ -240,6 +241,22 @@ const MessageBubble: FC<MessageBubbleProps> = memo(function MessageBubble({ mess
               {message.content}
             </Typography>
           )}
+
+          {/* Script execution blocks */}
+          {message.attachments
+            .filter((a): a is ScriptExecutionAttachment => a.type === 'script_execution')
+            .map((attachment, i) => (
+              <ScriptExecutionBlock
+                key={`script-${i}`}
+                tool={attachment.tool}
+                language={attachment.language}
+                script={attachment.script}
+                validation={attachment.validation}
+                execution={attachment.execution}
+                intent={attachment.intent}
+                compact
+              />
+            ))}
 
           {/* Provider badge */}
           {message.attachments
