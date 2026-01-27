@@ -581,6 +581,95 @@ class GhidraBridgeClient:
             _LOGGER.warning("Failed to get strings: %s", exc)
             return []
 
+    def execute_script(
+        self, script: str, timeout: int | None = None
+    ) -> dict[str, Any]:
+        """Run a Python script in the Ghidra context via RPC bridge.
+
+        The script has access to:
+        - currentProgram: The loaded program
+        - All Ghidra API classes via imports
+
+        Args:
+            script: Python script to run.
+            timeout: Script timeout in seconds (uses default if None).
+
+        Returns:
+            Dict with 'output' (stdout capture) and 'error' (if failed).
+        """
+        if not self.is_connected() or self._bridge is None:
+            return {"output": "", "error": "Not connected to Ghidra bridge"}
+
+        try:
+            return self._execute_remote(script, timeout)
+        except TimeoutError as e:
+            return {"output": "", "error": f"Script timeout: {e}"}
+        except Exception as e:
+            _LOGGER.warning("Script run failed: %s", e)
+            import traceback as tb
+
+            return {"output": "", "error": str(e), "traceback": tb.format_exc()}
+
+    def _execute_remote(
+        self, script: str, timeout: int | None = None
+    ) -> dict[str, Any]:
+        """Run script remotely via bridge.
+
+        Internal method that handles the actual RPC invocation.
+
+        Args:
+            script: Python script to run.
+            timeout: Script timeout in seconds (unused, for future use).
+
+        Returns:
+            Dict with 'output' (stdout capture) and 'error' (if failed).
+        """
+        if self._bridge is None:
+            return {"output": "", "error": "Bridge not initialized"}
+
+        # Wrap script to capture output
+        wrapped_script = f"""
+import io
+import sys
+
+_r2d2_output = io.StringIO()
+_r2d2_old_stdout = sys.stdout
+sys.stdout = _r2d2_output
+
+try:
+{self._indent_script(script)}
+finally:
+    sys.stdout = _r2d2_old_stdout
+
+_r2d2_result = _r2d2_output.getvalue()
+"""
+
+        try:
+            # Run the wrapped script
+            namespace: dict[str, Any] = {"__name__": "__main__"}
+            self._bridge.remote_exec(wrapped_script, namespace)
+
+            # Get the captured output
+            output = namespace.get("_r2d2_result", "")
+            return {"output": output, "error": None}
+
+        except Exception as e:
+            return {"output": "", "error": str(e)}
+
+    @staticmethod
+    def _indent_script(script: str, indent: str = "    ") -> str:
+        """Indent a script for wrapping in try block.
+
+        Args:
+            script: The script to indent.
+            indent: The indentation string to use.
+
+        Returns:
+            The indented script.
+        """
+        lines = script.split("\n")
+        return "\n".join(indent + line for line in lines)
+
 
 __all__ = [
     "GhidraBridgeClient",

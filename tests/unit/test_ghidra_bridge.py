@@ -395,3 +395,131 @@ class TestGhidraDetectionBridge:
 
         assert detection.bridge_ready is True
         assert detection.bridge_program_loaded == "test.bin"
+
+
+class TestGhidraBridgeScriptExecution:
+    """Test script execution via bridge."""
+
+    def test_execute_script_not_connected(self):
+        """Execute script when not connected returns error."""
+        client = GhidraBridgeClient()
+        result = client.execute_script("print('test')")
+
+        assert result["error"] is not None
+        assert "not connected" in result["error"].lower()
+
+    def test_execute_script_success(self):
+        """Execute script returns output on success."""
+        client = GhidraBridgeClient()
+        client._connected = True
+
+        mock_bridge = MagicMock()
+        client._bridge = mock_bridge
+
+        # Mock _execute_remote to return a successful result
+        with patch.object(
+            client,
+            "_execute_remote",
+            return_value={"output": "Found 3 functions", "error": None},
+        ):
+            result = client.execute_script("print(len(functions))")
+
+        assert result["error"] is None
+        assert "Found 3 functions" in result["output"]
+
+    def test_execute_script_timeout(self):
+        """Execute script handles timeout."""
+        client = GhidraBridgeClient(timeout=1)
+        client._connected = True
+
+        mock_bridge = MagicMock()
+        client._bridge = mock_bridge
+
+        # Mock timeout
+        with patch.object(
+            client, "_execute_remote", side_effect=TimeoutError("Script execution timed out")
+        ):
+            result = client.execute_script("while True: pass", timeout=1)
+
+        assert result["error"] is not None
+        assert "timeout" in result["error"].lower()
+
+    def test_execute_script_handles_generic_exception(self):
+        """Execute script handles generic exceptions gracefully."""
+        client = GhidraBridgeClient()
+        client._connected = True
+
+        mock_bridge = MagicMock()
+        client._bridge = mock_bridge
+
+        # Mock a generic exception
+        with patch.object(
+            client, "_execute_remote", side_effect=RuntimeError("Remote execution failed")
+        ):
+            result = client.execute_script("bad_code()")
+
+        assert result["error"] is not None
+        assert "Remote execution failed" in result["error"]
+
+    def test_execute_remote_wraps_script_for_stdout_capture(self):
+        """_execute_remote wraps script to capture stdout."""
+        client = GhidraBridgeClient()
+        client._connected = True
+
+        mock_bridge = MagicMock()
+
+        # Capture the namespace to verify the wrapper executed
+        captured_namespace = {}
+
+        def mock_remote_exec(script, namespace):
+            # Simulate the wrapped script execution
+            captured_namespace.update(namespace)
+            # The wrapper script sets _r2d2_result
+            namespace["_r2d2_result"] = "Hello from Ghidra"
+
+        mock_bridge.remote_exec = mock_remote_exec
+        client._bridge = mock_bridge
+
+        result = client._execute_remote("print('Hello from Ghidra')")
+
+        assert result["error"] is None
+        assert result["output"] == "Hello from Ghidra"
+
+    def test_execute_remote_returns_error_when_bridge_none(self):
+        """_execute_remote returns error when bridge is None."""
+        client = GhidraBridgeClient()
+        client._connected = True
+        client._bridge = None
+
+        result = client._execute_remote("print('test')")
+
+        assert result["error"] is not None
+        assert "not initialized" in result["error"].lower()
+
+    def test_execute_remote_handles_remote_exec_exception(self):
+        """_execute_remote catches exceptions from remote_exec."""
+        client = GhidraBridgeClient()
+        client._connected = True
+
+        mock_bridge = MagicMock()
+        mock_bridge.remote_exec.side_effect = Exception("RPC error")
+        client._bridge = mock_bridge
+
+        result = client._execute_remote("print('test')")
+
+        assert result["error"] is not None
+        assert "RPC error" in result["error"]
+
+    def test_indent_script_helper(self):
+        """Test _indent_script helper indents correctly."""
+        script = "line1\nline2\nline3"
+        result = GhidraBridgeClient._indent_script(script)
+
+        assert result == "    line1\n    line2\n    line3"
+
+    def test_indent_script_custom_indent(self):
+        """Test _indent_script with custom indent."""
+        script = "a\nb"
+        result = GhidraBridgeClient._indent_script(script, indent="  ")
+
+        assert result == "  a\n  b"
