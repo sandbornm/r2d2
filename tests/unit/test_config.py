@@ -80,7 +80,7 @@ class TestAnalysisSettings:
         assert settings.auto_analyze is True
         assert settings.require_elf is True
         assert settings.enable_angr is True
-        assert settings.enable_ghidra is False
+        assert settings.enable_ghidra is True  # Defaults to True (falls back gracefully if unavailable)
         assert settings.timeout_quick > 0
         assert settings.timeout_deep > 0
 
@@ -120,7 +120,7 @@ class TestGhidraSettings:
         """Test GhidraSettings has sensible defaults."""
         settings = GhidraSettings()
 
-        assert settings.use_bridge is False
+        assert settings.use_bridge is True  # Defaults to True (falls back to headless if unavailable)
         assert settings.bridge_host == "127.0.0.1"
         assert settings.bridge_port == 13100
         assert settings.install_dir is None
@@ -208,10 +208,11 @@ timeout_quick = 10
 
             assert config.ghidra.install_dir == Path(ghidra_dir)
 
-    def test_load_config_without_user_config(self, tmp_path):
-        """Test load_config works without user config file."""
-        # Patch USER_CONFIG_PATH to a non-existent path
-        with patch("r2d2.config.USER_CONFIG_PATH", tmp_path / "nonexistent.toml"):
+    def test_load_config_without_custom_config(self):
+        """Test load_config works without custom config file."""
+        # When R2D2_CONFIG env var is not set and no config_path provided,
+        # load_config should still return a valid AppConfig from defaults
+        with patch.dict(os.environ, {"R2D2_CONFIG": ""}, clear=False):
             config = load_config()
 
             assert isinstance(config, AppConfig)
