@@ -1597,6 +1597,89 @@ Generate ONLY the script code, no explanations before or after. The script shoul
                 "error": str(exc),
             }), 500
 
+    @app.get("/api/tools/status")
+    def get_tools_status() -> Any:
+        """Get availability status for all supported analysis tools.
+
+        Returns:
+            tools: Dict of tool name -> status (available, description, etc.)
+            available_count: Number of available tools
+            total_count: Total number of supported tools
+        """
+        import shutil
+
+        # Tool descriptions for beginners
+        tool_descriptions = {
+            "ghidra": "Decompiler and reverse engineering framework from NSA",
+            "radare2": "Command-line reverse engineering framework",
+            "angr": "Python framework for symbolic execution and binary analysis",
+            "binwalk": "Firmware analysis and extraction tool",
+            "gdb": "GNU debugger for dynamic analysis",
+        }
+
+        tools: dict[str, dict[str, Any]] = {}
+
+        # Check radare2
+        r2_available = shutil.which("r2") is not None or shutil.which("radare2") is not None
+        tools["radare2"] = {
+            "available": r2_available,
+            "description": tool_descriptions["radare2"],
+        }
+
+        # Check angr (Python import)
+        try:
+            import angr  # noqa: F401
+            angr_available = True
+        except ImportError:
+            angr_available = False
+        tools["angr"] = {
+            "available": angr_available,
+            "description": tool_descriptions["angr"],
+        }
+
+        # Check binwalk
+        binwalk_available = shutil.which("binwalk") is not None
+        tools["binwalk"] = {
+            "available": binwalk_available,
+            "description": tool_descriptions["binwalk"],
+        }
+
+        # Check gdb
+        gdb_available = shutil.which("gdb") is not None
+        tools["gdb"] = {
+            "available": gdb_available,
+            "description": tool_descriptions["gdb"],
+        }
+
+        # Check Ghidra (special handling for bridge vs headless)
+        ghidra_env = state.env.ghidra
+        headless_available = bool(getattr(ghidra_env, 'is_ready', False))
+        bridge_available = bool(getattr(state.config.ghidra, 'use_bridge', False))
+        bridge_connected = False
+        if hasattr(state, 'ghidra_client') and state.ghidra_client:
+            try:
+                bridge_connected = bool(state.ghidra_client.is_connected())
+            except Exception:
+                bridge_connected = False
+
+        tools["ghidra"] = {
+            "available": headless_available or bridge_connected,
+            "description": tool_descriptions["ghidra"],
+            "bridge_available": bridge_available,
+            "bridge_connected": bridge_connected,
+            "headless_available": headless_available,
+        }
+
+        # Calculate summary
+        available_count = sum(1 for t in tools.values() if t["available"])
+        total_count = len(tools)
+
+        return jsonify({
+            "tools": tools,
+            "available_count": available_count,
+            "total_count": total_count,
+        })
+
     return app
 
 

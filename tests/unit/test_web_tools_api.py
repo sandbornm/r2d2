@@ -12,6 +12,7 @@ def client():
         mock_state.chat_dao = MagicMock()
         mock_state.config.ghidra.use_bridge = False
         mock_state.env.ghidra.bridge_connected = False
+        mock_state.env.ghidra.is_ready = False
         mock_state.dao = None
         mock_state.db = None
         mock_build.return_value = mock_state
@@ -164,3 +165,53 @@ class TestToolsExecuteEndpoint:
         assert data['validation']['valid'] is True
         assert 'error' in data
         assert 'not' in data['error'].lower() and 'implement' in data['error'].lower()
+
+
+class TestToolsStatusEndpoint:
+    """Test GET /api/tools/status endpoint."""
+
+    def test_status_returns_all_tools(self, client):
+        """Returns status for all supported tools."""
+        response = client.get('/api/tools/status')
+        assert response.status_code == 200
+        data = response.get_json()
+
+        # Should have status for all tools
+        assert 'tools' in data
+        tools = data['tools']
+        assert 'ghidra' in tools
+        assert 'radare2' in tools
+        assert 'angr' in tools
+        assert 'binwalk' in tools
+        assert 'gdb' in tools
+
+    def test_status_tool_has_required_fields(self, client):
+        """Each tool status has required fields."""
+        response = client.get('/api/tools/status')
+        data = response.get_json()
+
+        for tool_name, tool_status in data['tools'].items():
+            assert 'available' in tool_status, f"{tool_name} missing 'available'"
+            assert 'description' in tool_status, f"{tool_name} missing 'description'"
+            assert isinstance(tool_status['available'], bool)
+
+    def test_status_ghidra_has_bridge_info(self, client):
+        """Ghidra status includes bridge connection info."""
+        response = client.get('/api/tools/status')
+        data = response.get_json()
+
+        ghidra = data['tools']['ghidra']
+        assert 'bridge_available' in ghidra
+        assert 'bridge_connected' in ghidra
+        assert 'headless_available' in ghidra
+
+    def test_status_includes_summary(self, client):
+        """Status includes summary of available tools."""
+        response = client.get('/api/tools/status')
+        data = response.get_json()
+
+        assert 'available_count' in data
+        assert 'total_count' in data
+        assert isinstance(data['available_count'], int)
+        assert isinstance(data['total_count'], int)
+        assert data['total_count'] >= data['available_count']
