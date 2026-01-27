@@ -18,6 +18,7 @@ import type { AutoProfileData, SecurityFeatures } from '../types';
 
 interface AutoProfilePanelProps {
   data: AutoProfileData | null;
+  compact?: boolean;
 }
 
 // Security feature display config
@@ -178,7 +179,7 @@ const StringCategory: FC<{
   );
 };
 
-const AutoProfilePanel: FC<AutoProfilePanelProps> = ({ data }) => {
+const AutoProfilePanel: FC<AutoProfilePanelProps> = ({ data, compact = false }) => {
   if (!data || !data.profile) {
     return (
       <Box
@@ -189,19 +190,55 @@ const AutoProfilePanel: FC<AutoProfilePanelProps> = ({ data }) => {
           alignItems: 'center',
           justifyContent: 'center',
           color: 'text.secondary',
-          p: 3,
+          p: compact ? 1.5 : 3,
         }}
       >
-        <SecurityIcon sx={{ fontSize: 40, mb: 1.5, opacity: 0.4 }} />
-        <Typography variant="body2">No profile data available</Typography>
-        <Typography variant="caption" color="text.secondary">
-          Run analysis to generate binary profile
-        </Typography>
+        <SecurityIcon sx={{ fontSize: compact ? 24 : 40, mb: compact ? 1 : 1.5, opacity: 0.4 }} />
+        <Typography variant={compact ? 'caption' : 'body2'}>No profile data available</Typography>
+        {!compact && (
+          <Typography variant="caption" color="text.secondary">
+            Run analysis to generate binary profile
+          </Typography>
+        )}
       </Box>
     );
   }
 
   const profile = data.profile;
+
+  // Compact mode: show only security badges and risk level
+  if (compact) {
+    const severity = profile.risk_level === 'high' ? 'error' : profile.risk_level === 'medium' ? 'warning' : 'success';
+    return (
+      <Box sx={{ p: 1 }}>
+        <Stack direction="row" alignItems="center" justifyContent="space-between" mb={1}>
+          <Typography variant="caption" color="text.secondary" fontWeight={600}>
+            Security Profile
+          </Typography>
+          <Chip
+            size="small"
+            label={`${profile.risk_level.toUpperCase()} Risk`}
+            color={severity}
+            sx={{ fontWeight: 600, fontSize: '0.65rem', height: 20 }}
+          />
+        </Stack>
+        <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
+          {SECURITY_FEATURES.map((feature) => (
+            <SecurityBadge
+              key={feature.key}
+              feature={feature}
+              value={profile.security[feature.key]}
+            />
+          ))}
+        </Box>
+        {profile.risk_factors.length > 0 && (
+          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1, fontStyle: 'italic' }}>
+            {profile.risk_factors.length} risk factor{profile.risk_factors.length !== 1 ? 's' : ''} detected
+          </Typography>
+        )}
+      </Box>
+    );
+  }
 
   return (
     <Box sx={{ p: 1.5, height: '100%', overflow: 'auto' }}>

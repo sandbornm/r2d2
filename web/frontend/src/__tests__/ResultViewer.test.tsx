@@ -114,58 +114,59 @@ describe('ResultViewer', () => {
     expect(screen.getByText('2 str')).toBeInTheDocument();
   });
 
-  it('renders summary tab by default', () => {
+  it('renders overview tab by default', () => {
     render(<ResultViewer result={mockResult} />);
     expect(screen.getByTestId('tool-attribution')).toBeInTheDocument();
     expect(screen.getByText('Binary Info')).toBeInTheDocument();
-    expect(screen.getByText('Top Functions')).toBeInTheDocument();
-    expect(screen.getByText('Imports')).toBeInTheDocument();
   });
 
-  it('switches to functions tab', async () => {
+  it('shows functions in analysis tab', async () => {
     const user = userEvent.setup();
     render(<ResultViewer result={mockResult} />);
 
-    await user.click(screen.getByRole('tab', { name: /functions/i }));
+    await user.click(screen.getByRole('tab', { name: /analysis/i }));
 
     expect(screen.getByText('main')).toBeInTheDocument();
     expect(screen.getByText('helper')).toBeInTheDocument();
   });
 
-  it('switches to strings tab', async () => {
+  it('shows strings in analysis tab', async () => {
     const user = userEvent.setup();
     render(<ResultViewer result={mockResult} />);
 
-    await user.click(screen.getByRole('tab', { name: /strings/i }));
+    await user.click(screen.getByRole('tab', { name: /analysis/i }));
 
+    // Strings should be visible in the analysis view
     expect(screen.getByText('Hello World')).toBeInTheDocument();
     expect(screen.getByText('Test String')).toBeInTheDocument();
   });
 
-  it('switches to disasm tab', async () => {
+  it('switches to code tab', async () => {
     const user = userEvent.setup();
     render(<ResultViewer result={mockResult} />);
 
-    await user.click(screen.getByRole('tab', { name: /disasm/i }));
+    await user.click(screen.getByRole('tab', { name: /code/i }));
 
     expect(screen.getByTestId('disassembly-viewer')).toBeInTheDocument();
   });
 
-  it('switches to CFG tab', async () => {
+  it('shows CFG in analysis tab', async () => {
     const user = userEvent.setup();
     render(<ResultViewer result={mockResult} />);
 
-    await user.click(screen.getByRole('tab', { name: /cfg/i }));
+    await user.click(screen.getByRole('tab', { name: /analysis/i }));
 
+    // CFG is accessible from analysis tab
     expect(screen.getByTestId('cfg-viewer')).toBeInTheDocument();
   });
 
-  it('switches to DWARF tab', async () => {
+  it('shows DWARF panel in code tab', async () => {
     const user = userEvent.setup();
     render(<ResultViewer result={mockResult} />);
 
-    await user.click(screen.getByRole('tab', { name: /debug/i }));
+    await user.click(screen.getByRole('tab', { name: /code/i }));
 
+    // DWARF panel should be accessible from code tab
     expect(screen.getByTestId('dwarf-panel')).toBeInTheDocument();
   });
 
@@ -174,7 +175,7 @@ describe('ResultViewer', () => {
     const handleAskAboutCode = vi.fn();
     render(<ResultViewer result={mockResult} onAskAboutCode={handleAskAboutCode} />);
 
-    await user.click(screen.getByRole('tab', { name: /disasm/i }));
+    await user.click(screen.getByRole('tab', { name: /code/i }));
     await user.click(screen.getByText('Ask About Code'));
 
     expect(handleAskAboutCode).toHaveBeenCalledWith('test code');

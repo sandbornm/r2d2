@@ -55,7 +55,7 @@ interface ResultViewerProps {
   onAskAboutCFG?: (context: CFGContext) => void;
 }
 
-type ViewTab = 'summary' | 'profile' | 'functions' | 'strings' | 'disasm' | 'cfg' | 'decompiler' | 'scripting' | 'dynamic' | 'dwarf';
+type ViewTab = 'overview' | 'code' | 'analysis' | 'tools';
 
 const formatHex = (value: number | string | null | undefined, fallback = '?') => {
   if (value === null || value === undefined) return fallback;
@@ -90,7 +90,7 @@ const saveAnnotations = (binaryPath: string, annotations: AssemblyAnnotation[]) 
 
 const ResultViewer: FC<ResultViewerProps> = memo(({ result, sessionId, toolsInfo, onAskAboutCode, onAskAboutCFG }) => {
   const theme = useTheme();
-  const [view, setView] = useState<ViewTab>('summary');
+  const [view, setView] = useState<ViewTab>('overview');
   const [annotations, setAnnotations] = useState<AssemblyAnnotation[]>([]);
 
   // Load annotations when result or session changes
@@ -320,269 +320,223 @@ const ResultViewer: FC<ResultViewerProps> = memo(({ result, sessionId, toolsInfo
         </Stack>
       </Paper>
 
-      {/* Tabs */}
+      {/* Simplified 4-Tab Structure */}
       <Tabs
         value={view}
         onChange={(_, v) => setView(v)}
         sx={{ borderBottom: 1, borderColor: 'divider', minHeight: 36 }}
       >
-        <Tab value="summary" label="Summary" icon={<InfoIcon sx={{ fontSize: 16 }} />} iconPosition="start" sx={{ minHeight: 36, py: 0 }} />
-        <Tab value="profile" label="Profile" icon={<SecurityIcon sx={{ fontSize: 16 }} />} iconPosition="start" sx={{ minHeight: 36, py: 0 }} />
-        <Tab value="functions" label="Functions" icon={<FunctionsIcon sx={{ fontSize: 16 }} />} iconPosition="start" sx={{ minHeight: 36, py: 0 }} />
-        <Tab value="strings" label="Strings" icon={<TextSnippetIcon sx={{ fontSize: 16 }} />} iconPosition="start" sx={{ minHeight: 36, py: 0 }} />
-        <Tab value="disasm" label="Disasm" icon={<CodeIcon sx={{ fontSize: 16 }} />} iconPosition="start" sx={{ minHeight: 36, py: 0 }} />
-        <Tab value="cfg" label="CFG" icon={<AccountTreeIcon sx={{ fontSize: 16 }} />} iconPosition="start" sx={{ minHeight: 36, py: 0 }} />
-        {ghidraDeep && ghidraDeep.decompiled_count > 0 && (
-          <Tab
-            value="decompiler"
-            label="Decompiler"
-            icon={<CodeIcon sx={{ fontSize: 16 }} />}
-            iconPosition="start"
-            sx={{ minHeight: 36, py: 0 }}
-          />
-        )}
-        <Tab
-          value="scripting"
-          label="Scripting"
-          icon={<TerminalIcon sx={{ fontSize: 16 }} />}
-          iconPosition="start"
-          sx={{ minHeight: 36, py: 0 }}
-        />
-        {gefDeep && gefDeep.trace && (
-          <Tab
-            value="dynamic"
-            label="Dynamic"
-            icon={<PlayArrowIcon sx={{ fontSize: 16 }} />}
-            iconPosition="start"
-            sx={{ minHeight: 36, py: 0 }}
-          />
-        )}
-        <Tab
-          value="dwarf"
-          label={dwarfDeep?.has_dwarf ? "DWARF" : "Debug"}
-          icon={<BugReportIcon sx={{ fontSize: 16 }} />}
-          iconPosition="start"
-          sx={{ minHeight: 36, py: 0 }}
-        />
+        <Tab value="overview" label="Overview" icon={<InfoIcon sx={{ fontSize: 16 }} />} iconPosition="start" sx={{ minHeight: 36, py: 0 }} />
+        <Tab value="code" label="Code" icon={<CodeIcon sx={{ fontSize: 16 }} />} iconPosition="start" sx={{ minHeight: 36, py: 0 }} />
+        <Tab value="analysis" label="Analysis" icon={<AccountTreeIcon sx={{ fontSize: 16 }} />} iconPosition="start" sx={{ minHeight: 36, py: 0 }} />
+        <Tab value="tools" label="Tools" icon={<TerminalIcon sx={{ fontSize: 16 }} />} iconPosition="start" sx={{ minHeight: 36, py: 0 }} />
       </Tabs>
 
       {/* Content */}
       <Box sx={{ flex: 1, overflow: 'auto', mt: 1.5 }}>
-        {view === 'summary' && (
+        {/* OVERVIEW TAB - Binary info, Profile, Tool attribution */}
+        {view === 'overview' && (
           <Stack spacing={1.5}>
             {/* Tool Attribution */}
-            <ToolAttribution 
-              quickScan={quickScan} 
+            <ToolAttribution
+              quickScan={quickScan}
               deepScan={deepScan}
               toolAvailability={result.tool_availability as Record<string, boolean> | undefined}
               toolsInfo={toolsInfo}
             />
 
             <Grid container spacing={1.5}>
-            {/* Binary Info */}
-            <Grid item xs={12} md={4}>
-              <Paper variant="outlined" sx={{ p: 1.5, height: '100%' }}>
-                <Typography variant="caption" color="text.secondary" fontWeight={600}>
-                  Binary Info
-                </Typography>
-                <Box sx={{ mt: 1 }}>
-                  {([
-                    ['Format', format],
-                    ['Architecture', archDisplay.full],
-                    ['OS', os],
-                    ['Type', binType],
-                    compiler ? ['Compiler', compiler] : null,
-                  ] as (readonly [string, string] | null)[]).filter((item): item is readonly [string, string] => item !== null).map(([label, value]) => (
-                    <Box key={label} sx={{ display: 'flex', justifyContent: 'space-between', py: 0.25 }}>
-                      <Typography variant="caption" color="text.secondary">{label}</Typography>
-                      <Typography variant="caption">{value}</Typography>
-                    </Box>
-                  ))}
-                </Box>
-              </Paper>
-            </Grid>
+              {/* Binary Info */}
+              <Grid item xs={12} md={6}>
+                <Paper variant="outlined" sx={{ p: 1.5, height: '100%' }}>
+                  <Typography variant="caption" color="text.secondary" fontWeight={600}>
+                    Binary Info
+                  </Typography>
+                  <Box sx={{ mt: 1 }}>
+                    {([
+                      ['Format', format],
+                      ['Architecture', archDisplay.full],
+                      ['OS', os],
+                      ['Type', binType],
+                      compiler ? ['Compiler', compiler] : null,
+                    ] as (readonly [string, string] | null)[]).filter((item): item is readonly [string, string] => item !== null).map(([label, value]) => (
+                      <Box key={label} sx={{ display: 'flex', justifyContent: 'space-between', py: 0.25 }}>
+                        <Typography variant="caption" color="text.secondary">{label}</Typography>
+                        <Typography variant="caption">{value}</Typography>
+                      </Box>
+                    ))}
+                  </Box>
+                </Paper>
+              </Grid>
 
-            {/* Top Functions */}
-            <Grid item xs={12} md={4}>
-              <Paper variant="outlined" sx={{ p: 1.5, height: '100%' }}>
-                <Typography variant="caption" color="text.secondary" fontWeight={600}>
-                  Top Functions
-                </Typography>
-                <Box sx={{ mt: 1 }}>
-                  {topFunctions.slice(0, 6).map((fn, i) => (
-                    <Typography key={i} variant="caption" sx={{ display: 'block', py: 0.15, fontFamily: 'monospace' }}>
-                      {fn.name}
-                    </Typography>
-                  ))}
-                  {topFunctions.length === 0 && (
-                    <Typography variant="caption" color="text.secondary">No functions found</Typography>
-                  )}
-                </Box>
-              </Paper>
-            </Grid>
+              {/* Security Profile (from AutoProfile) */}
+              <Grid item xs={12} md={6}>
+                <Paper variant="outlined" sx={{ p: 1.5, height: '100%' }}>
+                  <AutoProfilePanel data={autoprofileQuick} compact />
+                </Paper>
+              </Grid>
 
-            {/* Top Imports */}
-            <Grid item xs={12} md={4}>
-              <Paper variant="outlined" sx={{ p: 1.5, height: '100%' }}>
-                <Typography variant="caption" color="text.secondary" fontWeight={600}>
-                  Imports
-                </Typography>
-                <Box sx={{ mt: 1 }}>
-                  {topImports.slice(0, 6).map((name, i) => (
-                    <Typography key={i} variant="caption" sx={{ display: 'block', py: 0.15, fontFamily: 'monospace' }}>
-                      {name}
-                    </Typography>
-                  ))}
-                  {topImports.length === 0 && (
-                    <Typography variant="caption" color="text.secondary">No imports found</Typography>
-                  )}
-                </Box>
-              </Paper>
+              {/* Top Imports */}
+              <Grid item xs={12}>
+                <Paper variant="outlined" sx={{ p: 1.5 }}>
+                  <Typography variant="caption" color="text.secondary" fontWeight={600}>
+                    Imports ({topImports.length})
+                  </Typography>
+                  <Box sx={{ mt: 1, display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
+                    {topImports.slice(0, 15).map((name, i) => (
+                      <Chip
+                        key={i}
+                        label={name}
+                        size="small"
+                        variant="outlined"
+                        sx={{ fontFamily: 'monospace', fontSize: '0.65rem' }}
+                      />
+                    ))}
+                    {topImports.length === 0 && (
+                      <Typography variant="caption" color="text.secondary">No imports found</Typography>
+                    )}
+                  </Box>
+                </Paper>
+              </Grid>
             </Grid>
-
-            {/* Sample Strings */}
-            <Grid item xs={12}>
-              <Paper variant="outlined" sx={{ p: 1.5 }}>
-                <Typography variant="caption" color="text.secondary" fontWeight={600}>
-                  Strings (sample)
-                </Typography>
-                <Box sx={{ mt: 1, display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
-                  {interestingStrings.slice(0, 12).map((s, i) => (
-                    <Chip
-                      key={i}
-                      label={s.length > 30 ? s.slice(0, 30) + '…' : s}
-                      size="small"
-                      variant="outlined"
-                      sx={{ fontFamily: 'monospace', fontSize: '0.65rem' }}
-                    />
-                  ))}
-                  {interestingStrings.length === 0 && (
-                    <Typography variant="caption" color="text.secondary">No interesting strings</Typography>
-                  )}
-                </Box>
-              </Paper>
-            </Grid>
-          </Grid>
           </Stack>
         )}
 
-        {view === 'profile' && (
-          <Paper variant="outlined" sx={{ height: 500, overflow: 'hidden' }}>
-            <AutoProfilePanel data={autoprofileQuick} />
-          </Paper>
-        )}
+        {/* CODE TAB - Disassembly, Decompiler, DWARF */}
+        {view === 'code' && (
+          <Stack spacing={1.5}>
+            {/* Disassembly */}
+            <Paper variant="outlined" sx={{ p: 1.5 }}>
+              <Typography variant="caption" color="text.secondary" fontWeight={600} sx={{ mb: 1, display: 'block' }}>
+                Disassembly
+              </Typography>
+              <DisassemblyViewer
+                disassembly={disasmText}
+                arch={archDisplay.short}
+                annotations={annotations}
+                onAnnotate={handleAnnotate}
+                onAskAbout={onAskAboutCode}
+              />
+            </Paper>
 
-        {view === 'functions' && (
-          <Paper variant="outlined" sx={{ p: 1.5 }}>
-            {topFunctions.length > 0 ? (
-              <Box component="table" sx={{ width: '100%', borderCollapse: 'collapse', fontFamily: 'monospace', fontSize: '0.75rem' }}>
-                <thead>
-                  <tr>
-                    <th style={{ textAlign: 'left', padding: '4px 8px', borderBottom: `1px solid ${theme.palette.divider}` }}>Name</th>
-                    <th style={{ textAlign: 'left', padding: '4px 8px', borderBottom: `1px solid ${theme.palette.divider}` }}>Address</th>
-                    <th style={{ textAlign: 'right', padding: '4px 8px', borderBottom: `1px solid ${theme.palette.divider}` }}>Size</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {topFunctions.map((fn, i) => (
-                    <tr key={i}>
-                      <td style={{ padding: '4px 8px' }}>{fn.name}</td>
-                      <td style={{ padding: '4px 8px', color: theme.palette.text.secondary }}>{formatHex(fn.offset)}</td>
-                      <td style={{ padding: '4px 8px', textAlign: 'right' }}>{fn.size}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </Box>
-            ) : (
-              <Typography variant="body2" color="text.secondary">No functions discovered</Typography>
+            {/* Decompiler (if available) */}
+            {ghidraDeep && ghidraDeep.decompiled_count > 0 && (
+              <Paper variant="outlined" sx={{ height: 400, overflow: 'hidden' }}>
+                <Suspense fallback={<ComponentLoader />}>
+                  <DecompilerPanel
+                    data={ghidraDeep}
+                    onAskClaude={(question) => onAskAboutCode?.(question)}
+                  />
+                </Suspense>
+              </Paper>
             )}
-          </Paper>
+
+            {/* DWARF Debug Info */}
+            <Paper variant="outlined" sx={{ height: 300, overflow: 'hidden' }}>
+              <Suspense fallback={<ComponentLoader />}>
+                <DWARFPanel
+                  data={dwarfDeep}
+                  onAskClaude={(question) => onAskAboutCode?.(question)}
+                />
+              </Suspense>
+            </Paper>
+          </Stack>
         )}
 
-        {view === 'strings' && (
-          <Paper variant="outlined" sx={{ p: 1.5 }}>
-            {interestingStrings.length > 0 ? (
-              <Box sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>
-                {interestingStrings.map((s, i) => (
-                  <Box key={i} sx={{ py: 0.25, borderBottom: `1px solid ${theme.palette.divider}` }}>
-                    {s}
-                  </Box>
-                ))}
-              </Box>
-            ) : (
-              <Typography variant="body2" color="text.secondary">No interesting strings found</Typography>
+        {/* ANALYSIS TAB - Functions, Strings, CFG */}
+        {view === 'analysis' && (
+          <Stack spacing={1.5}>
+            {/* Functions and Strings side by side */}
+            <Grid container spacing={1.5}>
+              <Grid item xs={12} md={6}>
+                <Paper variant="outlined" sx={{ p: 1.5, maxHeight: 300, overflow: 'auto' }}>
+                  <Typography variant="caption" color="text.secondary" fontWeight={600}>
+                    Functions ({topFunctions.length})
+                  </Typography>
+                  {topFunctions.length > 0 ? (
+                    <Box component="table" sx={{ width: '100%', borderCollapse: 'collapse', fontFamily: 'monospace', fontSize: '0.75rem', mt: 1 }}>
+                      <thead>
+                        <tr>
+                          <th style={{ textAlign: 'left', padding: '4px 8px', borderBottom: `1px solid ${theme.palette.divider}` }}>Name</th>
+                          <th style={{ textAlign: 'left', padding: '4px 8px', borderBottom: `1px solid ${theme.palette.divider}` }}>Address</th>
+                          <th style={{ textAlign: 'right', padding: '4px 8px', borderBottom: `1px solid ${theme.palette.divider}` }}>Size</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {topFunctions.map((fn, i) => (
+                          <tr key={i}>
+                            <td style={{ padding: '4px 8px' }}>{fn.name}</td>
+                            <td style={{ padding: '4px 8px', color: theme.palette.text.secondary }}>{formatHex(fn.offset)}</td>
+                            <td style={{ padding: '4px 8px', textAlign: 'right' }}>{fn.size}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </Box>
+                  ) : (
+                    <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>No functions discovered</Typography>
+                  )}
+                </Paper>
+              </Grid>
+              <Grid item xs={12} md={6}>
+                <Paper variant="outlined" sx={{ p: 1.5, maxHeight: 300, overflow: 'auto' }}>
+                  <Typography variant="caption" color="text.secondary" fontWeight={600}>
+                    Strings ({interestingStrings.length})
+                  </Typography>
+                  {interestingStrings.length > 0 ? (
+                    <Box sx={{ fontFamily: 'monospace', fontSize: '0.75rem', mt: 1 }}>
+                      {interestingStrings.map((s, i) => (
+                        <Box key={i} sx={{ py: 0.25, borderBottom: `1px solid ${theme.palette.divider}` }}>
+                          {s}
+                        </Box>
+                      ))}
+                    </Box>
+                  ) : (
+                    <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>No interesting strings found</Typography>
+                  )}
+                </Paper>
+              </Grid>
+            </Grid>
+
+            {/* CFG Viewer */}
+            <Paper variant="outlined" sx={{ height: 500 }}>
+              <Suspense fallback={<ComponentLoader />}>
+                <CFGViewer
+                  nodes={angrNodes}
+                  edges={angrEdges}
+                  functions={functionCfgs}
+                  radareFunctions={functions}
+                  angrActive={angrActive}
+                  angrFound={angrFound}
+                  onAskAboutCFG={onAskAboutCFG}
+                  sessionId={sessionId}
+                />
+              </Suspense>
+            </Paper>
+          </Stack>
+        )}
+
+        {/* TOOLS TAB - Scripting, Dynamic analysis */}
+        {view === 'tools' && (
+          <Stack spacing={1.5}>
+            {/* Scripting Panel */}
+            <Paper variant="outlined" sx={{ height: 400, overflow: 'hidden' }}>
+              <Suspense fallback={<ComponentLoader />}>
+                <GhidraScriptingPanel
+                  sessionId={sessionId}
+                  binaryPath={result?.binary}
+                />
+              </Suspense>
+            </Paper>
+
+            {/* Dynamic Analysis (GEF) if available */}
+            {gefDeep && gefDeep.trace && (
+              <Paper variant="outlined" sx={{ height: 400, overflow: 'hidden' }}>
+                <Suspense fallback={<ComponentLoader />}>
+                  <GEFPanel data={gefDeep} />
+                </Suspense>
+              </Paper>
             )}
-          </Paper>
-        )}
-
-        {view === 'disasm' && (
-          <Paper variant="outlined" sx={{ p: 1.5 }}>
-            <DisassemblyViewer 
-              disassembly={disasmText} 
-              arch={archDisplay.short}
-              annotations={annotations}
-              onAnnotate={handleAnnotate}
-              onAskAbout={onAskAboutCode}
-            />
-          </Paper>
-        )}
-
-        {view === 'cfg' && (
-          <Box sx={{ height: 500 }}>
-            <Suspense fallback={<ComponentLoader />}>
-              <CFGViewer
-                nodes={angrNodes}
-                edges={angrEdges}
-                functions={functionCfgs}
-                radareFunctions={functions}
-                angrActive={angrActive}
-                angrFound={angrFound}
-                onAskAboutCFG={onAskAboutCFG}
-                sessionId={sessionId}
-              />
-            </Suspense>
-          </Box>
-        )}
-
-        {view === 'decompiler' && (
-          <Paper variant="outlined" sx={{ height: 500, overflow: 'hidden' }}>
-            <Suspense fallback={<ComponentLoader />}>
-              <DecompilerPanel
-                data={ghidraDeep}
-                onAskClaude={(question) => onAskAboutCode?.(question)}
-              />
-            </Suspense>
-          </Paper>
-        )}
-
-        {view === 'scripting' && (
-          <Paper variant="outlined" sx={{ height: 500, overflow: 'hidden' }}>
-            <Suspense fallback={<ComponentLoader />}>
-              <GhidraScriptingPanel
-                sessionId={sessionId}
-                binaryPath={result?.binary}
-              />
-            </Suspense>
-          </Paper>
-        )}
-
-        {view === 'dynamic' && (
-          <Paper variant="outlined" sx={{ height: 500, overflow: 'hidden' }}>
-            <Suspense fallback={<ComponentLoader />}>
-              <GEFPanel data={gefDeep} />
-            </Suspense>
-          </Paper>
-        )}
-
-        {view === 'dwarf' && (
-          <Paper variant="outlined" sx={{ height: 500, overflow: 'hidden' }}>
-            <Suspense fallback={<ComponentLoader />}>
-              <DWARFPanel
-                data={dwarfDeep}
-                onAskClaude={(question) => onAskAboutCode?.(question)}
-              />
-            </Suspense>
-          </Paper>
+          </Stack>
         )}
       </Box>
     </Box>
