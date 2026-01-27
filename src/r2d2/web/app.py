@@ -19,6 +19,13 @@ from ..llm import ChatMessage as LLMChatMessage, LLMBridge
 from ..state import AppState, build_state
 from ..storage.chat import ChatDAO
 from ..storage.models import ChatMessage as StoredChatMessage, ChatSession
+from ..tools import (
+    GhidraExecutor,
+    Radare2Executor,
+    ScriptLanguage,
+    ScriptValidator,
+    ToolName,
+)
 from ..utils.serialization import to_json
 from .debug import debug, setup_flask_debug
 
@@ -1466,6 +1473,129 @@ Generate ONLY the script code, no explanations before or after. The script shoul
             "issues": ghidra_env.issues,
             "notes": ghidra_env.notes,
         })
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Unified Tool Execution endpoints
+    # ──────────────────────────────────────────────────────────────────────────
+
+    @app.post("/api/tools/execute")
+    def execute_tool_script() -> Any:
+        """Execute a script using the unified tool execution system.
+
+        Request JSON:
+            tool: Tool name (ghidra, radare2, angr, binwalk, gdb)
+            script: Script content to execute
+            language: Script language (python, r2, shell)
+            session_id: Optional session for trajectory tracking
+            timeout_ms: Optional execution timeout in milliseconds
+
+        Returns:
+            validation: Validation result with errors/warnings
+            execution: Execution result with status, stdout, stderr
+            result: Parsed output data
+        """
+        data = request.get_json() or {}
+
+        # Validate required fields
+        tool_name = data.get("tool")
+        script = data.get("script", "")
+        language = data.get("language", "python")
+        session_id = data.get("session_id")
+        timeout_ms = data.get("timeout_ms", 30000)
+
+        if not tool_name:
+            return jsonify({"error": "tool is required"}), 400
+        if not script.strip():
+            return jsonify({"error": "script is required"}), 400
+
+        # Validate tool name
+        try:
+            tool = ToolName(tool_name)
+        except ValueError:
+            valid_tools = [t.value for t in ToolName]
+            return jsonify({
+                "error": f"Invalid tool: {tool_name}. Valid tools: {valid_tools}"
+            }), 400
+
+        # Validate language
+        try:
+            lang = ScriptLanguage(language)
+        except ValueError:
+            valid_langs = [lang_val.value for lang_val in ScriptLanguage]
+            return jsonify({
+                "error": f"Invalid language: {language}. Valid languages: {valid_langs}"
+            }), 400
+
+        # First, validate the script (always do this, even if tool unavailable)
+        validation = ScriptValidator.validate(script, lang, tool)
+
+        if not validation.valid:
+            return jsonify({
+                "validation": validation.model_dump(),
+                "execution": None,
+                "result": {},
+                "error": validation.error_summary,
+            })
+
+        # Get the appropriate executor
+        executor = None
+        if tool == ToolName.GHIDRA:
+            if state.config.ghidra.use_bridge and hasattr(state, 'ghidra_client') and state.ghidra_client:
+                executor = GhidraExecutor(client=state.ghidra_client)
+            else:
+                return jsonify({
+                    "validation": validation.model_dump(),
+                    "execution": None,
+                    "result": {},
+                    "error": "Ghidra bridge not configured or not connected",
+                })
+        elif tool == ToolName.RADARE2:
+            # Radare2 executor needs an r2pipe instance
+            executor = Radare2Executor(r2pipe=None)
+        else:
+            return jsonify({
+                "validation": validation.model_dump(),
+                "execution": None,
+                "result": {},
+                "error": f"Executor not yet implemented for {tool.value}",
+            })
+
+        # Execute the script
+        try:
+            output = executor.execute(
+                script=script,
+                language=lang,
+                tool=tool,
+                timeout_ms=timeout_ms,
+            )
+
+            # Record in trajectory if session provided
+            if session_id and state.dao:
+                state.dao.record_action(
+                    trajectory_id=session_id,
+                    adapter=f"tools_{tool.value}",
+                    stage="script_execution",
+                    payload={
+                        "language": lang.value,
+                        "script_length": len(script),
+                        "success": output.execution.status.value == "success" if output.execution else False,
+                    },
+                )
+
+            return jsonify({
+                "validation": output.validation.model_dump() if output.validation else None,
+                "execution": output.execution.model_dump() if output.execution else None,
+                "result": output.result,
+            })
+
+        except Exception as exc:
+            debug.log("tools_execute_error", str(exc))
+            return jsonify({
+                "validation": validation.model_dump(),
+                "execution": None,
+                "result": {},
+                "error": str(exc),
+            }), 500
 
     return app
 

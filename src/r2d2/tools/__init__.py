@@ -7,6 +7,10 @@ from r2d2.tools.executor import (
     Radare2Executor,
     ToolExecutor,
 )
+from r2d2.tools.models import (
+    ScriptLanguage,
+    ToolName,
+)
 from r2d2.tools.validator import ScriptValidator
 
 __all__ = [
@@ -14,6 +18,8 @@ __all__ = [
     "ExecutionOutput",
     "GhidraExecutor",
     "Radare2Executor",
+    "ScriptLanguage",
     "ScriptValidator",
     "ToolExecutor",
+    "ToolName",
 ]
