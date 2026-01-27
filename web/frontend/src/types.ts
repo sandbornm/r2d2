@@ -487,3 +487,18 @@ export interface GhidraStatusResponse {
   issues: string[];
   notes: string[];
 }
+
+// Tool execution status types (from /api/tools/status)
+export interface ToolExecutionStatus {
+  available: boolean;
+  description: string;
+  bridge_available?: boolean;
+  bridge_connected?: boolean;
+  headless_available?: boolean;
+}
+
+export interface ToolsStatusResponse {
+  tools: Record<string, ToolExecutionStatus>;
+  available_count: number;
+  total_count: number;
+}
