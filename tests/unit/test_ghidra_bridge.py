@@ -273,6 +273,7 @@ class TestGhidraAdapter:
             install_dir=Path("/opt/ghidra"),
             headless_path=Path("/opt/ghidra/support/analyzeHeadless"),
             bridge_available=False,
+            bridge_connected=False,
             extension_root=Path("/tmp/ext"),
         )
         settings = GhidraSettings(use_bridge=False)
@@ -293,6 +294,7 @@ class TestGhidraAdapter:
             install_dir=Path("/opt/ghidra"),
             headless_path=Path("/opt/ghidra/support/analyzeHeadless"),
             bridge_available=False,
+            bridge_connected=False,
             extension_root=Path("/tmp/ext"),
         )
         settings = GhidraSettings(use_bridge=False)
@@ -313,6 +315,7 @@ class TestGhidraAdapter:
             install_dir=Path("/opt/ghidra"),
             headless_path=Path("/opt/ghidra/support/analyzeHeadless"),
             bridge_available=False,
+            bridge_connected=False,
             extension_root=Path("/tmp/ext"),
         )
         settings = GhidraSettings(use_bridge=False)
@@ -336,6 +339,7 @@ class TestGhidraAdapter:
             install_dir=Path("/opt/ghidra"),
             headless_path=Path("/opt/ghidra/support/analyzeHeadless"),
             bridge_available=True,
+            bridge_connected=False,
             extension_root=Path("/tmp/ext"),
         )
         settings = GhidraSettings(use_bridge=True)
@@ -365,6 +369,7 @@ class TestGhidraDetectionBridge:
             install_dir=Path("/opt/ghidra"),
             headless_path=Path("/opt/ghidra/support/analyzeHeadless"),
             bridge_available=False,
+            bridge_connected=False,
             extension_root=Path("/tmp/ext"),
         )
 
