@@ -14,7 +14,7 @@ The executor pattern ensures:
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
 from r2d2.tools.models import (
@@ -53,7 +53,7 @@ class ExecutionOutput:
 
     validation: ValidationResult | None = None
     execution: ExecutionResult | None = None
-    result: dict[str, Any] | None = None
+    result: dict[str, Any] = field(default_factory=dict)
 
     def to_trajectory_entry(
         self,
@@ -112,6 +112,12 @@ class ToolExecutor:
 
     This class is not abstract - it has a default _do_execute that
     raises NotImplementedError, allowing tests to patch it.
+
+    Note on timeout_ms:
+        The timeout parameter is passed to _do_execute() but enforcement
+        is left to the subclass implementation. This allows tools with
+        built-in timeout support (like network calls) to use their
+        native mechanisms. The base class catches TimeoutError if raised.
     """
 
     def execute(
@@ -127,11 +133,18 @@ class ToolExecutor:
         The script is validated before execution. If validation fails,
         execution is skipped and the validation errors are returned.
 
+        Flow:
+        1. Validate script syntax and patterns
+        2. Run pre-execution checks (override _pre_execute_check())
+        3. Execute the script via _do_execute()
+        4. Parse output via _parse_output()
+
         Args:
             script: Script content to execute
             language: Script language (python, r2, shell)
             tool: Target tool (ghidra, radare2, etc.)
-            timeout_ms: Execution timeout in milliseconds
+            timeout_ms: Execution timeout in milliseconds (enforcement is
+                tool-specific; see Note on timeout_ms in class docstring)
             intent: Human-readable description of script purpose
 
         Returns:
@@ -140,11 +153,16 @@ class ToolExecutor:
         # Step 1: Validate the script
         validation = ScriptValidator.validate(script, language, tool)
 
-        # If validation fails, return early without execution
-        if not validation.valid:
-            return ExecutionOutput(validation=validation, execution=None, result=None)
+        # Step 2: Pre-execution checks (connection, etc.)
+        pre_check_result = self._pre_execute_check(validation)
+        if pre_check_result is not None:
+            return pre_check_result
 
-        # Step 2: Execute the script
+        # Step 3: If validation fails, return early without execution
+        if not validation.valid:
+            return ExecutionOutput(validation=validation, execution=None, result={})
+
+        # Step 4: Execute the script
         start_time = time.monotonic()
         try:
             status, stdout, stderr, exception, traceback = self._do_execute(
@@ -164,7 +182,7 @@ class ToolExecutor:
                 stdout="",
                 stderr="Execution timed out",
             )
-            return ExecutionOutput(validation=validation, execution=execution, result=None)
+            return ExecutionOutput(validation=validation, execution=execution)
         except Exception as e:
             duration_ms = int((time.monotonic() - start_time) * 1000)
             execution = ExecutionResult(
@@ -174,7 +192,7 @@ class ToolExecutor:
                 stderr=str(e),
                 exception=type(e).__name__,
             )
-            return ExecutionOutput(validation=validation, execution=execution, result=None)
+            return ExecutionOutput(validation=validation, execution=execution)
 
         duration_ms = int((time.monotonic() - start_time) * 1000)
 
@@ -187,7 +205,27 @@ class ToolExecutor:
             traceback=traceback,
         )
 
-        return ExecutionOutput(validation=validation, execution=execution, result=None)
+        # Parse the output to structured data
+        result = self._parse_output(stdout or "", stderr or "")
+
+        return ExecutionOutput(validation=validation, execution=execution, result=result)
+
+    def _pre_execute_check(
+        self, validation: ValidationResult
+    ) -> ExecutionOutput | None:
+        """Hook for pre-execution checks (connection, availability, etc.).
+
+        Override in subclasses to add checks that should run before
+        execution but after validation. Return None to continue with
+        execution, or return an ExecutionOutput to short-circuit.
+
+        Args:
+            validation: The validation result from script validation
+
+        Returns:
+            None to continue execution, or ExecutionOutput to return early
+        """
+        return None
 
     def _do_execute(
         self,
@@ -212,6 +250,20 @@ class ToolExecutor:
         """
         raise NotImplementedError("Subclasses must implement _do_execute")
 
+    def _parse_output(self, stdout: str, stderr: str) -> dict[str, Any]:
+        """Parse execution output to structured data.
+
+        Override in subclasses for tool-specific parsing.
+
+        Args:
+            stdout: Standard output from script execution
+            stderr: Standard error from script execution
+
+        Returns:
+            Dictionary with parsed output data
+        """
+        return {"raw_output": stdout, "raw_stderr": stderr}
+
 
 class GhidraExecutor(ToolExecutor):
     """Executor for Ghidra bridge scripts.
@@ -228,33 +280,13 @@ class GhidraExecutor(ToolExecutor):
         """
         self.client = client
 
-    def execute(
-        self,
-        script: str,
-        language: ScriptLanguage,
-        tool: ToolName,
-        timeout_ms: int = 30000,
-        intent: str = "",
-    ) -> ExecutionOutput:
-        """Execute a script via the Ghidra bridge.
+    def _pre_execute_check(
+        self, validation: ValidationResult
+    ) -> ExecutionOutput | None:
+        """Check Ghidra bridge connection before execution.
 
-        Checks connection status before execution. If not connected,
-        returns CONNECTION_LOST status without attempting execution.
-
-        Args:
-            script: Script content to execute
-            language: Script language (should be PYTHON for Ghidra)
-            tool: Target tool (should be GHIDRA)
-            timeout_ms: Execution timeout in milliseconds
-            intent: Human-readable description of script purpose
-
-        Returns:
-            ExecutionOutput with validation and execution results
+        Returns CONNECTION_LOST status if not connected.
         """
-        # First validate the script
-        validation = ScriptValidator.validate(script, language, tool)
-
-        # Check connection before execution
         if not self.client.is_connected():
             execution = ExecutionResult(
                 status=ExecutionStatus.CONNECTION_LOST,
@@ -262,48 +294,8 @@ class GhidraExecutor(ToolExecutor):
                 stdout="",
                 stderr="Ghidra bridge is not connected",
             )
-            return ExecutionOutput(validation=validation, execution=execution, result=None)
-
-        # If validation fails, return early
-        if not validation.valid:
-            return ExecutionOutput(validation=validation, execution=None, result=None)
-
-        # Execute via bridge
-        start_time = time.monotonic()
-        try:
-            result = self.client.execute_script(script)
-            duration_ms = int((time.monotonic() - start_time) * 1000)
-
-            stdout = result.get("output", "")
-            error = result.get("error")
-
-            if error:
-                execution = ExecutionResult(
-                    status=ExecutionStatus.ERROR,
-                    duration_ms=duration_ms,
-                    stdout=stdout or "",
-                    stderr=str(error),
-                )
-            else:
-                execution = ExecutionResult(
-                    status=ExecutionStatus.SUCCESS,
-                    duration_ms=duration_ms,
-                    stdout=stdout or "",
-                    stderr="",
-                )
-
-            return ExecutionOutput(validation=validation, execution=execution, result=result)
-
-        except Exception as e:
-            duration_ms = int((time.monotonic() - start_time) * 1000)
-            execution = ExecutionResult(
-                status=ExecutionStatus.ERROR,
-                duration_ms=duration_ms,
-                stdout="",
-                stderr=str(e),
-                exception=type(e).__name__,
-            )
-            return ExecutionOutput(validation=validation, execution=execution, result=None)
+            return ExecutionOutput(validation=validation, execution=execution, result={})
+        return None
 
     def _do_execute(
         self,
@@ -312,16 +304,22 @@ class GhidraExecutor(ToolExecutor):
         tool: ToolName,
         timeout_ms: int,
     ) -> tuple[ExecutionStatus, str | None, str | None, str | None, str | None]:
-        """Execute via Ghidra bridge (not used directly).
+        """Execute script via Ghidra bridge.
 
-        GhidraExecutor overrides execute() directly for connection checking,
-        but this is provided for completeness.
+        Args:
+            script: Python script to execute in Ghidra
+            language: Script language (should be PYTHON)
+            tool: Target tool (should be GHIDRA)
+            timeout_ms: Execution timeout (passed to bridge if supported)
+
+        Returns:
+            Tuple of (status, stdout, stderr, exception, traceback)
         """
         result = self.client.execute_script(script)
         error = result.get("error")
         if error:
-            return ExecutionStatus.ERROR, result.get("output"), str(error), None, None
-        return ExecutionStatus.SUCCESS, result.get("output"), "", None, None
+            return ExecutionStatus.ERROR, result.get("output", ""), str(error), None, None
+        return ExecutionStatus.SUCCESS, result.get("output", ""), "", None, None
 
 
 class Radare2Executor(ToolExecutor):
