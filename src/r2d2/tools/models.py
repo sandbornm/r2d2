@@ -75,6 +75,7 @@ class Subject(BaseModel):
     @classmethod
     def path_must_exist(cls, v: Path) -> Path:
         """Validate that the path points to an existing file."""
+        v = v.resolve()
         if not v.exists():
             raise ValueError(f"path does not exist: {v}")
         if not v.is_file():
@@ -188,6 +189,11 @@ class ExecutionResult(BaseModel):
             return ""
 
         parts = []
+
+        # Special handling for timeout status
+        if self.status == ExecutionStatus.TIMEOUT:
+            parts.append(f"Timeout exceeded after {self.duration_ms}ms")
+
         if self.exception:
             parts.append(f"Exception: {self.exception}")
         if self.stderr:
@@ -213,7 +219,9 @@ class TrajectoryEntry(BaseModel):
     id: str = Field(default_factory=lambda: uuid4().hex, description="Unique entry ID (UUID)")
     timestamp: datetime = Field(default_factory=_utcnow, description="Entry timestamp")
     tool: ToolName = Field(description="Tool being invoked")
-    intent: str = Field(description="Human-readable description of the action intent")
+    intent: str = Field(
+        min_length=1, max_length=1000, description="Human-readable description of the action intent"
+    )
     script: str | None = Field(default=None, description="Script to execute")
     script_language: ScriptLanguage | None = Field(
         default=None, description="Language of the script"
@@ -228,7 +236,7 @@ class TrajectoryEntry(BaseModel):
         default=None, description="Parsed/structured result data"
     )
     context_summary: str | None = Field(
-        default=None, description="Brief summary of analysis context"
+        default=None, max_length=500, description="Brief summary of analysis context"
     )
 
     @model_validator(mode="after")

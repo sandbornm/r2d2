@@ -85,7 +85,7 @@ class TestSubject:
         assert subject.format == BinaryFormat.ELF
         assert subject.size_bytes == 104
 
-    def test_path_must_exist(self, tmp_path: Path):
+    def test_nonexistent_path_rejected(self, tmp_path: Path):
         """Test that path must point to an existing file."""
         from r2d2.tools.models import Subject, Architecture, BinaryFormat
 
@@ -100,7 +100,7 @@ class TestSubject:
             )
         assert "path" in str(exc_info.value).lower()
 
-    def test_sha256_must_be_64_hex_chars(self, tmp_path: Path):
+    def test_invalid_sha256_rejected(self, tmp_path: Path):
         """Test sha256 validation."""
         from r2d2.tools.models import Subject, Architecture, BinaryFormat
 
@@ -140,7 +140,7 @@ class TestSubject:
             )
         assert "sha256" in str(exc_info.value).lower()
 
-    def test_size_bytes_must_be_positive(self, tmp_path: Path):
+    def test_zero_size_rejected(self, tmp_path: Path):
         """Test size_bytes must be > 0."""
         from r2d2.tools.models import Subject, Architecture, BinaryFormat
 
@@ -230,7 +230,7 @@ class TestValidationResult:
         assert result.errors == []
         assert result.warnings == []
 
-    def test_result_with_errors(self):
+    def test_invalid_result_with_errors(self):
         """Test ValidationResult with errors."""
         from r2d2.tools.models import ValidationResult, ValidationError
 
@@ -300,7 +300,7 @@ class TestExecutionStatus:
 class TestExecutionResult:
     """Tests for ExecutionResult model."""
 
-    def test_successful_result(self):
+    def test_success_result(self):
         """Test creating a successful ExecutionResult."""
         from r2d2.tools.models import ExecutionResult, ExecutionStatus
 
@@ -318,7 +318,7 @@ class TestExecutionResult:
         assert result.exception is None
         assert result.traceback is None
 
-    def test_error_result_with_exception(self):
+    def test_error_with_traceback(self):
         """Test ExecutionResult with exception details."""
         from r2d2.tools.models import ExecutionResult, ExecutionStatus
 
@@ -365,11 +365,27 @@ class TestExecutionResult:
 
         assert result.error_display == ""
 
+    def test_timeout_result(self):
+        """Test that ExecutionResult with status=TIMEOUT includes 'exceeded' in error_display."""
+        from r2d2.tools.models import ExecutionResult, ExecutionStatus
+
+        result = ExecutionResult(
+            status=ExecutionStatus.TIMEOUT,
+            duration_ms=5000,
+            stdout="",
+            stderr="",
+        )
+
+        display = result.error_display
+        # Should indicate timeout and show duration
+        assert "exceeded" in display.lower() or "timeout" in display.lower()
+        assert result.duration_ms == 5000
+
 
 class TestTrajectoryEntry:
     """Tests for TrajectoryEntry model."""
 
-    def test_create_basic_entry(self):
+    def test_valid_entry(self):
         """Test creating a basic TrajectoryEntry."""
         from r2d2.tools.models import TrajectoryEntry, ToolName
 
@@ -483,3 +499,41 @@ class TestTrajectoryEntry:
             )
         # Should mention validation must be valid for execution
         assert "validation" in str(exc_info.value).lower()
+
+    def test_cannot_execute_invalid_script(self):
+        """Test that creating TrajectoryEntry with invalid validation and execution raises ValidationError."""
+        from r2d2.tools.models import (
+            TrajectoryEntry,
+            ToolName,
+            ScriptLanguage,
+            ValidationResult,
+            ValidationError,
+            ExecutionResult,
+            ExecutionStatus,
+        )
+
+        # Create invalid validation result
+        invalid_validation = ValidationResult(
+            valid=False,
+            errors=[ValidationError(location="line 1", message="syntax error", severity="error")],
+            warnings=[],
+            validated_at=datetime.now(timezone.utc),
+        )
+
+        # Try to create entry with execution despite invalid validation
+        execution = ExecutionResult(
+            status=ExecutionStatus.SUCCESS,
+            duration_ms=100,
+            stdout="output",
+            stderr="",
+        )
+
+        with pytest.raises(PydanticValidationError):
+            TrajectoryEntry(
+                tool=ToolName.GHIDRA,
+                intent="Execute invalid script",
+                script="invalid syntax here",
+                script_language=ScriptLanguage.PYTHON,
+                validation=invalid_validation,
+                execution=execution,
+            )
