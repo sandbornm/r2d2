@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+import threading
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -14,6 +15,7 @@ from .models import AnalysisTrajectory, TrajectoryAction
 class TrajectoryDAO:
     def __init__(self, db: Database) -> None:
         self._db = db
+        self._lock = threading.Lock()
 
     def start_trajectory(self, binary_path: str | "Path") -> AnalysisTrajectory:
         trajectory = AnalysisTrajectory(binary_path=str(binary_path))
@@ -26,21 +28,22 @@ class TrajectoryDAO:
 
     def append_action(self, trajectory: AnalysisTrajectory, action: TrajectoryAction) -> None:
         trajectory.append(action)
-        with self._db.connect() as conn:
-            seq = self._next_seq(conn, trajectory.trajectory_id)
-            conn.execute(
-                """
-                INSERT INTO trajectory_actions (trajectory_id, seq, action, payload, created_at)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (
-                    trajectory.trajectory_id,
-                    seq,
-                    action.action,
-                    json.dumps(action.payload, default=str),
-                    action.created_at.isoformat(),
-                ),
-            )
+        with self._lock:
+            with self._db.connect() as conn:
+                seq = self._next_seq(conn, trajectory.trajectory_id)
+                conn.execute(
+                    """
+                    INSERT INTO trajectory_actions (trajectory_id, seq, action, payload, created_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        trajectory.trajectory_id,
+                        seq,
+                        action.action,
+                        json.dumps(action.payload, default=str),
+                        action.created_at.isoformat(),
+                    ),
+                )
 
     def finish_trajectory(self, trajectory: AnalysisTrajectory) -> None:
         trajectory.completed_at = datetime.now(timezone.utc)

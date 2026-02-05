@@ -21,7 +21,17 @@ import {
   useTheme,
 } from '@mui/material';
 import { FC, Suspense, lazy, memo, useCallback, useEffect, useMemo, useState } from 'react';
-import type { AnalysisResultPayload, AssemblyAnnotation, AutoProfileData, DWARFData, GEFData, GhidraData } from '../types';
+import type {
+  AnalysisResultPayload,
+  AssemblyAnnotation,
+  AutoProfileData,
+  DWARFData,
+  EvidenceCoverage,
+  GEFData,
+  GhidraData,
+  RuntimeRequirements,
+  ToolStatusSummary,
+} from '../types';
 import AutoProfilePanel from './AutoProfilePanel';
 import DisassemblyViewer from './DisassemblyViewer';
 import ToolAttribution from './ToolAttribution';
@@ -151,29 +161,9 @@ const ResultViewer: FC<ResultViewerProps> = memo(({ result, sessionId, toolsInfo
     });
   }, [result?.binary, sessionId]);
 
-  if (!result) {
-    return (
-      <Box
-        sx={{
-          height: '100%',
-          display: 'flex',
-          flexDirection: 'column',
-          alignItems: 'center',
-          justifyContent: 'center',
-          color: 'text.secondary',
-        }}
-      >
-        <MemoryIcon sx={{ fontSize: 40, mb: 1.5, opacity: 0.4 }} />
-        <Typography variant="body2">No analysis yet</Typography>
-        <Typography variant="caption" color="text.secondary">
-          Drop a binary to get started
-        </Typography>
-      </Box>
-    );
-  }
-
-  const quickScan = result.quick_scan ?? {};
-  const deepScan = result.deep_scan ?? {};
+  const hasResult = Boolean(result);
+  const quickScan = result?.quick_scan ?? {};
+  const deepScan = result?.deep_scan ?? {};
 
   // Extract data from radare2
   const r2Quick = (quickScan.radare2 ?? {}) as Record<string, unknown>;
@@ -183,6 +173,9 @@ const ResultViewer: FC<ResultViewerProps> = memo(({ result, sessionId, toolsInfo
   const ghidraDeep = (deepScan.ghidra ?? null) as GhidraData | null;
   const gefDeep = (deepScan.gef ?? null) as GEFData | null;
   const autoprofileQuick = (quickScan.autoprofile ?? null) as AutoProfileData | null;
+  const runtimeRequirements = (quickScan.runtime ?? null) as RuntimeRequirements | null;
+  const toolStatus = (result?.tool_status ?? {}) as Record<string, ToolStatusSummary>;
+  const evidenceCoverage = (result?.evidence_coverage ?? null) as EvidenceCoverage | null;
 
   // Binary metadata
   const r2QuickInfo = r2Quick.info as Record<string, unknown> | undefined;
@@ -296,9 +289,27 @@ const ResultViewer: FC<ResultViewerProps> = memo(({ result, sessionId, toolsInfo
       .map((imp: Record<string, unknown>) => (imp.name as string) || 'unknown');
   }, [imports]);
 
-  const fileName = result.binary.split('/').pop() || result.binary;
+  const fileName = result?.binary ? (result.binary.split('/').pop() || result.binary) : 'unknown';
 
   return (
+    !hasResult ? (
+      <Box
+        sx={{
+          height: '100%',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          color: 'text.secondary',
+        }}
+      >
+        <MemoryIcon sx={{ fontSize: 40, mb: 1.5, opacity: 0.4 }} />
+        <Typography variant="body2">No analysis yet</Typography>
+        <Typography variant="caption" color="text.secondary">
+          Drop a binary to get started
+        </Typography>
+      </Box>
+    ) : (
     <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       {/* Header */}
       <Paper variant="outlined" sx={{ p: 1.5, mb: 1.5 }}>
@@ -337,11 +348,139 @@ const ResultViewer: FC<ResultViewerProps> = memo(({ result, sessionId, toolsInfo
         {/* OVERVIEW TAB - Binary info, Profile, Tool attribution */}
         {view === 'overview' && (
           <Stack spacing={1.5}>
+            {/* Runtime requirements */}
+            {runtimeRequirements && (
+              <Paper variant="outlined" sx={{ p: 1.5 }}>
+                <Typography variant="caption" color="text.secondary" fontWeight={600}>
+                  Runtime Requirements
+                </Typography>
+                {runtimeRequirements.error ? (
+                  <Typography variant="caption" color="error.main" sx={{ display: 'block', mt: 1 }}>
+                    {runtimeRequirements.error}
+                  </Typography>
+                ) : (
+                  <Box sx={{ mt: 1 }}>
+                    {[
+                      ['Architecture', runtimeRequirements.arch],
+                      ['Bits', runtimeRequirements.bits ? `${runtimeRequirements.bits}-bit` : undefined],
+                      ['Endianness', runtimeRequirements.endianness],
+                      ['OS ABI', runtimeRequirements.osabi],
+                      ['Interpreter', runtimeRequirements.interp],
+                      [
+                        'Needed libs',
+                        runtimeRequirements.needed && runtimeRequirements.needed.length
+                          ? runtimeRequirements.needed.join(', ')
+                          : undefined,
+                      ],
+                    ]
+                      .filter((item): item is [string, string] => Boolean(item[1]))
+                      .map(([label, value]) => (
+                        <Box key={label} sx={{ display: 'flex', justifyContent: 'space-between', py: 0.25 }}>
+                          <Typography variant="caption" color="text.secondary">{label}</Typography>
+                          <Typography variant="caption" sx={{ maxWidth: '70%', textAlign: 'right' }}>{value}</Typography>
+                        </Box>
+                      ))}
+                  </Box>
+                )}
+              </Paper>
+            )}
+
+            {/* Tool status coverage */}
+            {Object.keys(toolStatus).length > 0 && (
+              <Paper variant="outlined" sx={{ p: 1.5 }}>
+                <Typography variant="caption" color="text.secondary" fontWeight={600}>
+                  Tool Status
+                </Typography>
+                <Grid container spacing={1} sx={{ mt: 0.5 }}>
+                  {Object.entries(toolStatus).map(([name, status]) => (
+                    <Grid item xs={12} md={6} key={name}>
+                      <Paper variant="outlined" sx={{ p: 1, bgcolor: 'background.paper' }}>
+                        <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.5 }}>
+                          <Typography variant="caption" fontWeight={600}>
+                            {name}
+                          </Typography>
+                          <Chip
+                            size="small"
+                            label={status.status}
+                            color={status.status === 'completed' ? 'success' : status.status === 'failed' ? 'error' : 'warning'}
+                            variant="outlined"
+                          />
+                        </Stack>
+                        <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                          functions: {status.functions_count ?? 0} · cfg: {status.cfg_nodes ?? 0} nodes / {status.cfg_edges ?? 0} edges
+                        </Typography>
+                        {status.memory_allocations && status.memory_allocations.length > 0 && (
+                          <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                            allocs: {status.memory_allocations.join(', ')}
+                          </Typography>
+                        )}
+                        {status.error && (
+                          <Typography variant="caption" color="error.main" sx={{ display: 'block' }}>
+                            {status.error}
+                          </Typography>
+                        )}
+                        {status.warnings && status.warnings.length > 0 && (
+                          <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                            {status.warnings.join(' ')}
+                          </Typography>
+                        )}
+                      </Paper>
+                    </Grid>
+                  ))}
+                </Grid>
+              </Paper>
+            )}
+
+            {/* Evidence coverage matrix */}
+            {evidenceCoverage && (
+              <Paper variant="outlined" sx={{ p: 1.5 }}>
+                <Typography variant="caption" color="text.secondary" fontWeight={600}>
+                  Evidence Coverage Matrix
+                </Typography>
+                <Box
+                  sx={{
+                    mt: 1,
+                    display: 'grid',
+                    gridTemplateColumns: `160px repeat(${evidenceCoverage.columns.length}, minmax(80px, 1fr))`,
+                    gap: 0.5,
+                    alignItems: 'center',
+                  }}
+                >
+                  <Box />
+                  {evidenceCoverage.columns.map((col) => (
+                    <Typography key={col} variant="caption" color="text.secondary" sx={{ fontWeight: 600 }}>
+                      {col}
+                    </Typography>
+                  ))}
+                  {evidenceCoverage.rows.map((row) => (
+                    <Box key={row} sx={{ display: 'contents' }}>
+                      <Typography variant="caption" sx={{ fontWeight: 600 }}>
+                        {row}
+                      </Typography>
+                      {evidenceCoverage.columns.map((col) => {
+                        const status = evidenceCoverage.matrix?.[row]?.[col] ?? 'missing';
+                        const color = status === 'present' ? 'success' : status === 'partial' ? 'warning' : 'default';
+                        return (
+                          <Chip
+                            key={`${row}-${col}`}
+                            size="small"
+                            label={status}
+                            color={color}
+                            variant={status === 'missing' ? 'outlined' : 'filled'}
+                            sx={{ height: 20, fontSize: '0.65rem' }}
+                          />
+                        );
+                      })}
+                    </Box>
+                  ))}
+                </Box>
+              </Paper>
+            )}
             {/* Tool Attribution */}
             <ToolAttribution
               quickScan={quickScan}
               deepScan={deepScan}
-              toolAvailability={result.tool_availability as Record<string, boolean> | undefined}
+              toolAvailability={result?.tool_availability as Record<string, boolean> | undefined}
               toolsInfo={toolsInfo}
             />
 
@@ -504,7 +643,6 @@ const ResultViewer: FC<ResultViewerProps> = memo(({ result, sessionId, toolsInfo
                   nodes={angrNodes}
                   edges={angrEdges}
                   functions={functionCfgs}
-                  radareFunctions={functions}
                   angrActive={angrActive}
                   angrFound={angrFound}
                   onAskAboutCFG={onAskAboutCFG}
@@ -540,6 +678,7 @@ const ResultViewer: FC<ResultViewerProps> = memo(({ result, sessionId, toolsInfo
         )}
       </Box>
     </Box>
+    )
   );
 });
 

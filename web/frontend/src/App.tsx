@@ -48,6 +48,7 @@ import { ActivityProvider, useActivity } from './contexts/ActivityContext';
 import { TrajectoryProvider, useTrajectory, useTrajectoryActions } from './trajectory';
 import { useThemeMode } from './main';
 import type {
+  AnalysisPlanPayload,
   AnalysisResultPayload,
   ApiAnalysisResponse,
   ChatDetailResponse,
@@ -58,6 +59,8 @@ import type {
   ProgressEventEntry,
   ProgressEventName,
   ProgressEventPayload,
+  EvidenceCoverage,
+  ToolStatusSummary,
 } from './types';
 import { CacheKeys, getFromCache, setInCache } from './utils/cache';
 
@@ -86,7 +89,7 @@ const DEFAULT_SETTINGS: AnalysisSettings = {
   enableAngr: true,
   enableGhidra: true,
   enableGef: true,
-  enableFrida: true,
+  enableFrida: false,
   autoAskLLM: false,
   selectedModel: 'claude-opus-4-5',
 };
@@ -147,15 +150,22 @@ const AppContent = () => {
   }, [settings]);
 
   const recordEvent = useCallback((event: ProgressEventName, data: ProgressEventPayload) => {
-    setEvents((prev) => [
-      ...prev,
-      {
-        id: `${event}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-        event,
-        data,
-        timestamp: Date.now(),
-      },
-    ]);
+    const sessionId = data.session_id || activeSessionIdRef.current;
+    setEvents((prev) => {
+      const next = [
+        ...prev,
+        {
+          id: `${event}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+          event,
+          data,
+          timestamp: Date.now(),
+        },
+      ];
+      if (sessionId) {
+        setInCache(CacheKeys.events(sessionId), next);
+      }
+      return next;
+    });
   }, []);
 
   const fetchHealth = useCallback(async () => {
@@ -216,6 +226,29 @@ const AppContent = () => {
       if (!response.ok) throw new Error('Failed to load chat history');
       const data: ChatDetailResponse = await response.json();
       setMessages(data.messages);
+      const analysisAttachment = data.messages
+        .filter((msg) => msg.role === 'system')
+        .flatMap((msg) => msg.attachments || [])
+        .find((attachment) => attachment.type === 'analysis_result');
+      if (analysisAttachment) {
+        const restoredResult: AnalysisResultPayload = {
+          binary: String(analysisAttachment.binary ?? data.session.binary_path),
+          plan: (analysisAttachment.plan ?? {}) as AnalysisPlanPayload,
+          quick_scan: (analysisAttachment.quick_scan ?? {}) as Record<string, unknown>,
+          deep_scan: (analysisAttachment.deep_scan ?? {}) as Record<string, unknown>,
+          notes: (analysisAttachment.notes ?? []) as string[],
+          issues: (analysisAttachment.issues ?? []) as string[],
+          session_id: data.session.session_id,
+          trajectory_id: analysisAttachment.trajectory_id as string | undefined,
+          tool_availability: analysisAttachment.tool_availability as Record<string, boolean> | undefined,
+          tool_status: analysisAttachment.tool_status as Record<string, ToolStatusSummary> | undefined,
+          evidence_coverage: analysisAttachment.evidence_coverage as EvidenceCoverage | undefined,
+        };
+        setResult(restoredResult);
+        setInCache(CacheKeys.analysisResult(data.session.session_id), restoredResult);
+      } else {
+        setResult(null);
+      }
       setSessions((prev) => {
         const exists = prev.some((session) => session.session_id === data.session.session_id);
         if (!exists) return prev;
@@ -241,8 +274,11 @@ const AppContent = () => {
   useEffect(() => {
     if (activeSessionId) {
       loadSessionMessages(activeSessionId).catch(console.error);
+      const cachedEvents = getFromCache<ProgressEventEntry[]>(CacheKeys.events(activeSessionId));
+      setEvents(cachedEvents ?? []);
     } else {
       setMessages([]);
+      setEvents([]);
     }
   }, [activeSessionId, loadSessionMessages]);
 
@@ -253,6 +289,12 @@ const AppContent = () => {
       lastSyncedSessionIdRef.current = activeSession.session_id;
     }
   }, [activeSession]);
+
+  useEffect(() => {
+    if (activeTab === 'results' && activeSessionId && !result) {
+      loadSessionMessages(activeSessionId).catch(console.error);
+    }
+  }, [activeTab, activeSessionId, result, loadSessionMessages]);
 
   const closeSource = () => {
     if (sourceRef.current) {

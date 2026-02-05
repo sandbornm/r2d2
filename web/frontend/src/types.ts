@@ -22,6 +22,8 @@ export interface ProgressEventPayload {
   notes?: string[];
   session_id?: string;
   trajectory_id?: string;
+  command?: string;
+  commands?: string[];
 }
 
 export interface ProgressEventEntry {
@@ -48,6 +50,36 @@ export interface AnalysisResultPayload {
   session_id?: string;
   trajectory_id?: string;
   tool_availability?: Record<string, boolean>;  // Which tools were available during analysis
+  tool_status?: Record<string, ToolStatusSummary>;
+  evidence_coverage?: EvidenceCoverage;
+}
+
+export interface RuntimeRequirements {
+  format?: string;
+  arch?: string;
+  bits?: number;
+  endianness?: string;
+  osabi?: string;
+  abi_version?: string;
+  interp?: string | null;
+  needed?: string[];
+  error?: string;
+}
+
+export interface ToolStatusSummary {
+  status: 'completed' | 'failed' | 'partial' | 'skipped';
+  functions_count?: number;
+  cfg_nodes?: number;
+  cfg_edges?: number;
+  memory_allocations?: string[];
+  warnings?: string[];
+  error?: string;
+}
+
+export interface EvidenceCoverage {
+  columns: string[];
+  rows: string[];
+  matrix: Record<string, Record<string, string>>;
 }
 
 export interface ToolStatusInfo {

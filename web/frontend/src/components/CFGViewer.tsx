@@ -127,7 +127,6 @@ interface CFGViewerProps {
   nodes: CFGNode[];
   edges: CFGEdge[];
   functions?: FunctionCFG[];
-  radareFunctions?: Array<{ name?: string; offset?: number; size?: number }>;
   angrActive?: number;
   angrFound?: number;
   onAskAboutCFG?: (context: CFGContext) => void;
@@ -734,7 +733,6 @@ const CFGViewer: FC<CFGViewerProps> = ({
   nodes,
   edges,
   functions = [],
-  radareFunctions = [],
   onAskAboutCFG,
   sessionId,
 }) => {
@@ -771,21 +769,11 @@ const CFGViewer: FC<CFGViewerProps> = ({
     loadFunctionNames();
   }, [sessionId]);
 
-  // Combine function sources - prefer function_cfgs but fall back to radareFunctions
+  // Use function_cfgs directly - these are functions with actual CFG blocks extracted
+  // Don't create empty shells from radareFunctions as they provide no CFG value
   const allFunctions = useMemo(() => {
-    if (functions.length > 0) return functions;
-
-    // Convert radareFunctions to FunctionCFG format
-    return radareFunctions
-      .filter((fn) => fn.offset !== undefined)
-      .map((fn) => ({
-        name: fn.name || `sub_${fn.offset?.toString(16)}`,
-        offset: `0x${fn.offset?.toString(16)}`,
-        size: fn.size || 0,
-        block_count: 0,
-        blocks: [],
-      }));
-  }, [functions, radareFunctions]);
+    return functions;
+  }, [functions]);
 
   // Get display name for a function (custom name or original)
   const getDisplayName = useCallback((fn: FunctionCFG): { display: string; original: string; isRenamed: boolean; source?: string; reasoning?: string } => {
@@ -978,54 +966,14 @@ const CFGViewer: FC<CFGViewerProps> = ({
     }
   }, [allFunctions, selectedFunction]);
 
-  // Get blocks from selected function, or synthesize from angr nodes
+  // Get blocks from selected function - use radare2 function_cfgs directly
+  // No fallback synthesis from angr nodes to avoid brittle assumptions
   const currentBlocks = useMemo(() => {
-    // Prefer radare2 function_cfgs blocks (has more detail)
     if (selectedFunction?.blocks && selectedFunction.blocks.length > 0) {
       return selectedFunction.blocks;
     }
-
-    // Try to find blocks from angr nodes for this function
-    if (selectedFunction && nodes.length > 0) {
-      const funcAddr = selectedFunction.offset;
-      const funcName = selectedFunction.name;
-
-      // Match by function address or name (handle both hex formats)
-      const matchingNodes = nodes.filter((n) => {
-        const normalizeAddr = (addr: string | null | undefined) =>
-          addr ? addr.toLowerCase().replace(/^0x0+/, '0x') : '';
-
-        const nodeFunc = normalizeAddr(n.function);
-        const targetFunc = normalizeAddr(funcAddr);
-        const nodeFuncName = n.function_name;
-
-        return (
-          (nodeFunc && targetFunc && nodeFunc === targetFunc) ||
-          (nodeFuncName && funcName && nodeFuncName === funcName)
-        );
-      });
-
-      // If no matches by function, check if it's the first/entry function
-      const blocksToUse = matchingNodes.length > 0 ? matchingNodes : nodes.slice(0, 10);
-
-      return blocksToUse.map((n) => ({
-        offset: n.addr,
-        size: n.size || 0,
-        jump: null,
-        fail: null,
-        disassembly:
-          n.disassembly?.map((d: Record<string, unknown>) => ({
-            addr: (d.addr as string) || '?',
-            opcode: d.mnemonic
-              ? `${d.mnemonic} ${d.op_str || ''}`.trim()
-              : (d.opcode as string) || '',
-            bytes: (d.bytes as string) || '',
-          })) || [],
-      }));
-    }
-
     return [];
-  }, [selectedFunction, nodes]);
+  }, [selectedFunction]);
 
   const currentBlock = currentBlocks[selectedBlockIndex] ?? null;
 
@@ -1170,41 +1118,27 @@ const CFGViewer: FC<CFGViewerProps> = ({
     return [];
   }, [currentBlock]);
 
-  // CFG status for debugging
+  // CFG status for debugging - only show functions with actual CFG blocks
   const cfgStatus = useMemo(() => {
     const issues: string[] = [];
+    const functionsWithBlocks = functions.filter((f) => f.blocks && f.blocks.length > 0);
 
-    if (nodes.length === 0) {
-      issues.push('angr CFG nodes: 0');
-    } else {
+    issues.push(`radare2 function CFGs: ${functionsWithBlocks.length}`);
+    
+    if (nodes.length > 0) {
       issues.push(`angr CFG nodes: ${nodes.length}`);
     }
-
-    if (edges.length === 0) {
-      issues.push('angr CFG edges: 0');
-    } else {
+    if (edges.length > 0) {
       issues.push(`angr CFG edges: ${edges.length}`);
     }
 
-    if (functions.length === 0) {
-      issues.push('radare2 function CFGs: 0');
-    } else {
-      issues.push(`radare2 function CFGs: ${functions.length}`);
-    }
-
-    if (radareFunctions.length === 0) {
-      issues.push('radare2 functions: 0');
-    } else {
-      issues.push(`radare2 functions: ${radareFunctions.length}`);
-    }
-
     return {
-      hasData:
-        nodes.length > 0 || functions.length > 0 || radareFunctions.length > 0,
-      hasCFGBlocks: functions.some((f) => f.blocks && f.blocks.length > 0),
+      // Only show CFG viewer if we have functions with actual blocks
+      hasData: functionsWithBlocks.length > 0,
+      hasCFGBlocks: functionsWithBlocks.length > 0,
       issues,
     };
-  }, [nodes, edges, functions, radareFunctions]);
+  }, [nodes, edges, functions]);
 
   if (!cfgStatus.hasData) {
     return (

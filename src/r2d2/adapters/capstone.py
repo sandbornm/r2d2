@@ -51,7 +51,10 @@ class CapstoneAdapter:
                 "bytes": insn.bytes.hex(),
             })
 
-        return {"instructions": instructions}
+        return {
+            "instructions": instructions,
+            "command": f"capstone disasm (arch={arch or 'auto'}, entry={entry or 'auto'})",
+        }
 
     def deep_scan(self, binary: Path, *, blocks: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         if blocks is None:

@@ -310,7 +310,7 @@ const DecompilerPanel: FC<DecompilerPanelProps> = ({ data, onAskClaude }) => {
                 whiteSpace: 'pre',
               }}
               dangerouslySetInnerHTML={{
-                __html: highlightCCode(selectedFunc.decompiled_c, theme),
+                __html: highlightCCode(selectedFunc.decompiled_c ?? '', theme),
               }}
             />
           </>

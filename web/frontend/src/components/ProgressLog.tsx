@@ -114,6 +114,14 @@ const LogEntry: FC<{ entry: ProgressEventEntry; isLatest: boolean }> = memo(({ e
   else if (isComplete) accentColor = theme.palette.success.main;
   else if (isActive) accentColor = theme.palette.primary.main;
 
+  const command = useMemo(() => {
+    if (typeof data.command === 'string') return data.command;
+    const payload = data.payload as { command?: string; commands?: string[] } | undefined;
+    if (payload?.command) return payload.command;
+    if (payload?.commands && payload.commands.length) return payload.commands.join(' ; ');
+    return null;
+  }, [data.command, data.payload]);
+
   // Get message and icon
   let message = '';
   let icon = <PlayCircleIcon sx={{ fontSize: 18 }} />;
@@ -227,6 +235,15 @@ const LogEntry: FC<{ entry: ProgressEventEntry; isLatest: boolean }> = memo(({ e
               },
             }}
           />
+        )}
+
+        {command && (
+          <Typography
+            variant="caption"
+            sx={{ fontFamily: 'monospace', color: 'text.secondary' }}
+          >
+            {command}
+          </Typography>
         )}
       </Stack>
     </Paper>

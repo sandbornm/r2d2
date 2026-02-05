@@ -18,7 +18,7 @@ from ..analysis import AnalysisOrchestrator, AnalysisResult
 from ..llm import ChatMessage as LLMChatMessage, LLMBridge
 from ..state import AppState, build_state
 from ..storage.chat import ChatDAO
-from ..storage.models import ChatMessage as StoredChatMessage, ChatSession
+from ..storage.models import AnalysisTrajectory, ChatMessage as StoredChatMessage, ChatSession, TrajectoryAction
 from ..tools import (
     GhidraExecutor,
     Radare2Executor,
@@ -96,6 +96,18 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
 
     # Set up debug logging for Flask
     setup_flask_debug(app)
+
+    def _record_trajectory_action(session_id: str, action: str, payload: dict[str, Any]) -> None:
+        if not state.dao:
+            return
+        session = chat_dao.get_session(session_id)
+        if not session or not session.trajectory_id:
+            return
+        trajectory = AnalysisTrajectory(
+            binary_path=session.binary_path,
+            trajectory_id=session.trajectory_id,
+        )
+        state.dao.append_action(trajectory, TrajectoryAction(action=action, payload=payload))
 
     jobs = JobRegistry()
     chat_dao: ChatDAO = state.chat_dao
@@ -878,6 +890,8 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
                     "snippets": snippets,
                     "snippet_count": len(snippets),
                     "tool_availability": result.tool_availability,
+                    "tool_status": result.tool_status,
+                    "evidence_coverage": result.evidence_coverage,
                 }
                 chat_dao.append_message(
                     updated_session.session_id,
@@ -1357,17 +1371,15 @@ Generate ONLY the script code, no explanations before or after. The script shoul
                 script = "\n".join(lines)
 
             # Record this task in trajectory
-            if state.dao:
-                state.dao.record_action(
-                    trajectory_id=session_id,
-                    adapter="ghidra_scripting",
-                    stage="script_generation",
-                    payload={
-                        "task": task_description,
-                        "language": language,
-                        "script_length": len(script),
-                    },
-                )
+            _record_trajectory_action(
+                session_id,
+                "ghidra_scripting.script_generation",
+                {
+                    "task": task_description,
+                    "language": language,
+                    "script_length": len(script),
+                },
+            )
 
             debug.log("ghidra_script", f"Generated {language} script for: {task_description[:50]}...")
 
@@ -1405,19 +1417,17 @@ Generate ONLY the script code, no explanations before or after. The script shoul
                 output = _execute_script_headless(script, language, binary_path, state)
 
             # Record execution in trajectory
-            if state.dao:
-                state.dao.record_action(
-                    trajectory_id=session_id,
-                    adapter="ghidra_scripting",
-                    stage="script_execution",
-                    payload={
-                        "task": task_description,
-                        "language": language,
-                        "script_length": len(script),
-                        "output_length": len(output),
-                        "success": True,
-                    },
-                )
+            _record_trajectory_action(
+                session_id,
+                "ghidra_scripting.script_execution",
+                {
+                    "task": task_description,
+                    "language": language,
+                    "script_length": len(script),
+                    "output_length": len(output),
+                    "success": True,
+                },
+            )
 
             # Store in chat for history
             chat_dao.append_message(
@@ -1444,18 +1454,16 @@ Generate ONLY the script code, no explanations before or after. The script shoul
             debug.log("ghidra_execute_error", str(exc))
 
             # Record failure
-            if state.dao:
-                state.dao.record_action(
-                    trajectory_id=session_id,
-                    adapter="ghidra_scripting",
-                    stage="script_execution",
-                    payload={
-                        "task": task_description,
-                        "language": language,
-                        "error": str(exc),
-                        "success": False,
-                    },
-                )
+            _record_trajectory_action(
+                session_id,
+                "ghidra_scripting.script_execution",
+                {
+                    "task": task_description,
+                    "language": language,
+                    "error": str(exc),
+                    "success": False,
+                },
+            )
 
             return jsonify({"error": str(exc)}), 500
 

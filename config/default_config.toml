@@ -31,7 +31,7 @@ timeout_deep = 120
 # Tool toggles
 enable_angr = true      # Symbolic execution, CFG (memory-heavy)
 enable_ghidra = true    # Decompilation
-enable_frida = true     # Dynamic instrumentation
+enable_frida = false    # Dynamic instrumentation
 enable_gef = true       # GDB+GEF in Docker
 gef_timeout = 60
 gef_max_instructions = 10000

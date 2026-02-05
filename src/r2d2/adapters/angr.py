@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 import types
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from .base import AdapterUnavailable
+
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -57,6 +60,9 @@ class AngrAdapter:
         cfg_edges: list[dict[str, str]] = []
         function_map: dict[int, dict[str, Any]] = {}
         block_snippets: list[dict[str, Any]] = []
+        cfg_error: str | None = None
+        total_nodes_available = 0
+        node_limit = 300
         
         try:
             cfg_analysis = proj.analyses.CFGFast(
@@ -78,11 +84,15 @@ class AngrAdapter:
                 }
             
             # Extract CFG nodes with block-level details
-            node_limit = 300
             node_map: dict[int, dict[str, Any]] = {}
+            total_nodes_available = cfg_analysis.graph.number_of_nodes()
             
             for node in cfg_analysis.graph.nodes():
                 if len(cfg_nodes) >= node_limit:
+                    _LOGGER.debug(
+                        "CFG node limit reached (%d), truncating from %d total nodes",
+                        node_limit, total_nodes_available
+                    )
                     break
                     
                 addr = getattr(node, "addr", None)
@@ -110,8 +120,8 @@ class AngrAdapter:
                                     "op_str": insn.op_str,
                                     "bytes": insn.bytes.hex(),
                                 })
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        _LOGGER.debug("Failed to extract disassembly for block at %s: %s", hex(addr), exc)
                 
                 entry = {
                     "addr": hex(addr),
@@ -151,7 +161,9 @@ class AngrAdapter:
                             "type": "fallthrough",  # Could be enhanced with edge types
                         })
                         
-        except Exception:  # pragma: no cover - best effort
+        except Exception as exc:
+            _LOGGER.exception("angr CFG extraction failed: %s", exc)
+            cfg_error = str(exc)
             cfg_nodes = []
             cfg_edges = []
             function_map = {}
@@ -163,16 +175,21 @@ class AngrAdapter:
             key=lambda f: int(f["addr"], 16)
         )[:100]
 
+        found_states = simgr.stashes.get("found", [])
         return {
             "active": len(simgr.active),
-            "found": len(simgr.found),
+            "found": len(found_states),
             "arch": str(proj.arch),
             "entry": hex(proj.entry),
+            "command": "angr CFGFast(normalize=True, data_references=True)",
             "cfg": {
                 "nodes": cfg_nodes,
                 "edges": cfg_edges,
                 "node_count": len(cfg_nodes),
                 "edge_count": len(cfg_edges),
+                "truncated": len(cfg_nodes) >= node_limit,
+                "total_nodes_available": total_nodes_available,
+                "error": cfg_error,
             },
             "functions": functions_list,
             "function_count": len(function_map),

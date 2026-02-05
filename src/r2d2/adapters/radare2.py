@@ -66,6 +66,7 @@ class Radare2Adapter:
             "sections": sections,
             "symbols": symbols[:100] if symbols else [],
             "entry_points": entry_points,
+            "commands": ["ij", "iHj", "iij", "izj", "iSj", "isj", "iej"],
         }
 
     def deep_scan(self, binary: Path, *, resource_tree: object | None = None) -> dict[str, object]:
@@ -100,82 +101,76 @@ class Radare2Adapter:
                 func_offset = func.get("offset")
                 func_name = func.get("name", f"fcn_{func_offset:x}" if func_offset else "unknown")
 
-                if func_offset is not None:
-                    try:
-                        # Get function CFG blocks
-                        func_cfg = session.cmdj(f"agfj @ {func_offset}")
-                        blocks = []
+                if func_offset is None:
+                    continue
+                    
+                try:
+                    # Get function CFG blocks using agfj (graph JSON format)
+                    func_cfg = session.cmdj(f"agfj @ {func_offset}")
+                    if not func_cfg:
+                        _LOGGER.debug("No CFG data from agfj for %s at %s", func_name, hex(func_offset))
+                        continue
+                        
+                    blocks = []
+                    graphs = func_cfg if isinstance(func_cfg, list) else [func_cfg]
+                    
+                    for graph in graphs:
+                        if not isinstance(graph, dict) or "blocks" not in graph:
+                            continue
+                            
+                        for block in graph.get("blocks", []):
+                            block_offset = block.get("offset")
+                            block_size = block.get("size", 0)
+                            
+                            if not block_offset:
+                                continue
 
-                        if func_cfg:
-                            for graph in func_cfg if isinstance(func_cfg, list) else [func_cfg]:
-                                if isinstance(graph, dict) and "blocks" in graph:
-                                    for block in graph.get("blocks", []):
-                                        block_offset = block.get("offset")
-                                        block_size = block.get("size", 0)
+                            # Get block disassembly - use ops from agfj directly (no fallback chain)
+                            raw_ops = block.get("ops", [])
+                            block_disasm = []
+                            for op in raw_ops[:50]:
+                                if isinstance(op, dict):
+                                    op_offset = op.get("offset")
+                                    block_disasm.append({
+                                        "addr": hex(op_offset) if op_offset else "?",
+                                        "bytes": op.get("bytes", ""),
+                                        "opcode": op.get("opcode", ""),
+                                        "type": op.get("type", ""),
+                                    })
 
-                                        # Get block disassembly using pDj for better format
-                                        block_disasm = []
-                                        if block_offset and block_size > 0:
-                                            try:
-                                                block_ops = session.cmdj(f"pDj {block_size} @ {block_offset}")
-                                                if block_ops:
-                                                    for op in block_ops[:50]:
-                                                        if isinstance(op, dict):
-                                                            block_disasm.append({
-                                                                "addr": hex(op.get("offset", 0)),
-                                                                "bytes": op.get("bytes", ""),
-                                                                "opcode": op.get("opcode", ""),
-                                                                "type": op.get("type", ""),
-                                                            })
-                                            except Exception:
-                                                pass
-
-                                        # If pDj failed, try to use ops from agfj
-                                        if not block_disasm:
-                                            raw_ops = block.get("ops", [])
-                                            for op in raw_ops[:50]:
-                                                if isinstance(op, dict):
-                                                    op_offset = op.get("offset")
-                                                    block_disasm.append({
-                                                        "addr": hex(op_offset) if op_offset else "?",
-                                                        "bytes": op.get("bytes", ""),
-                                                        "opcode": op.get("opcode", ""),
-                                                        "type": op.get("type", ""),
-                                                    })
-
-                                        blocks.append({
-                                            "offset": hex(block_offset) if block_offset else None,
-                                            "size": block_size,
-                                            "ops": block.get("ops", [])[:50],
-                                            "jump": hex(block.get("jump")) if block.get("jump") else None,
-                                            "fail": hex(block.get("fail")) if block.get("fail") else None,
-                                            "disassembly": block_disasm,
-                                        })
-
-                        # Only add function if we got blocks
-                        if blocks:
-                            function_cfgs.append({
-                                "name": func_name,
-                                "offset": hex(func_offset),
-                                "size": func.get("size", 0),
-                                "nargs": func.get("nargs", 0),
-                                "nlocals": func.get("nlocals", 0),
-                                "blocks": blocks,
-                                "block_count": len(blocks),
+                            blocks.append({
+                                "offset": hex(block_offset),
+                                "size": block_size,
+                                "ops": raw_ops[:50],
+                                "jump": hex(block.get("jump")) if block.get("jump") else None,
+                                "fail": hex(block.get("fail")) if block.get("fail") else None,
+                                "disassembly": block_disasm,
                             })
 
-                            # Store snippets for this function
-                            function_snippets.append({
-                                "function": func_name,
-                                "offset": hex(func_offset),
-                                "blocks": [{
-                                    "offset": b["offset"],
-                                    "disassembly": b["disassembly"][:10],
-                                } for b in blocks[:10]],
-                            })
+                    # Only add function if we extracted blocks
+                    if blocks:
+                        function_cfgs.append({
+                            "name": func_name,
+                            "offset": hex(func_offset),
+                            "size": func.get("size", 0),
+                            "nargs": func.get("nargs", 0),
+                            "nlocals": func.get("nlocals", 0),
+                            "blocks": blocks,
+                            "block_count": len(blocks),
+                        })
 
-                    except Exception as exc:
-                        _LOGGER.debug("Failed to get CFG for %s: %s", func_name, exc)
+                        # Store snippets for this function
+                        function_snippets.append({
+                            "function": func_name,
+                            "offset": hex(func_offset),
+                            "blocks": [{
+                                "offset": b["offset"],
+                                "disassembly": b["disassembly"][:10],
+                            } for b in blocks[:10]],
+                        })
+
+                except Exception as exc:
+                    _LOGGER.debug("Failed to get CFG for %s: %s", func_name, exc)
 
             # Entry function disassembly
             entry_disassembly = None
@@ -230,4 +225,5 @@ class Radare2Adapter:
             "entry_disassembly": entry_disassembly,
             "entry_function": entry_function,
             "snippets": function_snippets,
+            "commands": ["aaa", "aflj", "axj", "agj", "pd 256", "agfj", "pDj", "axtj", "afbj"],
         }

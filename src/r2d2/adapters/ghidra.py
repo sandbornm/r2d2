@@ -174,6 +174,7 @@ class GhidraAdapter:
 
             return {
                 "mode": "bridge",
+                "command": "ghidra_bridge RPC",
                 "functions": functions,
                 "function_count": len(functions),
                 "decompiled": decompiled_data,
@@ -267,6 +268,7 @@ class GhidraAdapter:
 
             return {
                 "mode": "headless",
+                "command": " ".join(command),
                 "returncode": result.returncode,
                 "success": result.returncode == 0,
                 "functions": ghidra_data.get("functions", []),

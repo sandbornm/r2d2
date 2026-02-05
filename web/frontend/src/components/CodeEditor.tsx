@@ -1,13 +1,15 @@
 import React, { useCallback, useMemo } from 'react';
 import CodeMirror from '@uiw/react-codemirror';
 import { cpp } from '@codemirror/lang-cpp';
+import { python } from '@codemirror/lang-python';
+import { java } from '@codemirror/lang-java';
 import { vscodeDark } from '@uiw/codemirror-theme-vscode';
 import { Box } from '@mui/material';
 
 interface CodeEditorProps {
   value: string;
   onChange: (value: string) => void;
-  language?: 'c' | 'asm';
+  language?: 'c' | 'asm' | 'python' | 'java';
   height?: string;
   readOnly?: boolean;
 }
@@ -24,7 +26,18 @@ export default function CodeEditor({
   }, [onChange]);
 
   // Extensions based on language
-  const extensions = language === 'c' ? [cpp()] : [];
+  const extensions = (() => {
+    switch (language) {
+      case 'c':
+        return [cpp()];
+      case 'python':
+        return [python()];
+      case 'java':
+        return [java()];
+      default:
+        return [];
+    }
+  })();
 
   return (
     <Box

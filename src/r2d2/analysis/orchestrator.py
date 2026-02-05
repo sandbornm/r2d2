@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable, cast
@@ -12,6 +14,7 @@ from ..environment import EnvironmentReport
 from ..storage.dao import TrajectoryDAO
 from ..storage.models import AnalysisTrajectory, TrajectoryAction
 from .resource_tree import BinaryResource, FunctionResource, Resource
+from .runtime_requirements import get_runtime_requirements
 from ..adapters.base import AdapterRegistry, AdapterUnavailable, AnalyzerAdapter
 from ..adapters import (
     AngrAdapter,
@@ -47,6 +50,8 @@ class AnalysisResult:
     notes: list[str] = field(default_factory=list)
     issues: list[str] = field(default_factory=list)
     tool_availability: dict[str, bool] = field(default_factory=dict)  # Which tools were available
+    tool_status: dict[str, dict[str, Any]] = field(default_factory=dict)
+    evidence_coverage: dict[str, Any] = field(default_factory=dict)
 
 
 class AnalysisOrchestrator:
@@ -202,6 +207,29 @@ class AnalysisOrchestrator:
                     {"stage": "quick", "adapter": "libmagic", "error": str(exc)},
                 )
 
+        try:
+            self._emit_progress(progress_callback, "adapter_started", {"stage": "quick", "adapter": "runtime"})
+            runtime_info = get_runtime_requirements(binary)
+            if "error" in runtime_info:
+                result.quick_scan["runtime"] = {"error": runtime_info["error"]}
+            else:
+                result.quick_scan["runtime"] = runtime_info.get("runtime", {})
+                result.quick_scan["readelf"] = runtime_info.get("readelf", {})
+                result.quick_scan["packer"] = runtime_info.get("packer", {})
+            self._record_action(trajectory, "runtime.quick", runtime_info)
+            self._emit_progress(
+                progress_callback,
+                "adapter_completed",
+                {"stage": "quick", "adapter": "runtime", "payload": runtime_info},
+            )
+        except Exception as exc:  # pragma: no cover - best effort
+            result.notes.append(f"runtime requirements failed: {exc}")
+            self._emit_progress(
+                progress_callback,
+                "adapter_failed",
+                {"stage": "quick", "adapter": "runtime", "error": str(exc)},
+            )
+
         if radare:
             try:
                 self._emit_progress(progress_callback, "adapter_started", {"stage": "quick", "adapter": "radare2"})
@@ -241,6 +269,45 @@ class AnalysisOrchestrator:
     ) -> None:
         _LOGGER.info("Starting deep analysis: %s", binary)
         self._emit_progress(progress_callback, "stage_started", {"stage": "deep"})
+        lock = threading.Lock()
+
+        def update_tool_status(adapter_name: str, payload: dict[str, Any] | None, error: str | None = None) -> None:
+            summary = self._summarize_tool_payload(adapter_name, payload, result.quick_scan)
+            if error:
+                summary["status"] = "failed"
+                summary["error"] = error
+            with lock:
+                result.tool_status[adapter_name] = summary
+
+        def run_adapter(
+            adapter_name: str,
+            adapter: AnalyzerAdapter,
+            runner: Callable[[], dict[str, Any]],
+            *,
+            issue_on_fail: bool,
+            note_on_fail: bool,
+        ) -> None:
+            try:
+                self._emit_progress(
+                    progress_callback, "adapter_started", {"stage": "deep", "adapter": adapter_name}
+                )
+                payload = runner()
+                with lock:
+                    result.deep_scan[adapter_name] = payload
+                self._record_action(trajectory, f"{adapter_name}.deep", payload)
+                self._emit_progress(
+                    progress_callback, "adapter_completed", {"stage": "deep", "adapter": adapter_name, "payload": payload}
+                )
+                update_tool_status(adapter_name, payload)
+            except AdapterUnavailable as exc:
+                if issue_on_fail:
+                    result.issues.append(str(exc))
+                if note_on_fail:
+                    result.notes.append(str(exc))
+                self._emit_progress(
+                    progress_callback, "adapter_failed", {"stage": "deep", "adapter": adapter_name, "error": str(exc)}
+                )
+                update_tool_status(adapter_name, None, error=str(exc))
         radare = self._registry.get("radare2") if self._has_adapter("radare2") else None
         ghidra = self._registry.get("ghidra") if self._has_adapter("ghidra") else None
         capstone = self._registry.get("capstone") if self._has_adapter("capstone") else None
@@ -265,6 +332,7 @@ class AnalysisOrchestrator:
                     "adapter_completed",
                     {"stage": "deep", "adapter": "radare2", "payload": deep},
                 )
+                update_tool_status("radare2", deep)
             except AdapterUnavailable as exc:
                 result.issues.append(str(exc))
                 self._emit_progress(
@@ -272,126 +340,50 @@ class AnalysisOrchestrator:
                     "adapter_failed",
                     {"stage": "deep", "adapter": "radare2", "error": str(exc)},
                 )
+                update_tool_status("radare2", None, error=str(exc))
+
+        tasks: list[tuple[str, AnalyzerAdapter, Callable[[], dict[str, Any]], bool, bool]] = []
 
         if ghidra:
-            try:
-                self._emit_progress(progress_callback, "adapter_started", {"stage": "deep", "adapter": "ghidra"})
-                ghidra_payload = ghidra.deep_scan(binary, resource_tree=result.resource_tree)
-                result.deep_scan["ghidra"] = ghidra_payload
-                self._record_action(trajectory, "ghidra.deep", ghidra_payload)
-                self._emit_progress(
-                    progress_callback,
-                    "adapter_completed",
-                    {"stage": "deep", "adapter": "ghidra", "payload": ghidra_payload},
-                )
-            except AdapterUnavailable as exc:
-                result.issues.append(str(exc))
-                self._emit_progress(
-                    progress_callback,
-                    "adapter_failed",
-                    {"stage": "deep", "adapter": "ghidra", "error": str(exc)},
-                )
+            tasks.append((
+                "ghidra",
+                ghidra,
+                lambda: ghidra.deep_scan(binary, resource_tree=result.resource_tree),
+                True,
+                False,
+            ))
 
         if capstone and result.resource_tree:
-            try:
-                self._emit_progress(progress_callback, "adapter_started", {"stage": "deep", "adapter": "capstone"})
+            def _capstone_run() -> dict[str, Any]:
                 quick = result.quick_scan.get("radare2", {})
                 info = quick.get("info", {}) if isinstance(quick, dict) else {}
                 arch = info.get("bin", {}).get("arch") if isinstance(info.get("bin"), dict) else None
                 entry = info.get("bin", {}).get("baddr") if isinstance(info.get("bin"), dict) else None
-                capstone_payload = capstone.quick_scan(binary, arch=arch, entry=entry)
-                result.deep_scan["capstone"] = capstone_payload
-                self._record_action(trajectory, "capstone.quick", capstone_payload)
-                self._emit_progress(
-                    progress_callback,
-                    "adapter_completed",
-                    {"stage": "deep", "adapter": "capstone", "payload": capstone_payload},
-                )
-            except AdapterUnavailable as exc:
-                result.notes.append(str(exc))
-                self._emit_progress(
-                    progress_callback,
-                    "adapter_failed",
-                    {"stage": "deep", "adapter": "capstone", "error": str(exc)},
-                )
+                return capstone.quick_scan(binary, arch=arch, entry=entry)
+
+            tasks.append(("capstone", capstone, _capstone_run, False, True))
 
         if dwarf:
-            try:
-                self._emit_progress(progress_callback, "adapter_started", {"stage": "deep", "adapter": "dwarf"})
-                dwarf_payload = dwarf.deep_scan(binary)
-                result.deep_scan["dwarf"] = dwarf_payload
-                self._record_action(trajectory, "dwarf.deep", dwarf_payload)
-                self._emit_progress(
-                    progress_callback,
-                    "adapter_completed",
-                    {"stage": "deep", "adapter": "dwarf", "payload": dwarf_payload},
-                )
-            except AdapterUnavailable as exc:
-                result.notes.append(str(exc))
-                self._emit_progress(
-                    progress_callback,
-                    "adapter_failed",
-                    {"stage": "deep", "adapter": "dwarf", "error": str(exc)},
-                )
+            tasks.append(("dwarf", dwarf, lambda: dwarf.deep_scan(binary), False, True))
 
         if angr:
-            try:
-                self._emit_progress(progress_callback, "adapter_started", {"stage": "deep", "adapter": "angr"})
-                angr_payload = angr.deep_scan(binary)
-                result.deep_scan["angr"] = angr_payload
-                self._record_action(trajectory, "angr.deep", angr_payload)
-                self._emit_progress(
-                    progress_callback,
-                    "adapter_completed",
-                    {"stage": "deep", "adapter": "angr", "payload": angr_payload},
-                )
-            except AdapterUnavailable as exc:
-                result.notes.append(str(exc))
-                self._emit_progress(
-                    progress_callback,
-                    "adapter_failed",
-                    {"stage": "deep", "adapter": "angr", "error": str(exc)},
-                )
-
-        if frida:
-            try:
-                self._emit_progress(progress_callback, "adapter_started", {"stage": "deep", "adapter": "frida"})
-                frida_payload = frida.deep_scan(binary)
-                result.deep_scan["frida"] = frida_payload
-                self._record_action(trajectory, "frida.deep", frida_payload)
-                self._emit_progress(
-                    progress_callback,
-                    "adapter_completed",
-                    {"stage": "deep", "adapter": "frida", "payload": frida_payload},
-                )
-            except AdapterUnavailable as exc:
-                result.notes.append(str(exc))
-                self._emit_progress(
-                    progress_callback,
-                    "adapter_failed",
-                    {"stage": "deep", "adapter": "frida", "error": str(exc)},
-                )
+            tasks.append(("angr", angr, lambda: angr.deep_scan(binary), False, True))
 
         if gef:
-            try:
-                self._emit_progress(progress_callback, "adapter_started", {"stage": "deep", "adapter": "gef"})
-                gef_payload = gef.deep_scan(binary)
-                result.deep_scan["gef"] = gef_payload
-                self._record_action(trajectory, "gef.deep", gef_payload)
-                self._emit_progress(
-                    progress_callback,
-                    "adapter_completed",
-                    {"stage": "deep", "adapter": "gef", "payload": gef_payload},
-                )
-            except AdapterUnavailable as exc:
-                result.notes.append(str(exc))
-                self._emit_progress(
-                    progress_callback,
-                    "adapter_failed",
-                    {"stage": "deep", "adapter": "gef", "error": str(exc)},
-                )
+            tasks.append(("gef", gef, lambda: gef.deep_scan(binary), False, True))
+
+        if tasks:
+            with ThreadPoolExecutor(max_workers=min(len(tasks), self._config.performance.parallel_functions)) as executor:
+                futures = {
+                    executor.submit(run_adapter, name, adapter, runner, issue_on_fail=issue, note_on_fail=note): name
+                    for name, adapter, runner, issue, note in tasks
+                }
+                for future in as_completed(futures):
+                    future.result()
 
         self._emit_progress(progress_callback, "stage_completed", {"stage": "deep"})
+
+        result.evidence_coverage = self._build_evidence_coverage(result)
 
     def _init_resource_tree(self, binary: Path, scan: dict[str, Any]) -> Resource:
         info = scan.get("info", {}) if isinstance(scan, dict) else {}
@@ -449,6 +441,139 @@ class AnalysisOrchestrator:
             return
         action_entry = TrajectoryAction(action=action, payload=payload)
         self._trajectory_dao.append_action(trajectory, action_entry)
+
+    def _summarize_tool_payload(
+        self,
+        adapter_name: str,
+        payload: dict[str, Any] | None,
+        quick_scan: dict[str, Any],
+    ) -> dict[str, Any]:
+        summary: dict[str, Any] = {
+            "status": "completed" if payload else "failed",
+            "functions_count": 0,
+            "cfg_nodes": 0,
+            "cfg_edges": 0,
+            "memory_allocations": [],
+            "warnings": [],
+        }
+        if not payload:
+            return summary
+
+        def extract_symbol_names(entries: list[dict[str, Any]]) -> list[str]:
+            names: list[str] = []
+            for entry in entries:
+                name = entry.get("name")
+                if isinstance(name, str):
+                    names.append(name)
+            return names
+
+        alloc_symbols = {
+            "malloc",
+            "calloc",
+            "realloc",
+            "free",
+            "new",
+            "delete",
+            "operator_new",
+            "operator_delete",
+            "mmap",
+            "brk",
+        }
+
+        functions = payload.get("functions", [])
+        if isinstance(functions, list):
+            summary["functions_count"] = len(functions)
+
+        if adapter_name == "radare2":
+            function_cfgs = payload.get("function_cfgs", [])
+            if isinstance(function_cfgs, list):
+                block_count = 0
+                edge_count = 0
+                for fn in function_cfgs:
+                    blocks = fn.get("blocks", []) if isinstance(fn, dict) else []
+                    if isinstance(blocks, list):
+                        block_count += len(blocks)
+                        for block in blocks:
+                            if not isinstance(block, dict):
+                                continue
+                            if block.get("jump"):
+                                edge_count += 1
+                            if block.get("fail"):
+                                edge_count += 1
+                summary["cfg_nodes"] = block_count
+                summary["cfg_edges"] = edge_count
+            imports = quick_scan.get("radare2", {}).get("imports", [])
+            if isinstance(imports, list):
+                names = extract_symbol_names(imports)
+                summary["memory_allocations"] = sorted({n for n in names if n in alloc_symbols})
+
+        if adapter_name == "angr":
+            cfg = payload.get("cfg", {})
+            if isinstance(cfg, dict):
+                summary["cfg_nodes"] = int(cfg.get("node_count") or 0)
+                summary["cfg_edges"] = int(cfg.get("edge_count") or 0)
+            names = extract_symbol_names(functions) if isinstance(functions, list) else []
+            summary["memory_allocations"] = sorted({n for n in names if n in alloc_symbols})
+
+        if adapter_name == "ghidra":
+            names = extract_symbol_names(functions) if isinstance(functions, list) else []
+            summary["memory_allocations"] = sorted({n for n in names if n in alloc_symbols})
+
+        if adapter_name == "capstone":
+            summary["warnings"].append("Instruction-only output (no functions/CFG).")
+            summary["status"] = "partial"
+
+        if summary["functions_count"] == 0 and summary["cfg_nodes"] == 0 and adapter_name in {"radare2", "angr", "ghidra"}:
+            summary["status"] = "partial"
+            summary["warnings"].append("No functions/CFG extracted.")
+
+        return summary
+
+    def _build_evidence_coverage(self, result: AnalysisResult) -> dict[str, Any]:
+        columns = ["functions", "cfg", "strings", "imports", "runtime", "allocs", "packer"]
+        rows = ["radare2", "ghidra", "angr", "capstone", "dwarf", "readelf", "packer"]
+
+        r2_quick = result.quick_scan.get("radare2", {}) if isinstance(result.quick_scan, dict) else {}
+        r2_strings = r2_quick.get("strings", []) if isinstance(r2_quick, dict) else []
+        r2_imports = r2_quick.get("imports", []) if isinstance(r2_quick, dict) else []
+
+        runtime = result.quick_scan.get("runtime", {})
+        readelf = result.quick_scan.get("readelf", {})
+        packer = result.quick_scan.get("packer", {})
+
+        def status_cell(value: bool | None) -> str:
+            if value is None:
+                return "missing"
+            return "present" if value else "missing"
+
+        matrix: dict[str, dict[str, str]] = {row: {col: "missing" for col in columns} for row in rows}
+
+        tool_status = result.tool_status or {}
+        for tool in ("radare2", "ghidra", "angr", "capstone", "dwarf"):
+            summary = tool_status.get(tool, {})
+            functions = (summary.get("functions_count") or 0) > 0
+            cfg = (summary.get("cfg_nodes") or 0) > 0
+            allocs = bool(summary.get("memory_allocations"))
+            matrix[tool]["functions"] = status_cell(functions)
+            matrix[tool]["cfg"] = "present" if cfg else ("partial" if summary.get("status") == "partial" else "missing")
+            matrix[tool]["allocs"] = status_cell(allocs)
+
+        matrix["radare2"]["strings"] = status_cell(len(r2_strings) > 0)
+        matrix["radare2"]["imports"] = status_cell(len(r2_imports) > 0)
+
+        matrix["readelf"]["runtime"] = status_cell(bool(runtime) and "error" not in runtime)
+        matrix["readelf"]["imports"] = status_cell(bool(runtime) and bool(runtime.get("needed")))
+        matrix["readelf"]["strings"] = "missing"
+
+        matrix["packer"]["packer"] = status_cell(bool(packer) and bool(packer.get("detected")))
+        if packer and packer.get("detected") is False:
+            matrix["packer"]["packer"] = "partial"
+
+        return {
+            "columns": columns,
+            "rows": rows,
+            "matrix": matrix,
+        }
 
     def _emit_progress(
         self,

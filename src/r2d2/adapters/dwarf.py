@@ -92,6 +92,7 @@ class DWARFAdapter:
             "types": [],
             "source_files": [],
             "line_programs": [],
+            "command": "pyelftools DWARF parse",
         }
 
         try:

@@ -33,6 +33,7 @@ import {
   useTheme,
 } from '@mui/material';
 import { FC, memo, useCallback, useMemo, useState } from 'react';
+import CodeEditor from './CodeEditor';
 
 // Script language options
 type ScriptLanguage = 'python' | 'java';
@@ -82,6 +83,7 @@ const GhidraScriptingPanel: FC<GhidraScriptingPanelProps> = memo(({
   const [error, setError] = useState<string | null>(null);
   const [taskHistory, setTaskHistory] = useState<ScriptTask[]>([]);
   const [showHistory, setShowHistory] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<string | null>(null);
 
   // Generate script from task description
   const handleGenerateScript = useCallback(async () => {
@@ -251,6 +253,37 @@ const GhidraScriptingPanel: FC<GhidraScriptingPanelProps> = memo(({
     a.click();
     URL.revokeObjectURL(url);
   }, [currentScript, language]);
+
+  const handleSaveScript = useCallback(async () => {
+    if (!currentScript || !sessionId) return;
+    setSaveStatus(null);
+    try {
+      const response = await fetch(`/api/chats/${sessionId}/messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          content: `Saved Ghidra script: ${taskDescription || 'Untitled task'}`,
+          call_llm: false,
+          attachments: [{
+            type: 'ghidra_script',
+            task: taskDescription || null,
+            language,
+            script: currentScript,
+            created_at: new Date().toISOString(),
+          }],
+        }),
+      });
+      if (!response.ok) {
+        const errorBody = await response.json().catch(() => ({}));
+        throw new Error(errorBody.error || 'Failed to save script');
+      }
+      setSaveStatus('Saved');
+      setTimeout(() => setSaveStatus(null), 2000);
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : 'Failed to save script';
+      setError(errorMsg);
+    }
+  }, [currentScript, sessionId, taskDescription, language]);
 
   // Load a task from history
   const handleLoadFromHistory = useCallback((task: ScriptTask) => {
@@ -445,21 +478,33 @@ const GhidraScriptingPanel: FC<GhidraScriptingPanelProps> = memo(({
                     </Tooltip>
                     <Button
                       size="small"
+                      variant="outlined"
+                      onClick={handleSaveScript}
+                      disabled={!sessionId}
+                    >
+                      {saveStatus || 'Save'}
+                    </Button>
+                    <Button
+                      size="small"
                       variant="contained"
                       color="success"
                       startIcon={executing ? <CircularProgress size={14} color="inherit" /> : <PlayArrowIcon />}
                       onClick={handleExecuteScript}
                       disabled={executing || !sessionId}
                     >
-                      {executing ? 'Running...' : 'Execute'}
+                      {executing ? 'Running...' : 'Execute & Save'}
                     </Button>
                   </Stack>
                 </Stack>
-                <Paper variant="outlined" sx={codeStyle}>
-                  <Box component="code">
-                    {currentScript}
-                  </Box>
-                </Paper>
+                <CodeEditor
+                  value={currentScript}
+                  onChange={setCurrentScript}
+                  language={language === 'python' ? 'python' : 'java'}
+                  height="320px"
+                />
+                <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
+                  Edit the script above. Use Save to store it in this session, or Execute to run it and store output.
+                </Typography>
               </Box>
             )}
 

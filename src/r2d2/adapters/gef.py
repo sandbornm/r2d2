@@ -229,6 +229,7 @@ class GEFAdapter:
                 return {
                     "mode": "gef",
                     "binary": str(binary),
+                    "command": " ".join(cmd),
                     "returncode": data.get("returncode", result.returncode),
                     "trace": trace.to_dict(),
                     "error": data.get("error"),
@@ -237,6 +238,7 @@ class GEFAdapter:
                 return {
                     "mode": "gef",
                     "binary": str(binary),
+                    "command": " ".join(cmd),
                     "returncode": result.returncode,
                     "error": "No output generated",
                     "stdout": result.stdout[-500:] if result.stdout else "",
@@ -247,6 +249,7 @@ class GEFAdapter:
             return {
                 "mode": "gef",
                 "binary": str(binary),
+                "command": " ".join(cmd),
                 "error": f"Analysis timed out after {self.timeout}s",
             }
 
