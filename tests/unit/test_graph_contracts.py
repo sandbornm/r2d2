@@ -42,6 +42,27 @@ def test_analysis_graph_normalizes_multitool_findings(tmp_path: Path):
                         "name": "SquashFS LE",
                     }
                 ],
+                "string_signals": {
+                    "matched_count": 2,
+                    "category_counts": {"credential": 1, "network": 1},
+                    "top_signals": [
+                        {
+                            "category": "credential",
+                            "label": "Credential or default-login material",
+                            "value": "admin_password=root",
+                            "offset": 6144,
+                            "offset_hex": "0x1800",
+                            "confidence": 0.82,
+                        }
+                    ],
+                },
+                "entropy": {
+                    "window_size": 65536,
+                    "sampled_windows": 1,
+                    "average": 7.98,
+                    "max": 7.98,
+                    "high_entropy_windows": [{"offset": 0, "offset_hex": "0x0", "entropy": 7.98, "size": 65536}],
+                },
             },
             "radare2": {
                 "info": {"bin": {"arch": "arm", "bits": 64, "os": "linux"}},
@@ -103,6 +124,14 @@ def test_analysis_graph_normalizes_multitool_findings(tmp_path: Path):
     assert any(node["kind"] == "cfg_summary" and node["source"] == "angr_mcp" for node in graph["nodes"])
     assert any(edge["kind"] == "has_cfg_summary" and edge["source_tool"] == "angr_mcp" for edge in graph["edges"])
     assert any(node["kind"] == "embedded_artifact" and node["address"] == "0x1000" for node in graph["nodes"])
+    assert any(
+        node["kind"] == "string"
+        and node["source"] == "firmware"
+        and node["address"] == "0x1800"
+        and node["properties"]["category"] == "credential"
+        for node in graph["nodes"]
+    )
+    assert any(edge["kind"] == "has_string_signal" and edge["source_tool"] == "firmware" for edge in graph["edges"])
     assert any(edge["kind"] == "suggests_target" for edge in graph["edges"])
     assert any(edge["kind"] == "candidate_for" for edge in graph["edges"])
 

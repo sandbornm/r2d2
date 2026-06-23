@@ -351,11 +351,35 @@ def _add_firmware_quick(acc: _GraphAccumulator, firmware: Any) -> None:
                 "top_level_format",
                 "container_type",
                 "scan",
+                "string_signals",
+                "entropy",
                 "notes",
             ],
         ),
     )
     acc.add_edge("has_inventory", acc.binary_node_id, profile_id, source_tool="firmware")
+
+    for signal in _as_list((firmware.get("string_signals") or {}).get("top_signals"))[:100]:
+        if not isinstance(signal, dict):
+            continue
+        value = _first_text(signal.get("value"))
+        if not value:
+            continue
+        offset = signal.get("offset")
+        category = _first_text(signal.get("category"), default="firmware_signal")
+        signal_id = _node_id("firmware_signal", f"{offset}:{category}:{value}")
+        acc.add_node(
+            signal_id,
+            kind="string",
+            label=value[:100],
+            source="firmware",
+            address=_normalize_address(offset),
+            properties=_pick(
+                signal,
+                ["category", "label", "value", "offset", "offset_hex", "confidence"],
+            ),
+        )
+        acc.add_edge("has_string_signal", profile_id, signal_id, source_tool="firmware", confidence=0.75)
 
     recommended_offsets = {
         int(item.get("offset"))

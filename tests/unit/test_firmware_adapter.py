@@ -56,3 +56,36 @@ def test_firmware_adapter_classifies_top_level_elf(tmp_path: Path):
     assert result["is_elf"] is True
     assert result["top_level_format"] == "elf"
     assert result["container_type"] == "executable"
+
+
+def test_firmware_adapter_reports_string_signals_and_entropy(tmp_path: Path):
+    high_entropy = bytes(range(256)) * 256
+    signal_strings = b"\x00".join(
+        [
+            b"admin_password=root",
+            b"http://updates.example/router.bin",
+            b"/etc/init.d/telnetd",
+            b"system",
+            b"-----BEGIN RSA PRIVATE KEY-----",
+        ]
+    )
+    path = tmp_path / "router-with-signals.bin"
+    path.write_bytes(high_entropy + b"\x00" + signal_strings)
+
+    result = FirmwareAdapter(run_binwalk=False).quick_scan(path)
+
+    signals = result["string_signals"]
+    assert signals["matched_count"] >= 5
+    assert signals["category_counts"]["credential"] >= 2
+    assert signals["category_counts"]["network"] >= 1
+    assert signals["category_counts"]["service"] >= 1
+    assert signals["category_counts"]["dangerous_api"] >= 1
+    assert any(signal["value"] == "admin_password=root" for signal in signals["top_signals"])
+    assert any(signal["offset_hex"].startswith("0x") for signal in signals["top_signals"])
+
+    entropy = result["entropy"]
+    assert entropy["sampled_windows"] >= 1
+    assert entropy["max"] >= 7.9
+    assert entropy["high_entropy_windows"][0]["offset"] == 0
+    assert any("security-relevant strings" in note for note in result["notes"])
+    assert any("High-entropy regions" in note for note in result["notes"])

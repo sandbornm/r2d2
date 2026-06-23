@@ -8,15 +8,31 @@ used as targets for later Ghidra/angr/radare2 passes.
 from __future__ import annotations
 
 import hashlib
+import math
+import re
 import shutil
 import struct
 import subprocess
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 
 _MIB = 1024 * 1024
+_MAX_SIGNAL_STRINGS = 20
+_MAX_TOP_STRING_SIGNALS = 36
+_MAX_ENTROPY_WINDOWS = 512
+_ENTROPY_WINDOW_SIZE = 64 * 1024
+_HIGH_ENTROPY_THRESHOLD = 7.2
+
+
+@dataclass(frozen=True, slots=True)
+class _StringRule:
+    category: str
+    label: str
+    pattern: re.Pattern[str]
+    confidence: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +67,64 @@ _SIGNATURES: tuple[_Signature, ...] = (
 )
 
 
+_STRING_RULES: tuple[_StringRule, ...] = (
+    _StringRule(
+        "credential",
+        "Credential or default-login material",
+        re.compile(r"password|passwd|pwd=|credential|secret|token|admin|root|login|auth"),
+        0.82,
+    ),
+    _StringRule(
+        "credential",
+        "Private key material",
+        re.compile(r"-----begin [a-z0-9 ]*private key-----|/etc/shadow|/etc/passwd"),
+        0.95,
+    ),
+    _StringRule(
+        "network",
+        "Network endpoint or protocol",
+        re.compile(r"https?://|ftp://|tftp|telnet|dropbear|ssh|upnp|dnsmasq|socket|connect"),
+        0.78,
+    ),
+    _StringRule(
+        "network",
+        "IPv4 address",
+        re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"),
+        0.72,
+    ),
+    _StringRule(
+        "service",
+        "Exposed service daemon",
+        re.compile(r"telnetd|sshd|httpd|uhttpd|lighttpd|boa|busybox|smbd|ftpd|dropbear"),
+        0.8,
+    ),
+    _StringRule(
+        "crypto",
+        "Crypto or certificate handling",
+        re.compile(r"openssl|mbedtls|wolfssl|ssl|tls|x509|certificate|cert|aes|rsa|sha\d*|md5"),
+        0.72,
+    ),
+    _StringRule(
+        "filesystem",
+        "Firmware filesystem path",
+        re.compile(r"/etc/|/bin/|/sbin/|/usr/|/var/|/tmp/|init\.d|rc\.d|mtd|nvram|uci"),
+        0.76,
+    ),
+    _StringRule(
+        "update",
+        "Firmware update or boot path",
+        re.compile(r"firmware|upgrade|update|flash|bootloader|u-boot|kernel|squashfs|ubi|mtdblock"),
+        0.74,
+    ),
+    _StringRule(
+        "dangerous_api",
+        "Dangerous API or command primitive",
+        re.compile(r"\bsystem\b|\bexec\b|popen|strcpy|sprintf|memcpy|wget|curl|chmod|chown"),
+        0.76,
+    ),
+)
+
+
 @dataclass(slots=True)
 class FirmwareAdapter:
     """Detect embedded firmware components without requiring extraction tools."""
@@ -73,6 +147,8 @@ class FirmwareAdapter:
         size_bytes = binary.stat().st_size
         data = self._read_prefix(binary)
         artifacts = self._scan_signatures(data)
+        string_signals = self._scan_string_signals(data)
+        entropy = self._entropy_profile(data)
         binwalk_available = shutil.which("binwalk") is not None
         binwalk_used = False
 
@@ -110,6 +186,8 @@ class FirmwareAdapter:
             "recommended_targets": recommended_targets,
             "carved_targets": carved_targets,
             "fanout_tasks": fanout_tasks,
+            "string_signals": string_signals,
+            "entropy": entropy,
             "extraction": {
                 "enabled": True,
                 "output_dir": str(self._output_dir(binary)),
@@ -117,7 +195,15 @@ class FirmwareAdapter:
                 "max_carve_bytes": self.max_carve_bytes,
                 "strategy": "bounded signature carving; use binwalk/unsquashfs for full filesystem extraction",
             },
-            "notes": self._notes(size_bytes, data, artifacts, binwalk_available, binwalk_used),
+            "notes": self._notes(
+                size_bytes,
+                data,
+                artifacts,
+                string_signals,
+                entropy,
+                binwalk_available,
+                binwalk_used,
+            ),
         }
 
     def deep_scan(self, binary: Path, *, resource_tree: Any | None = None, **kwargs: Any) -> dict[str, Any]:
@@ -151,6 +237,149 @@ class FirmwareAdapter:
                 hits += 1
                 start = offset + max(1, len(signature.pattern))
         return sorted(artifacts, key=lambda item: (int(item["offset"]), str(item["kind"])))
+
+    def _scan_string_signals(self, data: bytes) -> dict[str, Any]:
+        categories: dict[str, list[dict[str, Any]]] = {
+            rule.category: [] for rule in _STRING_RULES
+        }
+        category_counts: dict[str, int] = {category: 0 for category in categories}
+        seen_values: dict[str, set[str]] = {category: set() for category in categories}
+        total_strings = 0
+
+        for offset, value in self._iter_ascii_strings(data):
+            total_strings += 1
+            lower = value.lower()
+            for rule in _STRING_RULES:
+                if not rule.pattern.search(lower):
+                    continue
+                if value in seen_values[rule.category]:
+                    continue
+                seen_values[rule.category].add(value)
+                category_counts[rule.category] += 1
+                if len(categories[rule.category]) >= _MAX_SIGNAL_STRINGS:
+                    continue
+                categories[rule.category].append(
+                    {
+                        "category": rule.category,
+                        "label": rule.label,
+                        "value": value[:240],
+                        "offset": offset,
+                        "offset_hex": f"0x{offset:x}",
+                        "confidence": rule.confidence,
+                    }
+                )
+
+        populated_categories = {
+            category: hits for category, hits in categories.items() if hits
+        }
+        populated_counts = {
+            category: count for category, count in category_counts.items() if count
+        }
+        top_signals = sorted(
+            (hit for hits in populated_categories.values() for hit in hits),
+            key=lambda item: (
+                -float(item.get("confidence", 0.0)),
+                int(item.get("offset", 0)),
+                str(item.get("value", "")),
+            ),
+        )[:_MAX_TOP_STRING_SIGNALS]
+        return {
+            "total_strings": total_strings,
+            "matched_count": sum(populated_counts.values()),
+            "category_counts": populated_counts,
+            "categories": populated_categories,
+            "top_signals": top_signals,
+            "string_min_length": 4,
+        }
+
+    def _iter_ascii_strings(self, data: bytes) -> Iterator[tuple[int, str]]:
+        start: int | None = None
+        current = bytearray()
+
+        def pop_string() -> tuple[int, str] | None:
+            nonlocal start, current
+            if start is not None and len(current) >= 4:
+                item = (start, current.decode("utf-8", errors="replace"))
+            else:
+                item = None
+            start = None
+            current = bytearray()
+            return item
+
+        for index, byte in enumerate(data):
+            if 32 <= byte <= 126 or byte in {9}:
+                if start is None:
+                    start = index
+                current.append(byte)
+                continue
+            item = pop_string()
+            if item is not None:
+                yield item
+        item = pop_string()
+        if item is not None:
+            yield item
+
+    def _entropy_profile(self, data: bytes) -> dict[str, Any]:
+        if not data:
+            return {
+                "window_size": _ENTROPY_WINDOW_SIZE,
+                "sampled_windows": 0,
+                "average": 0.0,
+                "max": 0.0,
+                "high_entropy_windows": [],
+            }
+
+        step = max(_ENTROPY_WINDOW_SIZE, math.ceil(len(data) / _MAX_ENTROPY_WINDOWS))
+        windows: list[dict[str, Any]] = []
+        total_entropy = 0.0
+        max_entropy = 0.0
+        sampled = 0
+
+        for offset in range(0, len(data), step):
+            window = data[offset : offset + _ENTROPY_WINDOW_SIZE]
+            if not window:
+                continue
+            entropy = self._shannon_entropy(window)
+            sampled += 1
+            total_entropy += entropy
+            max_entropy = max(max_entropy, entropy)
+            if entropy >= _HIGH_ENTROPY_THRESHOLD:
+                windows.append(
+                    {
+                        "offset": offset,
+                        "offset_hex": f"0x{offset:x}",
+                        "entropy": round(entropy, 3),
+                        "size": len(window),
+                    }
+                )
+
+        high_entropy_windows = sorted(
+            windows,
+            key=lambda item: (-float(item["entropy"]), int(item["offset"])),
+        )[:12]
+        return {
+            "window_size": _ENTROPY_WINDOW_SIZE,
+            "sampled_windows": sampled,
+            "average": round(total_entropy / sampled, 3) if sampled else 0.0,
+            "max": round(max_entropy, 3),
+            "high_entropy_windows": high_entropy_windows,
+            "high_entropy_threshold": _HIGH_ENTROPY_THRESHOLD,
+        }
+
+    def _shannon_entropy(self, data: bytes) -> float:
+        if not data:
+            return 0.0
+        counts = [0] * 256
+        for byte in data:
+            counts[byte] += 1
+        total = len(data)
+        entropy = 0.0
+        for count in counts:
+            if not count:
+                continue
+            probability = count / total
+            entropy -= probability * math.log2(probability)
+        return entropy
 
     def _parse_signature_metadata(self, signature: _Signature, data: bytes, offset: int) -> dict[str, Any]:
         if signature.kind == "device_tree":
@@ -504,6 +733,8 @@ class FirmwareAdapter:
         size_bytes: int,
         data: bytes,
         artifacts: list[dict[str, Any]],
+        string_signals: dict[str, Any],
+        entropy: dict[str, Any],
         binwalk_available: bool,
         binwalk_used: bool,
     ) -> list[str]:
@@ -514,6 +745,18 @@ class FirmwareAdapter:
             notes.append("Top-level subject is not an ELF; use embedded artifacts as code/filesystem targets.")
         if not artifacts:
             notes.append("No common firmware signatures found in the scanned prefix.")
+        signal_counts = string_signals.get("category_counts", {})
+        if isinstance(signal_counts, dict) and signal_counts:
+            categories = ", ".join(
+                f"{category}={count}"
+                for category, count in sorted(signal_counts.items())
+            )
+            notes.append(f"Built-in string triage found security-relevant strings: {categories}.")
+        high_entropy = entropy.get("high_entropy_windows", [])
+        if isinstance(high_entropy, list) and high_entropy:
+            notes.append(
+                f"High-entropy regions were observed in {len(high_entropy)} sampled window(s)."
+            )
         if binwalk_available and not binwalk_used:
             notes.append("binwalk is available but was not needed for the fallback signature scan.")
         if not binwalk_available:

@@ -43,6 +43,40 @@ interface FirmwareFanoutTask {
   reason?: string;
 }
 
+interface FirmwareStringSignal {
+  category?: string;
+  label?: string;
+  value?: string;
+  offset?: number;
+  offset_hex?: string;
+  confidence?: number;
+}
+
+interface FirmwareStringSignals {
+  total_strings?: number;
+  matched_count?: number;
+  category_counts?: Record<string, number>;
+  categories?: Record<string, FirmwareStringSignal[]>;
+  top_signals?: FirmwareStringSignal[];
+  string_min_length?: number;
+}
+
+interface FirmwareEntropyWindow {
+  offset?: number;
+  offset_hex?: string;
+  entropy?: number;
+  size?: number;
+}
+
+interface FirmwareEntropy {
+  window_size?: number;
+  sampled_windows?: number;
+  average?: number;
+  max?: number;
+  high_entropy_windows?: FirmwareEntropyWindow[];
+  high_entropy_threshold?: number;
+}
+
 interface FirmwareData {
   mode?: string;
   size_bytes?: number;
@@ -61,6 +95,8 @@ interface FirmwareData {
   recommended_targets?: FirmwareArtifact[];
   carved_targets?: FirmwareArtifact[];
   fanout_tasks?: FirmwareFanoutTask[];
+  string_signals?: FirmwareStringSignals;
+  entropy?: FirmwareEntropy;
   extraction?: {
     enabled?: boolean;
     output_dir?: string;
@@ -120,6 +156,16 @@ const shortPath = (path: string | undefined): string => {
   if (!path) return '';
   const parts = path.split('/');
   return parts.slice(-2).join('/');
+};
+
+const formatEntropy = (value: number | undefined): string => {
+  if (typeof value !== 'number' || Number.isNaN(value)) return 'n/a';
+  return value.toFixed(2);
+};
+
+const truncateMiddle = (value: string, limit = 72): string => {
+  if (value.length <= limit) return value;
+  return `${value.slice(0, Math.max(16, limit - 16))}...${value.slice(-12)}`;
 };
 
 const countBy = (items: FirmwareArtifact[], key: keyof FirmwareArtifact): Array<[string, number]> => {
@@ -216,6 +262,17 @@ const FirmwareTriagePanel: FC<FirmwareTriagePanelProps> = ({ firmware, profile, 
   const carved = Array.isArray(firmware?.carved_targets) ? firmware.carved_targets : [];
   const fanout = Array.isArray(firmware?.fanout_tasks) ? firmware.fanout_tasks : [];
   const profileData = profile?.profile;
+  const topFirmwareSignals = Array.isArray(firmware?.string_signals?.top_signals) ? firmware.string_signals.top_signals : [];
+  const signalCounts = firmware?.string_signals?.category_counts ?? {};
+  const signalCount = firmware?.string_signals?.matched_count ?? topFirmwareSignals.length;
+  const highEntropyWindows = Array.isArray(firmware?.entropy?.high_entropy_windows) ? firmware.entropy.high_entropy_windows : [];
+  const credentialSignalCount = signalCounts.credential ?? 0;
+  const networkSignalCount = signalCounts.network ?? 0;
+  const serviceSignalCount = signalCounts.service ?? 0;
+  const cryptoSignalCount = signalCounts.crypto ?? 0;
+  const filesystemSignalCount = signalCounts.filesystem ?? 0;
+  const updateSignalCount = signalCounts.update ?? 0;
+  const dangerousApiSignalCount = signalCounts.dangerous_api ?? 0;
 
   const roleCounts = useMemo(() => countBy(artifacts, 'analysis_role'), [artifacts]);
   const kindCounts = useMemo(() => countBy(artifacts, 'kind'), [artifacts]);
@@ -230,11 +287,23 @@ const FirmwareTriagePanel: FC<FirmwareTriagePanelProps> = ({ firmware, profile, 
     if (credentialHits.length) {
       signals.push({ label: 'Credential material', detail: `${credentialHits.length} signature hit(s)`, tone: 'error' });
     }
+    if (credentialSignalCount) {
+      signals.push({ label: 'Credential strings', detail: `${credentialSignalCount} firmware-native hit(s)`, tone: 'error' });
+    }
     if (codeTargets.length) {
       signals.push({ label: 'Executable payloads', detail: `${codeTargets.length} code target(s)`, tone: 'warning' });
     }
     if (filesystemTargets.length) {
       signals.push({ label: 'Filesystem image', detail: `${filesystemTargets.length} extraction target(s)`, tone: 'info' });
+    }
+    if (networkSignalCount || serviceSignalCount) {
+      signals.push({ label: 'Network/service strings', detail: `${networkSignalCount + serviceSignalCount} firmware-native hit(s)`, tone: 'info' });
+    }
+    if (dangerousApiSignalCount) {
+      signals.push({ label: 'Command/API strings', detail: `${dangerousApiSignalCount} firmware-native hit(s)`, tone: 'warning' });
+    }
+    if (highEntropyWindows.length) {
+      signals.push({ label: 'High entropy regions', detail: `${highEntropyWindows.length} sampled window(s)`, tone: 'warning' });
     }
     if (profileData?.network_strings?.length) {
       signals.push({ label: 'Network indicators', detail: `${profileData.network_strings.length} string hit(s)`, tone: 'info' });
@@ -252,19 +321,47 @@ const FirmwareTriagePanel: FC<FirmwareTriagePanelProps> = ({ firmware, profile, 
       signals.push({ label: 'No high-signal indicators', detail: 'Review artifacts and strings manually', tone: 'success' });
     }
     return signals;
-  }, [codeTargets.length, credentialHits.length, filesystemTargets.length, profileData]);
+  }, [
+    codeTargets.length,
+    credentialHits.length,
+    credentialSignalCount,
+    dangerousApiSignalCount,
+    filesystemTargets.length,
+    highEntropyWindows.length,
+    networkSignalCount,
+    profileData,
+    serviceSignalCount,
+  ]);
 
   const nextActions = useMemo(() => {
     const actions: string[] = [];
     if (filesystemTargets.length) actions.push('Extract filesystem targets and inspect init scripts, web roots, configs, and writable paths.');
     if (codeTargets.length) actions.push('Analyze carved ELF/code targets for entry points, imports, unsafe parsing, and update paths.');
     if (credentialHits.length) actions.push('Review credential/certificate hits and determine whether private material ships in the image.');
+    if (credentialSignalCount) actions.push('Validate credential-like strings against extracted configs, web handlers, and default login paths.');
+    if (dangerousApiSignalCount) actions.push('Trace command/API string leads to call sites and input-controlled paths.');
     if (profileData?.network_strings?.length) actions.push('Trace network endpoints, management interfaces, update URLs, and default service exposure.');
+    if (networkSignalCount || serviceSignalCount) actions.push('Map firmware-native network/service strings to daemons, init scripts, and listening sockets.');
     if (profileData?.crypto_strings?.length) actions.push('Check crypto usage, key storage, certificate validation, and custom protocols.');
+    if (cryptoSignalCount) actions.push('Review crypto and certificate strings for custom trust stores, weak algorithms, and key reuse.');
+    if (highEntropyWindows.length) actions.push('Inspect high-entropy regions for compressed, encrypted, or packed payloads before deeper carving.');
     if (!actions.length && artifacts.length) actions.push('Group artifact kinds and decide which container or code target unlocks the next layer.');
     if (!actions.length) actions.push('Run deeper extraction or entropy/string sweeps; no common firmware signatures were found in the scanned prefix.');
     return actions.slice(0, compact ? 3 : 6);
-  }, [artifacts.length, codeTargets.length, compact, credentialHits.length, filesystemTargets.length, profileData]);
+  }, [
+    artifacts.length,
+    codeTargets.length,
+    compact,
+    credentialHits.length,
+    credentialSignalCount,
+    cryptoSignalCount,
+    dangerousApiSignalCount,
+    filesystemTargets.length,
+    highEntropyWindows.length,
+    networkSignalCount,
+    profileData,
+    serviceSignalCount,
+  ]);
 
   if (!firmware) return null;
 
@@ -301,10 +398,22 @@ const FirmwareTriagePanel: FC<FirmwareTriagePanelProps> = ({ firmware, profile, 
           />
         </Grid>
         <Grid item xs={6} md={3}>
-          <StatTile icon={<DataObjectIcon fontSize="small" />} label="Code Targets" value={codeTargets.length} detail={codeTargets[0]?.name || codeTargets[0]?.kind || 'none yet'} tone={codeTargets.length ? 'warn' : 'info'} />
+          <StatTile
+            icon={<DataObjectIcon fontSize="small" />}
+            label="Signal Strings"
+            value={signalCount}
+            detail={`${credentialSignalCount + networkSignalCount + serviceSignalCount} credential/network`}
+            tone={credentialSignalCount || dangerousApiSignalCount ? 'warn' : 'info'}
+          />
         </Grid>
         <Grid item xs={6} md={3}>
-          <StatTile icon={<LanIcon fontSize="small" />} label="String Leads" value={profileData?.total_strings ?? 0} detail={`${profileData?.network_strings?.length ?? 0} network · ${profileData?.crypto_strings?.length ?? 0} crypto`} />
+          <StatTile
+            icon={<LanIcon fontSize="small" />}
+            label="Entropy"
+            value={formatEntropy(firmware.entropy?.max)}
+            detail={highEntropyWindows.length ? `${highEntropyWindows.length} high window(s)` : `${firmware.entropy?.sampled_windows ?? 0} sampled`}
+            tone={highEntropyWindows.length ? 'warn' : 'info'}
+          />
         </Grid>
       </Grid>
 
@@ -375,6 +484,83 @@ const FirmwareTriagePanel: FC<FirmwareTriagePanelProps> = ({ firmware, profile, 
               ))}
             </Stack>
           </Grid>
+
+          {(topFirmwareSignals.length > 0 || Object.keys(signalCounts).length > 0) && (
+            <Grid item xs={12}>
+              <Typography variant="caption" color="text.secondary" fontWeight={700}>
+                Firmware String Signals
+              </Typography>
+              <Stack direction="row" spacing={0.5} flexWrap="wrap" gap={0.5} sx={{ mt: 0.75 }}>
+                {[
+                  ['credential', credentialSignalCount],
+                  ['network', networkSignalCount],
+                  ['service', serviceSignalCount],
+                  ['crypto', cryptoSignalCount],
+                  ['filesystem', filesystemSignalCount],
+                  ['update', updateSignalCount],
+                  ['dangerous_api', dangerousApiSignalCount],
+                ]
+                  .filter(([, count]) => Number(count) > 0)
+                  .map(([category, count]) => (
+                    <Chip
+                      key={category}
+                      size="small"
+                      label={`${humanize(String(category))} ${count}`}
+                      color={category === 'credential' || category === 'dangerous_api' ? 'warning' : 'info'}
+                      variant="outlined"
+                    />
+                  ))}
+              </Stack>
+              {topFirmwareSignals.length > 0 && (
+                <Stack direction="row" spacing={0.5} flexWrap="wrap" gap={0.5} sx={{ mt: 0.75 }}>
+                  {topFirmwareSignals.slice(0, 24).map((signal, index) => {
+                    const value = signal.value || signal.label || 'signal';
+                    const category = signal.category || 'signal';
+                    const color = category === 'credential' || category === 'dangerous_api' ? 'warning' : category === 'network' || category === 'service' ? 'info' : 'default';
+                    return (
+                      <Tooltip
+                        key={`${signal.offset}:${category}:${value}:${index}`}
+                        title={`${humanize(category)} at ${signal.offset_hex || offsetLabel(signal)}${signal.label ? ` · ${signal.label}` : ''}`}
+                      >
+                        <Chip
+                          size="small"
+                          icon={category === 'credential' ? <KeyIcon /> : category === 'network' || category === 'service' ? <LanIcon /> : undefined}
+                          label={`${humanize(category)}: ${truncateMiddle(value)}`}
+                          color={color}
+                          variant="outlined"
+                          sx={{ maxWidth: 420, fontFamily: 'monospace', fontSize: '0.65rem' }}
+                        />
+                      </Tooltip>
+                    );
+                  })}
+                </Stack>
+              )}
+            </Grid>
+          )}
+
+          {highEntropyWindows.length > 0 && (
+            <Grid item xs={12}>
+              <Typography variant="caption" color="text.secondary" fontWeight={700}>
+                High Entropy Windows
+              </Typography>
+              <Stack direction="row" spacing={0.5} flexWrap="wrap" gap={0.5} sx={{ mt: 0.75 }}>
+                {highEntropyWindows.slice(0, 12).map((window, index) => (
+                  <Tooltip
+                    key={`${window.offset}:${window.entropy}:${index}`}
+                    title={`${formatBytes(window.size)} sampled at ${window.offset_hex || offsetLabel(window)}`}
+                  >
+                    <Chip
+                      size="small"
+                      icon={<WarningIcon />}
+                      label={`${window.offset_hex || offsetLabel(window)} entropy ${formatEntropy(window.entropy)}`}
+                      color="warning"
+                      variant="outlined"
+                    />
+                  </Tooltip>
+                ))}
+              </Stack>
+            </Grid>
+          )}
 
           <Grid item xs={12}>
             <Stack direction="row" alignItems="center" spacing={1} mb={0.5}>
