@@ -30,6 +30,7 @@ import MemoryIcon from '@mui/icons-material/Memory';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import ErrorIcon from '@mui/icons-material/Error';
 import InfoIcon from '@mui/icons-material/Info';
+import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import { FC, useCallback, useEffect, useState } from 'react';
 
@@ -82,7 +83,10 @@ interface ToolStatus {
   url?: string;
   active_url?: string;
   command?: string;
+  args?: string[];
   command_available?: boolean;
+  start_command?: string[];
+  working_dir?: string | null;
   status_code?: number;
   capabilities_count?: number;
   latency_ms?: number;
@@ -96,6 +100,13 @@ interface ToolsStatusMeta {
   cached?: boolean;
   live?: boolean;
   generated_at?: string | null;
+}
+
+interface ToolsStartResponse {
+  tools?: ToolsStatusMap;
+  meta?: ToolsStatusMeta;
+  launch?: Record<string, { status: string; details?: string }>;
+  error?: string;
 }
 
 interface SettingsDrawerProps {
@@ -212,7 +223,13 @@ const SettingRow: FC<SettingRowProps> = ({
 };
 
 // Tool status indicator component
-const ToolStatusIndicator: FC<{ name: string; status: ToolStatus }> = ({ name, status }) => {
+const ToolStatusIndicator: FC<{
+  name: string;
+  status: ToolStatus;
+  launching?: boolean;
+  onStart?: (name: string) => void;
+}> = ({ name, status, launching = false, onStart }) => {
+  const canLaunch = (name.endsWith('_mcp') || name === 'ghidra_gdb') && !status.available && Boolean(status.start_command?.length);
   const detail = [
     status.details,
     status.path ? `path: ${status.path}` : null,
@@ -220,6 +237,8 @@ const ToolStatusIndicator: FC<{ name: string; status: ToolStatus }> = ({ name, s
     status.binwalk_available !== undefined ? `binwalk: ${status.binwalk_available ? 'yes' : 'no'}` : null,
     status.transport ? `transport: ${status.transport}` : null,
     status.active_url || status.url || status.command || null,
+    status.start_command?.length ? `run: ${status.start_command.join(' ')}` : null,
+    status.working_dir ? `cwd: ${status.working_dir}` : null,
     status.capabilities_count !== undefined ? `${status.capabilities_count} capabilities` : null,
   ].filter(Boolean).join(' | ');
 
@@ -245,6 +264,21 @@ const ToolStatusIndicator: FC<{ name: string; status: ToolStatus }> = ({ name, s
         >
           {status.available ? 'Ready' : 'Missing'}
         </Typography>
+        {canLaunch && onStart && (
+          <Tooltip title={`Start ${name}`}>
+            <span>
+              <IconButton
+                size="small"
+                aria-label={`Start ${name}`}
+                disabled={launching}
+                onClick={() => onStart(name)}
+                sx={{ width: 22, height: 22 }}
+              >
+                <PlayArrowIcon sx={{ fontSize: 14 }} />
+              </IconButton>
+            </span>
+          </Tooltip>
+        )}
       </Stack>
     </Stack>
   );
@@ -262,6 +296,8 @@ export const SettingsDrawer: FC<SettingsDrawerProps> = ({
   const [toolsStatus, setToolsStatus] = useState<ToolsStatusMap>({});
   const [toolsMeta, setToolsMeta] = useState<ToolsStatusMeta>({});
   const [loadingTools, setLoadingTools] = useState(true);
+  const [launchingTools, setLaunchingTools] = useState<Record<string, boolean>>({});
+  const [launchMessage, setLaunchMessage] = useState<string | null>(null);
 
   // Fetch tools status from backend
   const fetchToolsStatus = useCallback(async () => {
@@ -285,6 +321,29 @@ export const SettingsDrawer: FC<SettingsDrawerProps> = ({
       fetchToolsStatus();
     }
   }, [open, fetchToolsStatus]);
+
+  const startTool = useCallback(async (name: string) => {
+    setLaunchingTools((prev) => ({ ...prev, [name]: true }));
+    setLaunchMessage(null);
+    try {
+      const response = await fetch('/api/tools/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ services: [name] }),
+      });
+      const data: ToolsStartResponse = await response.json();
+      if (!response.ok || data.error) {
+        throw new Error(data.error || `HTTP ${response.status}`);
+      }
+      if (data.tools) setToolsStatus(data.tools);
+      setToolsMeta(data.meta ?? {});
+      setLaunchMessage(`${name}: ${data.launch?.[name]?.status ?? 'started'}`);
+    } catch (err) {
+      setLaunchMessage(`${name}: ${err instanceof Error ? err.message : 'launch failed'}`);
+    } finally {
+      setLaunchingTools((prev) => ({ ...prev, [name]: false }));
+    }
+  }, []);
 
   const updateSetting = <K extends keyof AnalysisSettings>(key: K, value: AnalysisSettings[K]) => {
     onSettingsChange({ ...settings, [key]: value });
@@ -426,6 +485,11 @@ export const SettingsDrawer: FC<SettingsDrawerProps> = ({
                     {toolsMeta.cached ? ' from cache' : ''}
                   </Typography>
                 )}
+                {launchMessage && (
+                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
+                    {launchMessage}
+                  </Typography>
+                )}
                 <LinearProgress 
                   variant="determinate" 
                   value={(availableCount / Math.max(totalCount, 1)) * 100} 
@@ -440,7 +504,13 @@ export const SettingsDrawer: FC<SettingsDrawerProps> = ({
                 />
                 <Box sx={{ mt: 1.5 }}>
                   {orderedToolEntries.map(([name, status]) => (
-                    <ToolStatusIndicator key={name} name={name} status={status} />
+                    <ToolStatusIndicator
+                      key={name}
+                      name={name}
+                      status={status}
+                      launching={launchingTools[name]}
+                      onStart={startTool}
+                    />
                   ))}
                 </Box>
               </>
