@@ -15,11 +15,15 @@ from rich.table import Table
 
 from .config import load_config
 from .environment import MCPConnectionCheck, EnvironmentReport, detect_environment, detect_mcp_connections
+from .environment.ghidra import detect_ghidra
+from .environment.ghidra_setup import GhidraSetupError, GhidraSetupResult, setup_ghidra
 from .llm import ChatMessage as LLMChatMessage, LLMBridge
 from .state import AppState, build_state
 from .utils import to_json
 
 app = typer.Typer(add_completion=False)
+ghidra_app = typer.Typer(help="Inspect or install a local Ghidra distribution.", add_completion=False)
+app.add_typer(ghidra_app, name="ghidra")
 console = Console()
 
 
@@ -124,6 +128,86 @@ def mcp_check(
         console.print(JSON.from_data({name: asdict(check) for name, check in checks.items()}))
         return
     _render_mcp_connections(checks)
+
+
+@ghidra_app.command("status")
+def ghidra_status(
+    config_path: Optional[Path] = typer.Option(None, "--config", help="Path to config TOML"),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON instead of text"),
+) -> None:
+    """Show Ghidra headless/bridge readiness."""
+
+    config = load_config(config_path)
+    detection = detect_ghidra(config)
+    if json_output:
+        console.print(JSON.from_data(_ghidra_detection_to_dict(detection)))
+        return
+
+    status = "[green]Ready" if detection.is_ready else "[red]Not ready"
+    console.print(f"Ghidra: {status}")
+    if detection.install_dir:
+        console.print(f"Install dir: {detection.install_dir}")
+    if detection.headless_path:
+        console.print(f"Headless: {detection.headless_path}")
+    bridge = "[green]connected" if detection.bridge_ready else "[yellow]not connected"
+    console.print(f"Bridge: {bridge}")
+    for issue in detection.issues:
+        console.print(f"  • [red]{issue}")
+    for note in detection.notes:
+        console.print(f"  • [cyan]{note}")
+
+
+@ghidra_app.command("setup")
+def ghidra_setup(
+    version: Optional[str] = typer.Option(
+        None,
+        "--version",
+        "-v",
+        help="Official Ghidra version to resolve via NSA/Ghidra release metadata, for example 11.4.2.",
+    ),
+    url: Optional[str] = typer.Option(None, "--url", help="Explicit Ghidra .zip archive URL."),
+    archive: Optional[Path] = typer.Option(None, "--archive", help="Local Ghidra .zip archive to install."),
+    install_root: Path = typer.Option(
+        Path("~/.local/share/r2d2/tools").expanduser(),
+        "--install-root",
+        help="Directory that will contain the extracted Ghidra installation.",
+    ),
+    force: bool = typer.Option(False, "--force", help="Replace an existing install directory."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Resolve and print the setup plan without downloading/extracting."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON instead of text"),
+) -> None:
+    """Install Ghidra from a version, explicit URL, or local archive."""
+
+    try:
+        result = setup_ghidra(
+            version=version,
+            url=url,
+            archive=archive,
+            install_root=install_root,
+            force=force,
+            dry_run=dry_run,
+        )
+    except GhidraSetupError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+    if json_output:
+        console.print(JSON.from_data(_ghidra_setup_to_dict(result)))
+        return
+
+    title = "Ghidra setup plan" if result.dry_run else "Ghidra installed"
+    table = Table(title=title, show_header=False)
+    if result.version:
+        table.add_row("Version", result.version)
+    if result.archive_url:
+        table.add_row("Archive URL", result.archive_url)
+    if result.archive_path:
+        table.add_row("Archive", str(result.archive_path))
+    table.add_row("Install dir", str(result.install_dir))
+    table.add_row("Headless", str(result.headless_path or "-"))
+    console.print(table)
+    console.print(result.env_line)
+    if not result.dry_run:
+        console.print("Run `uv run r2d2 ghidra status` after exporting GHIDRA_INSTALL_DIR.")
 
 
 @app.command()
@@ -255,6 +339,33 @@ def _format_mcp_command(check: MCPConnectionCheck) -> str | None:
     if check.command:
         return shlex.join([check.command, *check.args])
     return None
+
+
+def _ghidra_setup_to_dict(result: GhidraSetupResult) -> dict[str, Any]:
+    return {
+        "archive_url": result.archive_url,
+        "archive_path": str(result.archive_path) if result.archive_path else None,
+        "install_dir": str(result.install_dir),
+        "headless_path": str(result.headless_path) if result.headless_path else None,
+        "version": result.version,
+        "dry_run": result.dry_run,
+        "ready": result.ready,
+        "env": result.env_line,
+    }
+
+
+def _ghidra_detection_to_dict(detection: Any) -> dict[str, Any]:
+    return {
+        "install_dir": str(detection.install_dir) if detection.install_dir else None,
+        "headless_path": str(detection.headless_path) if detection.headless_path else None,
+        "bridge_available": detection.bridge_available,
+        "bridge_connected": detection.bridge_connected,
+        "bridge_program_loaded": detection.bridge_program_loaded,
+        "extension_root": str(detection.extension_root),
+        "issues": detection.issues,
+        "notes": detection.notes,
+        "ready": detection.is_ready,
+    }
 
 
 def run() -> None:

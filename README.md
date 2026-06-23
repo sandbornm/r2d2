@@ -175,16 +175,30 @@ Ghidra provides decompilation, type recovery, and cross-references. r2d2 support
 
 **Headless Mode (Default)** - Runs `analyzeHeadless` subprocess:
 ```bash
-# Download Ghidra 12.x from https://ghidra-sre.org/
-# Extract to your preferred location
+# Option A: install from an official release version
+uv run r2d2 ghidra setup --version 11.4.2
+
+# Option B: install from an explicit archive URL
+uv run r2d2 ghidra setup --url https://example.test/ghidra_PUBLIC.zip
+
+# Option C: install from a local archive
+uv run r2d2 ghidra setup --archive ~/Downloads/ghidra_PUBLIC.zip
 
 # Set environment variable in your .env or shell:
-export GHIDRA_INSTALL_DIR=/path/to/ghidra_12.0.1_PUBLIC
+export GHIDRA_INSTALL_DIR=~/.local/share/r2d2/tools/<ghidra_dir>
 export JAVA_HOME=/path/to/jdk-21  # Ghidra 12 requires Java 21
+
+# Verify Ghidra readiness
+uv run r2d2 ghidra status
 
 # The R2D2Headless.java script outputs JSON with functions, strings, 
 # and decompiled code. It's automatically copied to ~/ghidra_scripts/
 ```
+
+The `--version` path resolves release metadata from the official
+`NationalSecurityAgency/ghidra` repository because Ghidra archive names include
+build dates. If version resolution fails, pass `--url` with the exact archive
+URL you want to use.
 
 **Bridge Mode (Richer Data)** - Connects to running Ghidra GUI:
 ```bash
@@ -385,11 +399,16 @@ uv sync --extra analyzers
 
 ### "Ghidra not ready" / "analyzeHeadless not found"
 ```bash
-# Ensure GHIDRA_INSTALL_DIR is set
-export GHIDRA_INSTALL_DIR=/path/to/ghidra_12.0.1_PUBLIC
+# Install or plan an install
+uv run r2d2 ghidra setup --version 11.4.2 --dry-run
+uv run r2d2 ghidra setup --archive ~/Downloads/ghidra_PUBLIC.zip
+
+# Ensure GHIDRA_INSTALL_DIR is set to the extracted directory
+export GHIDRA_INSTALL_DIR=~/.local/share/r2d2/tools/<ghidra_dir>
 
 # Verify the script exists
 ls $GHIDRA_INSTALL_DIR/support/analyzeHeadless
+uv run r2d2 ghidra status
 
 # For Ghidra 12+, ensure Java 21 is available
 export JAVA_HOME=/path/to/jdk-21
