@@ -1,4 +1,5 @@
 import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 import ToolStatusBar from '../components/ToolStatusBar';
 
@@ -138,6 +139,64 @@ describe('ToolStatusBar', () => {
 
     await waitFor(() => {
       expect(screen.getByText(/2.*\/.*5/)).toBeInTheDocument();
+    });
+  });
+
+  it('starts unavailable MCP services from the status bar', async () => {
+    const user = userEvent.setup();
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            tools: {
+              angr_mcp: {
+                available: false,
+                description: 'angr MCP',
+                start_command: ['uv', 'run', 'angr-mcp-dev-server'],
+                working_dir: '../angr_mcp',
+              },
+              ghidra: { available: true, description: 'Ghidra' },
+            },
+            available_count: 1,
+            total_count: 2,
+          }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            launch: {
+              angr_mcp: {
+                name: 'angr_mcp',
+                status: 'started',
+                command: ['uv', 'run', 'angr-mcp-dev-server'],
+              },
+            },
+            tools: {
+              angr_mcp: {
+                available: true,
+                description: 'angr MCP',
+                start_command: ['uv', 'run', 'angr-mcp-dev-server'],
+              },
+              ghidra: { available: true, description: 'Ghidra' },
+            },
+            available_count: 2,
+            total_count: 2,
+          }),
+      });
+
+    render(<ToolStatusBar />);
+
+    await user.click(await screen.findByRole('button', { name: /start angr mcp/i }));
+
+    await waitFor(() => {
+      expect(mockFetch).toHaveBeenCalledWith('/api/tools/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ services: ['angr_mcp'] }),
+      });
+      expect(screen.getByText(/angr mcp: started/i)).toBeInTheDocument();
     });
   });
 });

@@ -660,6 +660,21 @@ export interface ToolsStatusResponse {
   meta?: ToolsStatusMeta;
 }
 
+export interface ToolLaunchResult {
+  name: string;
+  status: 'started' | 'planned' | 'completed' | 'skipped' | 'disabled' | 'failed' | string;
+  command: string[];
+  working_dir?: string | null;
+  pid?: number | null;
+  log_path?: string | null;
+  details?: string;
+  url?: string | null;
+}
+
+export interface ToolsStartResponse extends ToolsStatusResponse {
+  launch: Record<string, ToolLaunchResult>;
+}
+
 // Script execution types for chat-driven tool use
 export interface ScriptValidationError {
   message: string;

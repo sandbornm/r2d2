@@ -249,6 +249,9 @@ uv run r2d2 mcp-start --service ghidra_gdb
 The GhidraMCP plugin API still requires opening Ghidra, loading the target
 program, and enabling the plugin HTTP server.
 
+The dashboard tool status bar uses the same launcher for unavailable MCP
+services that have a configured start command.
+
 ### Step 7: Install Frida (Optional)
 
 ```bash

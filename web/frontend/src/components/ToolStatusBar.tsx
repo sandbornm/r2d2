@@ -1,9 +1,10 @@
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import ErrorIcon from '@mui/icons-material/Error';
 import LinkIcon from '@mui/icons-material/Link';
-import { alpha, Box, Chip, CircularProgress, Stack, Tooltip, Typography, useTheme } from '@mui/material';
-import { FC, useEffect, useState } from 'react';
-import type { ToolsStatusResponse, ToolExecutionStatus } from '../types';
+import PlayArrowIcon from '@mui/icons-material/PlayArrow';
+import { alpha, Box, Chip, CircularProgress, IconButton, Stack, Tooltip, Typography, useTheme } from '@mui/material';
+import { FC, useCallback, useEffect, useState } from 'react';
+import type { ToolsStartResponse, ToolsStatusResponse, ToolExecutionStatus } from '../types';
 import { toolColors } from '../theme';
 
 // Tool display configuration
@@ -36,30 +37,34 @@ const ToolStatusBar: FC<ToolStatusBarProps> = ({ compact = false, refreshInterva
   const [status, setStatus] = useState<ToolsStatusResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [launching, setLaunching] = useState<Record<string, boolean>>({});
+  const [launchMessage, setLaunchMessage] = useState<string | null>(null);
+
+  const fetchStatus = useCallback(async (live = false) => {
+    try {
+      const response = await fetch(`/api/tools/status${live ? '?live=1' : ''}`);
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      const data: ToolsStatusResponse = await response.json();
+      setStatus(data);
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Unknown error');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
-    const fetchStatus = async () => {
-      try {
-        const response = await fetch('/api/tools/status');
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}`);
-        }
-        const data = await response.json();
-        setStatus(data);
-        setError(null);
-      } catch (e) {
-        setError(e instanceof Error ? e.message : 'Unknown error');
-      } finally {
-        setLoading(false);
-      }
-    };
+    fetchStatus().catch(console.error);
 
-    fetchStatus();
+    const interval = setInterval(() => {
+      fetchStatus().catch(console.error);
+    }, refreshInterval);
 
-    // Refresh periodically
-    const interval = setInterval(fetchStatus, refreshInterval);
     return () => clearInterval(interval);
-  }, [refreshInterval]);
+  }, [fetchStatus, refreshInterval]);
 
   if (loading) {
     return (
@@ -119,6 +124,40 @@ const ToolStatusBar: FC<ToolStatusBarProps> = ({ compact = false, refreshInterva
     return lines.join('\n');
   };
 
+  const canLaunchTool = (name: string, toolStatus: ToolExecutionStatus) => {
+    return name.endsWith('_mcp') || name === 'ghidra_gdb'
+      ? !toolStatus.available && Boolean(toolStatus.start_command?.length)
+      : false;
+  };
+
+  const startTool = async (name: string) => {
+    setLaunching((prev) => ({ ...prev, [name]: true }));
+    setLaunchMessage(null);
+    try {
+      const response = await fetch('/api/tools/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ services: [name] }),
+      });
+      const data: ToolsStartResponse | { error?: string } = await response.json();
+      if (!response.ok || 'error' in data) {
+        throw new Error(('error' in data && data.error) || `HTTP ${response.status}`);
+      }
+      setStatus({
+        tools: data.tools,
+        available_count: data.available_count,
+        total_count: data.total_count,
+        meta: data.meta,
+      });
+      const result = data.launch[name];
+      setLaunchMessage(`${TOOL_DISPLAY_NAMES[name] || name}: ${result?.status ?? 'started'}`);
+    } catch (e) {
+      setLaunchMessage(`${TOOL_DISPLAY_NAMES[name] || name}: ${e instanceof Error ? e.message : 'launch failed'}`);
+    } finally {
+      setLaunching((prev) => ({ ...prev, [name]: false }));
+    }
+  };
+
   if (compact) {
     return (
       <Stack direction="row" spacing={0.75} alignItems="center">
@@ -166,16 +205,23 @@ const ToolStatusBar: FC<ToolStatusBarProps> = ({ compact = false, refreshInterva
         <Typography variant="caption" color="text.secondary" fontWeight={600}>
           Tool Execution Status
         </Typography>
-        <Chip
-          size="small"
-          label={`${status.available_count} / ${status.total_count} ready`}
-          sx={{
-            height: 18,
-            fontSize: '0.65rem',
-            bgcolor: alpha(theme.palette.primary.main, 0.1),
-            color: 'primary.main',
-          }}
-        />
+        <Stack direction="row" spacing={0.75} alignItems="center">
+          {launchMessage && (
+            <Typography variant="caption" color="text.secondary">
+              {launchMessage}
+            </Typography>
+          )}
+          <Chip
+            size="small"
+            label={`${status.available_count} / ${status.total_count} ready`}
+            sx={{
+              height: 18,
+              fontSize: '0.65rem',
+              bgcolor: alpha(theme.palette.primary.main, 0.1),
+              color: 'primary.main',
+            }}
+          />
+        </Stack>
       </Stack>
       <Stack direction="row" spacing={1} flexWrap="wrap" gap={0.75}>
         {TOOL_ORDER.map((name) => {
@@ -185,37 +231,62 @@ const ToolStatusBar: FC<ToolStatusBarProps> = ({ compact = false, refreshInterva
           const color = getToolColor(name);
           const isAvailable = toolStatus.available;
           const isBridgeConnected = name === 'ghidra' && toolStatus.bridge_connected;
+          const canLaunch = canLaunchTool(name, toolStatus);
 
           return (
-            <Tooltip key={name} title={getToolTooltip(name, toolStatus)} arrow>
-              <Chip
-                size="small"
-                label={TOOL_DISPLAY_NAMES[name] || name}
-                icon={
-                  isAvailable ? (
-                    isBridgeConnected ? (
-                      <LinkIcon sx={{ fontSize: 14 }} />
+            <Stack key={name} direction="row" spacing={0.25} alignItems="center">
+              <Tooltip title={getToolTooltip(name, toolStatus)} arrow>
+                <Chip
+                  size="small"
+                  label={TOOL_DISPLAY_NAMES[name] || name}
+                  icon={
+                    isAvailable ? (
+                      isBridgeConnected ? (
+                        <LinkIcon sx={{ fontSize: 14 }} />
+                      ) : (
+                        <CheckCircleIcon sx={{ fontSize: 14 }} />
+                      )
                     ) : (
-                      <CheckCircleIcon sx={{ fontSize: 14 }} />
+                      <ErrorIcon sx={{ fontSize: 14 }} />
                     )
-                  ) : (
-                    <ErrorIcon sx={{ fontSize: 14 }} />
-                  )
-                }
-                sx={{
-                  height: 24,
-                  bgcolor: isAvailable
-                    ? alpha(color, isDark ? 0.15 : 0.1)
-                    : alpha(theme.palette.error.main, isDark ? 0.1 : 0.05),
-                  color: isAvailable ? color : 'error.main',
-                  border: `1px solid ${isAvailable ? alpha(color, 0.3) : alpha(theme.palette.error.main, 0.3)}`,
-                  opacity: isAvailable ? 1 : 0.6,
-                  '& .MuiChip-icon': {
-                    color: isAvailable ? color : theme.palette.error.main,
-                  },
-                }}
-              />
-            </Tooltip>
+                  }
+                  sx={{
+                    height: 24,
+                    bgcolor: isAvailable
+                      ? alpha(color, isDark ? 0.15 : 0.1)
+                      : alpha(theme.palette.error.main, isDark ? 0.1 : 0.05),
+                    color: isAvailable ? color : 'error.main',
+                    border: `1px solid ${isAvailable ? alpha(color, 0.3) : alpha(theme.palette.error.main, 0.3)}`,
+                    opacity: isAvailable ? 1 : 0.6,
+                    '& .MuiChip-icon': {
+                      color: isAvailable ? color : theme.palette.error.main,
+                    },
+                  }}
+                />
+              </Tooltip>
+              {canLaunch && (
+                <Tooltip title={`Start ${TOOL_DISPLAY_NAMES[name] || name}`}>
+                  <span>
+                    <IconButton
+                      size="small"
+                      aria-label={`Start ${TOOL_DISPLAY_NAMES[name] || name}`}
+                      disableRipple
+                      disabled={launching[name]}
+                      onClick={() => startTool(name)}
+                      sx={{
+                        width: 24,
+                        height: 24,
+                        color,
+                        border: `1px solid ${alpha(color, 0.28)}`,
+                        bgcolor: alpha(color, isDark ? 0.1 : 0.06),
+                      }}
+                    >
+                      {launching[name] ? <CircularProgress size={12} /> : <PlayArrowIcon sx={{ fontSize: 15 }} />}
+                    </IconButton>
+                  </span>
+                </Tooltip>
+              )}
+            </Stack>
           );
         })}
         {/* Show bridge indicator separately if Ghidra bridge is connected */}

@@ -3,6 +3,8 @@
 import pytest
 from unittest.mock import MagicMock, patch
 
+from r2d2.environment.mcp_launcher import MCPLaunchResult
+
 
 @pytest.fixture
 def client():
@@ -215,3 +217,50 @@ class TestToolsStatusEndpoint:
         assert isinstance(data['available_count'], int)
         assert isinstance(data['total_count'], int)
         assert data['total_count'] >= data['available_count']
+
+
+class TestToolsStartEndpoint:
+    """Test POST /api/tools/start endpoint."""
+
+    def test_start_tool_invokes_mcp_launcher(self, client):
+        """Starts selected MCP service and returns launch + refreshed status."""
+        launch_result = MCPLaunchResult(
+            name="angr_mcp",
+            status="started",
+            command=["uv", "run", "angr-mcp-dev-server"],
+            working_dir="../angr_mcp",
+            pid=4242,
+            log_path="/tmp/angr_mcp.log",
+            details="started",
+            url="http://127.0.0.1:8766/mcp",
+        )
+        with patch("r2d2.web.app.launch_mcp_services", return_value={"angr_mcp": launch_result}) as launcher:
+            response = client.post('/api/tools/start', json={"services": ["angr_mcp"]})
+
+        assert response.status_code == 200
+        data = response.get_json()
+        launcher.assert_called_once()
+        assert launcher.call_args.kwargs["selected"] == ["angr_mcp"]
+        assert launcher.call_args.kwargs["dry_run"] is False
+        assert data["launch"]["angr_mcp"]["status"] == "started"
+        assert data["launch"]["angr_mcp"]["pid"] == 4242
+        assert "tools" in data
+        assert "available_count" in data
+
+    def test_start_tool_accepts_single_service_string(self, client):
+        """Accepts a single service name for convenience."""
+        launch_result = MCPLaunchResult(name="ghidra_gdb", status="planned", command=["docker"], details="dry")
+        with patch("r2d2.web.app.launch_mcp_services", return_value={"ghidra_gdb": launch_result}) as launcher:
+            response = client.post('/api/tools/start', json={"service": "ghidra_gdb", "dry_run": True})
+
+        assert response.status_code == 200
+        launcher.assert_called_once()
+        assert launcher.call_args.kwargs["selected"] == ["ghidra_gdb"]
+        assert launcher.call_args.kwargs["dry_run"] is True
+
+    def test_start_tool_rejects_invalid_services_shape(self, client):
+        """Returns 400 for malformed service request."""
+        response = client.post('/api/tools/start', json={"services": {"bad": "shape"}})
+
+        assert response.status_code == 400
+        assert "services" in response.get_json()["error"]

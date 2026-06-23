@@ -20,6 +20,7 @@ from ..analysis import AnalysisOrchestrator, AnalysisResult
 from ..analysis.investigation_graph import build_investigation_graph
 from ..config import AppConfig
 from ..environment.detectors import detect_mcp_connections
+from ..environment.mcp_launcher import MCPLaunchError, launch_mcp_services
 from ..llm import ChatMessage as LLMChatMessage, LLMBridge, LLMError
 from ..state import AppState, build_state
 from ..storage.chat import ChatDAO
@@ -1888,6 +1889,53 @@ Generate ONLY the script code, no explanations before or after. The script shoul
             "tools": tools,
             "available_count": available_count,
             "total_count": total_count,
+            "meta": tools_meta,
+        }))
+
+    @app.post("/api/tools/start")
+    def start_tools() -> Any:
+        """Start configured MCP-backed analysis services."""
+
+        body = request.get_json(silent=True) or {}
+        services_raw = body.get("services") or body.get("service")
+        if isinstance(services_raw, str):
+            services = [services_raw]
+        elif isinstance(services_raw, list):
+            services = [str(service) for service in services_raw if str(service).strip()]
+        elif services_raw is None:
+            services = None
+        else:
+            return jsonify({"error": "services must be a string or list of strings"}), 400
+
+        dry_run = bool(body.get("dry_run", False))
+        foreground = bool(body.get("foreground", False))
+        log_dir_raw = body.get("log_dir")
+        log_dir = Path(str(log_dir_raw)).expanduser() if log_dir_raw else None
+
+        try:
+            launch_results = launch_mcp_services(
+                state.config,
+                selected=services,
+                dry_run=dry_run,
+                foreground=foreground,
+                log_dir=log_dir,
+            )
+        except MCPLaunchError as exc:
+            return jsonify({"error": str(exc)}), 400
+
+        # Force a live refresh after launch attempts so the UI immediately sees
+        # reachable services once they bind their ports.
+        with tools_status_lock:
+            tools_status_cache["payload"] = None
+            tools_status_cache["expires_at"] = 0.0
+        tools, tools_meta = _get_tools_status_cached(state, live=True)
+        available_count = sum(1 for t in tools.values() if t["available"])
+
+        return jsonify(_serialize({
+            "launch": {name: asdict(result) for name, result in launch_results.items()},
+            "tools": tools,
+            "available_count": available_count,
+            "total_count": len(tools),
             "meta": tools_meta,
         }))
 

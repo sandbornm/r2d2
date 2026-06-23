@@ -67,6 +67,9 @@ uv run r2d2 mcp-start --json --dry-run
 Compose command. `ghidra_mcp` is reported as skipped because the plugin API must
 be started from inside Ghidra after loading a program.
 
+The dashboard tool status bar exposes the same launcher for unavailable MCP
+services with configured `start_command` metadata.
+
 ## Reconfigure
 
 Override the defaults in `config/default_config.toml` or a custom config file
