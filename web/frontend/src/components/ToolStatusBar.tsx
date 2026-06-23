@@ -7,13 +7,21 @@ import type { ToolsStatusResponse, ToolExecutionStatus } from '../types';
 import { toolColors } from '../theme';
 
 // Tool display configuration
-const TOOL_ORDER = ['ghidra', 'radare2', 'angr', 'binwalk', 'gdb'] as const;
+const TOOL_ORDER = ['firmware', 'binwalk', 'autoprofile', 'ollama', 'ghidra_mcp', 'ghidra_gdb', 'angr_mcp', 'radare2', 'angr', 'ghidra', 'capstone', 'dwarf', 'gdb'] as const;
 
 const TOOL_DISPLAY_NAMES: Record<string, string> = {
+  firmware: 'Firmware',
+  binwalk: 'binwalk',
+  autoprofile: 'Profile',
+  ollama: 'Ollama',
+  ghidra_mcp: 'GhidraMCP',
+  ghidra_gdb: 'GDB MCP',
+  angr_mcp: 'angr MCP',
   ghidra: 'Ghidra',
   radare2: 'radare2',
   angr: 'angr',
-  binwalk: 'binwalk',
+  capstone: 'Capstone',
+  dwarf: 'DWARF',
   gdb: 'GDB',
 };
 
@@ -91,10 +99,23 @@ const ToolStatusBar: FC<ToolStatusBarProps> = ({ compact = false, refreshInterva
       } else if (toolStatus.bridge_available) {
         lines.push('Bridge: Available (not connected)');
       }
-      if (toolStatus.headless_available) {
+      if (toolStatus.headless_ready || toolStatus.headless_available) {
         lines.push('Headless: Available');
       }
     }
+    if (toolStatus.details) lines.push(toolStatus.details);
+    if (toolStatus.active_url || toolStatus.url || toolStatus.command) {
+      lines.push(String(toolStatus.active_url || toolStatus.url || toolStatus.command));
+    }
+    if (toolStatus.start_command?.length) {
+      const command = toolStatus.start_command.join(' ');
+      if (toolStatus.working_dir) lines.push(`Working dir: ${toolStatus.working_dir}`);
+      lines.push(`Run: ${command}`);
+    } else if (toolStatus.command && toolStatus.args?.length) {
+      lines.push(`Run: ${[toolStatus.command, ...toolStatus.args].join(' ')}`);
+    }
+    if (toolStatus.install_hint) lines.push(toolStatus.install_hint);
+    if (toolStatus.path) lines.push(`Path: ${toolStatus.path}`);
     return lines.join('\n');
   };
 

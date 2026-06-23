@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import shlex
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Optional
 
@@ -11,7 +13,8 @@ from rich.console import Console
 from rich.json import JSON
 from rich.table import Table
 
-from .environment import EnvironmentReport
+from .config import load_config
+from .environment import MCPConnectionCheck, EnvironmentReport, detect_environment, detect_mcp_connections
 from .llm import ChatMessage as LLMChatMessage, LLMBridge
 from .state import AppState, build_state
 from .utils import to_json
@@ -104,8 +107,23 @@ def env_check(
 ) -> None:
     """Run environment diagnostics."""
 
-    state = build_state(config_path)
-    _render_env_report(state.env)
+    config = load_config(config_path)
+    _render_env_report(detect_environment(config))
+
+
+@app.command("mcp")
+def mcp_check(
+    config_path: Optional[Path] = typer.Option(None, "--config", help="Path to config TOML"),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON instead of tables"),
+) -> None:
+    """Check configured MCP services and show launch commands."""
+
+    config = load_config(config_path)
+    checks = detect_mcp_connections(config)
+    if json_output:
+        console.print(JSON.from_data({name: asdict(check) for name, check in checks.items()}))
+        return
+    _render_mcp_connections(checks)
 
 
 @app.command()
@@ -173,6 +191,9 @@ def _render_env_report(report: EnvironmentReport) -> None:
         table.add_row(tool.name, status, tool.version or tool.details or "")
     console.print(table)
 
+    if report.mcp_connections:
+        _render_mcp_connections(report.mcp_connections)
+
     if report.ghidra:
         ghidra_status = "[green]Ready" if report.ghidra.is_ready else "[red]Not ready"
         console.print(f"Ghidra: {ghidra_status}")
@@ -190,6 +211,50 @@ def _render_env_report(report: EnvironmentReport) -> None:
         console.print("[cyan]Notes:")
         for note in report.notes:
             console.print(f"  • {note}")
+
+
+def _render_mcp_connections(connections: dict[str, MCPConnectionCheck]) -> None:
+    mcp_table = Table(title="MCP Connections")
+    mcp_table.add_column("Server")
+    mcp_table.add_column("Status")
+    mcp_table.add_column("Transport")
+    mcp_table.add_column("Endpoint")
+    mcp_table.add_column("Details")
+    for name, check in connections.items():
+        status = "[green]Reachable" if check.available else "[red]Unavailable"
+        endpoint = check.active_url or check.url or _format_mcp_command(check) or ""
+        mcp_table.add_row(name, status, check.transport, endpoint, check.details or "")
+    console.print(mcp_table)
+
+    launch_rows = [
+        (name, check)
+        for name, check in connections.items()
+        if check.start_command or check.command or check.working_dir or check.install_hint
+    ]
+    if not launch_rows:
+        return
+
+    launch_table = Table(title="MCP Setup / Launch")
+    launch_table.add_column("Server")
+    launch_table.add_column("Working Dir")
+    launch_table.add_column("Command")
+    launch_table.add_column("Hint")
+    for name, check in launch_rows:
+        launch_table.add_row(
+            name,
+            check.working_dir or "-",
+            _format_mcp_command(check) or "-",
+            check.install_hint or "",
+        )
+    console.print(launch_table)
+
+
+def _format_mcp_command(check: MCPConnectionCheck) -> str | None:
+    if check.start_command:
+        return shlex.join(check.start_command)
+    if check.command:
+        return shlex.join([check.command, *check.args])
+    return None
 
 
 def run() -> None:

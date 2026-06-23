@@ -1,0 +1,76 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build release artifacts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web/frontend/package-lock.json
+
+      - name: Validate tag matches pyproject version
+        run: |
+          python - <<'PY'
+          import os
+          import pathlib
+          import tomllib
+
+          tag = os.environ["GITHUB_REF_NAME"]
+          version = tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"]
+          expected = f"v{version}"
+          if tag != expected:
+              raise SystemExit(f"tag {tag} does not match pyproject version {expected}")
+          PY
+
+      - name: Install backend
+        run: uv sync --locked
+      - name: Backend checks
+        run: |
+          uv run ruff check src tests
+          python -m json.tool schemas/analysis_bundle.schema.json > /dev/null
+          uv run pytest tests/unit tests/integration/test_api.py::TestChatsEndpoint::test_chat_bundle_exports_json_and_markdown
+      - name: Build Python distribution
+        run: uv build
+
+      - name: Install frontend
+        working-directory: web/frontend
+        run: npm ci
+      - name: Frontend checks
+        working-directory: web/frontend
+        run: |
+          npm run lint
+          npm test
+          npm run build
+      - name: Archive frontend bundle
+        run: tar -czf dist/r2d2-frontend-${{ github.ref_name }}.tar.gz -C web/frontend dist
+      - name: Archive reporting contract
+        run: |
+          tar -czf dist/r2d2-reporting-contract-${{ github.ref_name }}.tar.gz \
+            docs/REPORTING.md \
+            docs/MCP_SERVICES.md \
+            schemas/analysis_bundle.schema.json
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: gh release create "$TAG_NAME" dist/* --generate-notes

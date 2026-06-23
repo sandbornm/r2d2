@@ -68,6 +68,19 @@ class TrajectoryDAO:
             )
             yield trajectory
 
+    def list_actions(self, trajectory_id: str) -> list[dict[str, Any]]:
+        with self._db.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT trajectory_id, seq, action, payload, created_at
+                FROM trajectory_actions
+                WHERE trajectory_id = ?
+                ORDER BY seq
+                """,
+                (trajectory_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     @staticmethod
     def _next_seq(conn: Any, trajectory_id: str) -> int:
         seq = conn.execute(

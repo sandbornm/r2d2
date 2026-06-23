@@ -1,0 +1,189 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/sandbornm/r2d2/schemas/analysis_bundle.schema.json",
+  "title": "r2d2 Analysis Bundle",
+  "description": "Portable handoff artifact that joins subject-under-test findings, investigation journey, tool coverage, graphs, and compact LLM context.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "generated_at",
+    "session",
+    "subject",
+    "findings",
+    "tooling",
+    "graphs",
+    "journey",
+    "context",
+    "report_markdown"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": {
+      "const": "r2d2.analysis_bundle.v1"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "session": {
+      "type": "object",
+      "required": ["session_id", "binary_path", "created_at", "updated_at", "message_count"],
+      "additionalProperties": true,
+      "properties": {
+        "session_id": { "type": "string", "minLength": 1 },
+        "binary_path": { "type": "string", "minLength": 1 },
+        "trajectory_id": { "type": ["string", "null"] },
+        "title": { "type": ["string", "null"] },
+        "created_at": { "type": "string" },
+        "updated_at": { "type": "string" },
+        "message_count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "subject": {
+      "type": "object",
+      "required": ["binary", "firmware"],
+      "additionalProperties": true,
+      "properties": {
+        "binary": { "type": ["string", "null"] },
+        "trajectory_id": { "type": ["string", "null"] },
+        "format": { "type": ["string", "null"] },
+        "architecture": { "type": ["string", "null"] },
+        "bits": { "type": ["integer", "string", "null"] },
+        "os": { "type": ["string", "null"] },
+        "sha256": { "type": ["string", "null"] },
+        "size_bytes": { "type": ["integer", "null"] },
+        "firmware": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "top_level_format": { "type": ["string", "null"] },
+            "container_type": { "type": ["string", "null"] },
+            "signature_count": { "type": ["integer", "null"] },
+            "artifact_count": { "type": "integer", "minimum": 0 },
+            "recommended_target_count": { "type": "integer", "minimum": 0 },
+            "carved_target_count": { "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    },
+    "findings": {
+      "type": "object",
+      "required": ["issues", "notes", "important_nodes", "evidence_gaps"],
+      "additionalProperties": true,
+      "properties": {
+        "issues": { "type": "array" },
+        "notes": { "type": "array" },
+        "important_nodes": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/graph_node" }
+        },
+        "evidence_gaps": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "tooling": {
+      "type": "object",
+      "required": ["tool_availability", "tool_status", "evidence_coverage"],
+      "additionalProperties": true,
+      "properties": {
+        "tool_availability": {
+          "type": "object",
+          "additionalProperties": { "type": "boolean" }
+        },
+        "tool_status": {
+          "type": "object",
+          "additionalProperties": { "type": "object" }
+        },
+        "evidence_coverage": {
+          "type": "object"
+        }
+      }
+    },
+    "graphs": {
+      "type": "object",
+      "required": ["analysis_graph", "investigation_graph"],
+      "additionalProperties": true,
+      "properties": {
+        "analysis_graph": { "$ref": "#/$defs/graph" },
+        "investigation_graph": { "$ref": "#/$defs/graph" }
+      }
+    },
+    "journey": {
+      "type": "object",
+      "required": ["message_count", "messages", "trajectory_actions", "investigation_summary"],
+      "additionalProperties": true,
+      "properties": {
+        "message_count": { "type": "integer", "minimum": 0 },
+        "messages": { "type": "array", "items": { "type": "object" } },
+        "trajectory_actions": { "type": "array", "items": { "type": "object" } },
+        "investigation_summary": { "type": "object" }
+      }
+    },
+    "context": {
+      "type": "object",
+      "required": ["compact_markdown"],
+      "additionalProperties": true,
+      "properties": {
+        "compact_markdown": { "type": "string" }
+      }
+    },
+    "report_markdown": {
+      "type": "string",
+      "minLength": 1
+    },
+    "raw": {
+      "type": "object"
+    }
+  },
+  "$defs": {
+    "graph": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "schema_version": { "type": "string" },
+        "binary": { "type": "string" },
+        "generated_at": { "type": "string" },
+        "nodes": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/graph_node" }
+        },
+        "edges": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/graph_edge" }
+        },
+        "summary": { "type": "object" }
+      }
+    },
+    "graph_node": {
+      "type": "object",
+      "required": ["id", "kind", "label"],
+      "additionalProperties": true,
+      "properties": {
+        "id": { "type": "string" },
+        "kind": { "type": "string" },
+        "label": { "type": "string" },
+        "source": { "type": ["string", "null"] },
+        "actor": { "type": ["string", "null"] },
+        "timestamp": { "type": ["string", "null"] },
+        "address": { "type": ["string", "null"] },
+        "properties": { "type": "object" }
+      }
+    },
+    "graph_edge": {
+      "type": "object",
+      "required": ["id", "kind", "source", "target"],
+      "additionalProperties": true,
+      "properties": {
+        "id": { "type": "string" },
+        "kind": { "type": "string" },
+        "source": { "type": "string" },
+        "target": { "type": "string" },
+        "source_tool": { "type": ["string", "null"] },
+        "confidence": { "type": ["number", "null"] },
+        "properties": { "type": "object" }
+      }
+    }
+  }
+}

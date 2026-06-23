@@ -54,7 +54,10 @@ class OpenAIClient:
 
         self._client = OpenAI(api_key=api_key)
         self._config = config
-        self._model = config.llm.model
+        if config.llm.provider and config.llm.provider.lower() == "openai":
+            self._model = config.llm.model
+        else:
+            self._model = config.llm.fallback_model or "gpt-4o"
 
     def _uses_new_api(self) -> bool:
         """Check if current model uses new API parameters (max_completion_tokens)."""

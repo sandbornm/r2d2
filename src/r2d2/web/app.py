@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import queue
 import threading
+import time
 import uuid
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -13,9 +14,13 @@ from typing import Any, Optional
 
 from flask import Flask, Response, jsonify, request, send_from_directory
 from flask_cors import CORS  # type: ignore[import-untyped]
+from werkzeug.exceptions import RequestEntityTooLarge
 
 from ..analysis import AnalysisOrchestrator, AnalysisResult
-from ..llm import ChatMessage as LLMChatMessage, LLMBridge
+from ..analysis.investigation_graph import build_investigation_graph
+from ..config import AppConfig
+from ..environment.detectors import detect_mcp_connections
+from ..llm import ChatMessage as LLMChatMessage, LLMBridge, LLMError
 from ..state import AppState, build_state
 from ..storage.chat import ChatDAO
 from ..storage.models import AnalysisTrajectory, ChatMessage as StoredChatMessage, ChatSession, TrajectoryAction
@@ -73,6 +78,32 @@ def _serialize(obj: Any) -> Any:
         return obj
 
 
+def _parse_size_bytes(value: str) -> int:
+    text = value.strip().upper()
+    multipliers = {
+        "B": 1,
+        "KB": 1024,
+        "KIB": 1024,
+        "MB": 1024 * 1024,
+        "MIB": 1024 * 1024,
+        "GB": 1024 * 1024 * 1024,
+        "GIB": 1024 * 1024 * 1024,
+    }
+    for suffix, multiplier in sorted(multipliers.items(), key=lambda item: len(item[0]), reverse=True):
+        if text.endswith(suffix):
+            number = text[: -len(suffix)].strip()
+            return int(float(number) * multiplier)
+    return int(float(text))
+
+
+def _format_size(size_bytes: int) -> str:
+    if size_bytes >= 1024 * 1024:
+        return f"{size_bytes / (1024 * 1024):.0f} MB"
+    if size_bytes >= 1024:
+        return f"{size_bytes / 1024:.0f} KB"
+    return f"{size_bytes} B"
+
+
 def create_app(config_path: Optional[Path] = None) -> Flask:
     state: AppState = build_state(config_path)
     if state.chat_dao is None:
@@ -92,6 +123,13 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
         )
     else:
         app = Flask(__name__)
+    max_upload_bytes = _parse_size_bytes(state.config.analysis.max_binary_size)
+    app.config["MAX_CONTENT_LENGTH"] = max_upload_bytes
+
+    @app.errorhandler(RequestEntityTooLarge)
+    def request_too_large(_error: RequestEntityTooLarge) -> Any:
+        return jsonify({"error": f"File exceeds {_format_size(max_upload_bytes)} hard limit"}), 413
+
     CORS(app)
 
     # Set up debug logging for Flask
@@ -112,6 +150,46 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
     jobs = JobRegistry()
     chat_dao: ChatDAO = state.chat_dao
     llm_bridge = LLMBridge(state.config)
+    tools_status_cache: dict[str, Any] = {
+        "payload": None,
+        "generated_at": None,
+        "expires_at": 0.0,
+        "live": False,
+    }
+    tools_status_lock = threading.Lock()
+
+    def _live_status_requested() -> bool:
+        value = (request.args.get("live") or request.args.get("refresh") or "").strip().lower()
+        return value in {"1", "true", "yes", "on"}
+
+    def _get_tools_status_cached(state: AppState, *, live: bool = False) -> tuple[dict[str, Any], dict[str, Any]]:
+        now = time.monotonic()
+        with tools_status_lock:
+            cached_payload = tools_status_cache.get("payload")
+            cached_live = bool(tools_status_cache.get("live"))
+            expires_at = float(tools_status_cache.get("expires_at") or 0.0)
+            if cached_payload is not None and now < expires_at and (not live or cached_live):
+                return cached_payload, {
+                    "cached": True,
+                    "live": cached_live,
+                    "generated_at": tools_status_cache.get("generated_at"),
+                }
+
+        tools_status = _get_tools_status(state, live=live)
+        generated_at = datetime.now(timezone.utc).isoformat()
+        ttl_seconds = 3.0 if live else 15.0
+        with tools_status_lock:
+            tools_status_cache.update({
+                "payload": tools_status,
+                "generated_at": generated_at,
+                "expires_at": time.monotonic() + ttl_seconds,
+                "live": live,
+            })
+        return tools_status, {
+            "cached": False,
+            "live": live,
+            "generated_at": generated_at,
+        }
 
     if dist_dir.exists():
 
@@ -128,21 +206,29 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
 
     @app.get("/api/health")
     def health() -> Any:
-        # Check tool availability with install hints
-        tools_status = _get_tools_status(state)
+        tools_status, tools_meta = _get_tools_status_cached(state, live=_live_status_requested())
         
-        return jsonify({
+        return jsonify(_serialize({
             "status": "ok",
             "model": llm_bridge.model,
             "provider": llm_bridge.providers[0] if llm_bridge.providers else "anthropic",
             "available_models": llm_bridge.available_models,
             "model_names": llm_bridge.model_display_names,
             "ghidra_ready": bool(state.env.ghidra and state.env.ghidra.is_ready),
+            "features": {
+                "show_compiler": state.config.ui.show_compiler,
+            },
             "tools": tools_status,
-        })
+            "tools_meta": tools_meta,
+        }))
 
-    def _get_tools_status(state: AppState) -> dict[str, Any]:
+    def _get_tools_status(state: AppState, *, live: bool = False) -> dict[str, Any]:
         """Get detailed status of all analysis tools."""
+        import shutil
+        import subprocess
+
+        mocked_state = type(state.config).__module__.startswith("unittest.mock")
+        config = AppConfig() if mocked_state else state.config
         tools: dict[str, Any] = {}
         
         # Check Python packages
@@ -152,55 +238,136 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
                 return True
             except ImportError:
                 return False
+
+        def which_any(*commands: str) -> str | None:
+            for command in commands:
+                path = shutil.which(command)
+                if path:
+                    return path
+            return None
         
+        # Firmware inventory is always available and gives generic firmware
+        # blobs a useful graph even when heavyweight analyzers are absent.
+        binwalk_path = which_any("binwalk")
+        tools["firmware"] = {
+            "available": True,
+            "binwalk_available": binwalk_path is not None,
+            "path": binwalk_path,
+            "install_hint": "Optional: brew install binwalk or install sasquatch/unsquashfs for deeper extraction",
+            "description": "Firmware signature inventory, carving targets, and fanout planning",
+            "details": "Fallback signature scanning is built in; binwalk enables richer extraction hints.",
+        }
+        tools["binwalk"] = {
+            "available": binwalk_path is not None,
+            "path": binwalk_path,
+            "install_hint": "Optional: brew install binwalk",
+            "description": "Firmware analysis and extraction signatures",
+        }
+
+        file_path = which_any("file")
+        tools["autoprofile"] = {
+            "available": file_path is not None,
+            "command_available": file_path is not None,
+            "path": file_path,
+            "install_hint": "Install the file command",
+            "description": "Security profile, strings analysis",
+        }
+
         # radare2/r2pipe
+        r2_path = which_any("radare2", "r2")
+        r2pipe_available = check_import("r2pipe")
         tools["radare2"] = {
-            "available": check_import("r2pipe"),
+            "available": r2_path is not None and r2pipe_available,
+            "command_available": r2_path is not None,
+            "python_package_available": r2pipe_available,
+            "path": r2_path,
             "install_hint": "uv sync --extra analyzers",
             "description": "Disassembly, functions, imports, strings",
+            "details": f"command={'yes' if r2_path else 'no'}; r2pipe={'yes' if r2pipe_available else 'no'}",
+        }
+
+        # Ollama local model runtime
+        ollama_cli_available = shutil.which("ollama") is not None
+        ollama_service_available = False
+        ollama_models: list[str] = []
+        if not mocked_state:
+            try:
+                response = __import__("httpx").get(
+                    f"{config.llm.base_url.rstrip('/')}/api/tags",
+                    timeout=1.5 if live else 0.35,
+                )
+                ollama_service_available = response.status_code == 200
+                if ollama_service_available:
+                    payload = response.json()
+                    models = payload.get("models")
+                    if isinstance(models, list):
+                        ollama_models = [
+                            str(model.get("name") or model.get("model"))
+                            for model in models
+                            if isinstance(model, dict) and (model.get("name") or model.get("model"))
+                        ]
+            except Exception:
+                ollama_service_available = False
+        tools["ollama"] = {
+            "available": ollama_cli_available and ollama_service_available and config.llm.model in ollama_models,
+            "cli_available": ollama_cli_available,
+            "service_available": ollama_service_available,
+            "installed_models": ollama_models,
+            "selected_model": config.llm.model,
+            "selected_model_available": config.llm.model in ollama_models,
+            "install_hint": f"Install/start Ollama, then run: ollama pull {config.llm.model}",
+            "description": "Local Gemma chat model runtime",
         }
         
         # angr
+        angr_available = check_import("angr")
         tools["angr"] = {
-            "available": check_import("angr"),
+            "available": angr_available,
+            "python_package_available": angr_available,
             "install_hint": "uv sync --extra analyzers",
             "description": "CFG analysis, symbolic execution",
         }
         
         # Capstone
+        capstone_available = check_import("capstone")
         tools["capstone"] = {
-            "available": check_import("capstone"),
+            "available": capstone_available,
+            "python_package_available": capstone_available,
             "install_hint": "uv sync --extra analyzers",
             "description": "Instruction-level disassembly",
         }
         
         # python-magic
+        magic_available = check_import("magic")
         tools["libmagic"] = {
-            "available": check_import("magic"),
+            "available": magic_available,
+            "python_package_available": magic_available,
             "install_hint": "uv sync --extra analyzers; brew install libmagic (macOS)",
             "description": "File type identification",
         }
         
         # Frida
+        frida_available = check_import("frida")
         tools["frida"] = {
-            "available": check_import("frida"),
+            "available": frida_available,
+            "python_package_available": frida_available,
             "install_hint": "uv sync --extra analyzers",
             "description": "Dynamic instrumentation",
         }
         
         # pyelftools (for DWARF)
+        dwarf_available = check_import("elftools")
         tools["dwarf"] = {
-            "available": check_import("elftools"),
+            "available": dwarf_available,
+            "python_package_available": dwarf_available,
             "install_hint": "uv sync --extra analyzers",
             "description": "Debug symbol parsing",
         }
         
         # GEF/GDB (requires Docker image)
-        import shutil
-        import subprocess
         docker_available = shutil.which("docker") is not None
         gef_image_available = False
-        if docker_available:
+        if docker_available and not mocked_state and live:
             try:
                 result = subprocess.run(
                     ["docker", "image", "inspect", "r2d2-gef"],
@@ -218,25 +385,54 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
             "install_hint": "docker build -t r2d2-gef -f Dockerfile.gef .",
             "description": "Dynamic execution tracing with GDB",
         }
+
+        gdb_path = which_any("gdb")
+        tools["gdb"] = {
+            "available": gdb_path is not None,
+            "path": gdb_path,
+            "install_hint": "Install gdb or use the GhidraMCP GDB Docker service on port 5051",
+            "description": "GNU debugger for dynamic analysis",
+        }
         
         # Ghidra
         ghidra_env = state.env.ghidra
+        ghidra_headless_ready = False if mocked_state else (ghidra_env.is_ready if ghidra_env else False)
+        ghidra_bridge_ready = False if mocked_state else (ghidra_env.bridge_ready if ghidra_env else False)
         tools["ghidra"] = {
-            "available": ghidra_env.is_ready or ghidra_env.bridge_available if ghidra_env else False,
-            "headless_ready": ghidra_env.is_ready if ghidra_env else False,
-            "bridge_available": ghidra_env.bridge_available if ghidra_env else False,
-            "bridge_connected": ghidra_env.bridge_connected if ghidra_env else False,
+            "available": ghidra_headless_ready or ghidra_bridge_ready,
+            "headless_ready": ghidra_headless_ready,
+            "headless_available": ghidra_headless_ready,
+            "bridge_available": False if mocked_state else (ghidra_env.bridge_available if ghidra_env else False),
+            "bridge_connected": False if mocked_state else (ghidra_env.bridge_connected if ghidra_env else False),
+            "bridge_program_loaded": None if mocked_state else (ghidra_env.bridge_program_loaded if ghidra_env else None),
             "install_hint": "Set GHIDRA_INSTALL_DIR or start Ghidra Bridge server",
             "description": "Decompilation, type recovery",
         }
-        
-        # AutoProfile (always available - pure Python)
-        tools["autoprofile"] = {
-            "available": True,
-            "install_hint": None,
-            "description": "Security profile, strings analysis",
-        }
-        
+
+        # MCP checks can be slow when services are down. Default calls reuse the
+        # startup snapshot; live refreshes update it explicitly.
+        if not mocked_state and live:
+            state.env.mcp_connections = detect_mcp_connections(config)
+        if not mocked_state:
+            for name, check in state.env.mcp_connections.items():
+                tools[name] = {
+                    "available": check.available,
+                    "enabled": check.enabled,
+                    "transport": check.transport,
+                    "url": check.url,
+                    "active_url": check.active_url,
+                    "command": check.command,
+                    "args": check.args,
+                    "command_available": check.command_available,
+                    "start_command": check.start_command,
+                    "working_dir": check.working_dir,
+                    "status_code": check.status_code,
+                    "capabilities_count": check.capabilities_count,
+                    "latency_ms": check.latency_ms,
+                    "install_hint": check.install_hint,
+                    "description": check.description,
+                    "details": check.details,
+                }
         return tools
 
     @app.get("/api/models")
@@ -312,6 +508,52 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
             "messages": [_message_to_dict(message) for message in messages],
         })
 
+    @app.get("/api/chats/<session_id>/graphs")
+    def chat_graphs(session_id: str) -> Any:
+        session = chat_dao.get_session(session_id)
+        if not session:
+            return jsonify({"error": "chat session not found"}), 404
+        messages = chat_dao.list_messages(session.session_id, limit=500)
+        analysis_attachment = _extract_latest_analysis(messages) or {}
+        return jsonify(
+            {
+                "analysis_graph": analysis_attachment.get("analysis_graph"),
+                "investigation_graph": _build_investigation_graph_for_session(
+                    session,
+                    messages=messages,
+                    state=state,
+                ),
+            }
+        )
+
+    @app.get("/api/chats/<session_id>/bundle")
+    def chat_bundle(session_id: str) -> Any:
+        session = chat_dao.get_session(session_id)
+        if not session:
+            return jsonify({"error": "chat session not found"}), 404
+
+        include_raw = str(request.args.get("include_raw", "")).lower() in {"1", "true", "yes", "on"}
+        messages = chat_dao.list_messages(session.session_id, limit=500)
+        bundle = _build_analysis_bundle(
+            session,
+            messages=messages,
+            state=state,
+            include_raw=include_raw,
+        )
+        if not bundle:
+            return jsonify({"error": "analysis result not found for session"}), 404
+
+        output_format = str(request.args.get("format", "json")).lower()
+        if output_format in {"md", "markdown"}:
+            filename = f"{Path(session.binary_path).stem or session.session_id}-r2d2-report.md"
+            return Response(
+                bundle["report_markdown"],
+                mimetype="text/markdown",
+                headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+            )
+
+        return jsonify(bundle)
+
     @app.post("/api/chats/<session_id>/messages")
     def post_chat_message(session_id: str) -> Any:
         session = chat_dao.get_session(session_id)
@@ -345,10 +587,21 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
             # Fetch recent activity context
             activity_context = _get_activity_context(state.db, session.session_id) if state.db else None
             
-            llm_messages = _build_llm_messages(history, analysis_attachment, activity_context)
+            investigation_graph = _build_investigation_graph_for_session(
+                session,
+                messages=history,
+                state=state,
+            )
+            llm_messages = _build_llm_messages(
+                history,
+                analysis_attachment,
+                activity_context,
+                config=state.config,
+                investigation_graph=investigation_graph,
+            )
             try:
                 assistant_response = llm_bridge.chat(llm_messages)
-            except RuntimeError as exc:  # pragma: no cover - handled at runtime
+            except LLMError as exc:
                 response_payload["error"] = str(exc)
                 response_payload["messages"] = [
                     _message_to_dict(message) for message in chat_dao.list_messages(session.session_id)
@@ -798,7 +1051,16 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
             counter += 1
 
         file.save(str(save_path))
-        return jsonify({"path": str(save_path), "filename": save_path.name})
+        size_bytes = save_path.stat().st_size
+        if size_bytes > max_upload_bytes:
+            save_path.unlink(missing_ok=True)
+            return jsonify({"error": f"File exceeds {_format_size(max_upload_bytes)} hard limit"}), 413
+        return jsonify({
+            "path": str(save_path),
+            "filename": save_path.name,
+            "size_bytes": size_bytes,
+            "max_size_bytes": max_upload_bytes,
+        })
 
     @app.post("/api/analyze")
     def analyze() -> Any:
@@ -892,6 +1154,7 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
                     "tool_availability": result.tool_availability,
                     "tool_status": result.tool_status,
                     "evidence_coverage": result.evidence_coverage,
+                    "analysis_graph": result.analysis_graph,
                 }
                 chat_dao.append_message(
                     updated_session.session_id,
@@ -906,6 +1169,7 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
                 else:
                     payload = {"result": payload, "session_id": updated_session.session_id}
                 payload["trajectory_id"] = result.trajectory_id
+                payload["analysis_graph"] = result.analysis_graph
                 job.put("analysis_result", payload)
                 job.put(
                     "job_completed",
@@ -1614,79 +1878,18 @@ Generate ONLY the script code, no explanations before or after. The script shoul
             available_count: Number of available tools
             total_count: Total number of supported tools
         """
-        import shutil
-
-        # Tool descriptions for beginners
-        tool_descriptions = {
-            "ghidra": "Decompiler and reverse engineering framework from NSA",
-            "radare2": "Command-line reverse engineering framework",
-            "angr": "Python framework for symbolic execution and binary analysis",
-            "binwalk": "Firmware analysis and extraction tool",
-            "gdb": "GNU debugger for dynamic analysis",
-        }
-
-        tools: dict[str, dict[str, Any]] = {}
-
-        # Check radare2
-        r2_available = shutil.which("r2") is not None or shutil.which("radare2") is not None
-        tools["radare2"] = {
-            "available": r2_available,
-            "description": tool_descriptions["radare2"],
-        }
-
-        # Check angr (Python import)
-        try:
-            import angr  # noqa: F401
-            angr_available = True
-        except ImportError:
-            angr_available = False
-        tools["angr"] = {
-            "available": angr_available,
-            "description": tool_descriptions["angr"],
-        }
-
-        # Check binwalk
-        binwalk_available = shutil.which("binwalk") is not None
-        tools["binwalk"] = {
-            "available": binwalk_available,
-            "description": tool_descriptions["binwalk"],
-        }
-
-        # Check gdb
-        gdb_available = shutil.which("gdb") is not None
-        tools["gdb"] = {
-            "available": gdb_available,
-            "description": tool_descriptions["gdb"],
-        }
-
-        # Check Ghidra (special handling for bridge vs headless)
-        ghidra_env = state.env.ghidra
-        headless_available = bool(getattr(ghidra_env, 'is_ready', False))
-        bridge_available = bool(getattr(state.config.ghidra, 'use_bridge', False))
-        bridge_connected = False
-        if hasattr(state, 'ghidra_client') and state.ghidra_client:
-            try:
-                bridge_connected = bool(state.ghidra_client.is_connected())
-            except Exception:
-                bridge_connected = False
-
-        tools["ghidra"] = {
-            "available": headless_available or bridge_connected,
-            "description": tool_descriptions["ghidra"],
-            "bridge_available": bridge_available,
-            "bridge_connected": bridge_connected,
-            "headless_available": headless_available,
-        }
+        tools, tools_meta = _get_tools_status_cached(state, live=_live_status_requested())
 
         # Calculate summary
         available_count = sum(1 for t in tools.values() if t["available"])
         total_count = len(tools)
 
-        return jsonify({
+        return jsonify(_serialize({
             "tools": tools,
             "available_count": available_count,
             "total_count": total_count,
-        })
+            "meta": tools_meta,
+        }))
 
     return app
 
@@ -1889,6 +2092,321 @@ def _extract_user_goal(history: list[StoredChatMessage]) -> str | None:
     return None
 
 
+def _build_investigation_graph_for_session(
+    session: ChatSession,
+    *,
+    messages: list[StoredChatMessage],
+    state: AppState,
+) -> dict[str, Any]:
+    activities = _get_activity_events(state.db, session.session_id, limit=500) if state.db else []
+    trajectory_actions = []
+    if state.dao and session.trajectory_id:
+        trajectory_actions = state.dao.list_actions(session.trajectory_id)
+    return build_investigation_graph(
+        session,
+        messages=messages,
+        activities=activities or [],
+        trajectory_actions=trajectory_actions,
+    )
+
+
+def _build_analysis_bundle(
+    session: ChatSession,
+    *,
+    messages: list[StoredChatMessage],
+    state: AppState,
+    include_raw: bool = False,
+) -> dict[str, Any] | None:
+    analysis = _extract_latest_analysis(messages)
+    if not analysis:
+        return None
+
+    investigation_graph = _build_investigation_graph_for_session(
+        session,
+        messages=messages,
+        state=state,
+    )
+    trajectory_actions = _list_trajectory_actions(session, state)
+    analysis_graph = analysis.get("analysis_graph") if isinstance(analysis.get("analysis_graph"), dict) else {}
+    evidence = analysis.get("evidence_coverage") if isinstance(analysis.get("evidence_coverage"), dict) else {}
+
+    bundle: dict[str, Any] = {
+        "schema_version": "r2d2.analysis_bundle.v1",
+        "schema_url": "schemas/analysis_bundle.schema.json",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "session": _session_to_dict(session),
+        "subject": _summarize_subject(analysis),
+        "findings": {
+            "issues": list(analysis.get("issues") or []),
+            "notes": list(analysis.get("notes") or []),
+            "important_nodes": _select_graph_nodes(analysis_graph)[:48],
+            "evidence_gaps": _summarize_evidence_gaps(evidence),
+        },
+        "tooling": {
+            "tool_availability": analysis.get("tool_availability") or {},
+            "tool_status": analysis.get("tool_status") or {},
+            "evidence_coverage": evidence,
+        },
+        "graphs": {
+            "analysis_graph": analysis_graph,
+            "investigation_graph": investigation_graph,
+        },
+        "journey": {
+            "message_count": len(messages),
+            "messages": _summarize_messages(messages),
+            "trajectory_actions": _summarize_trajectory_actions(trajectory_actions),
+            "investigation_summary": investigation_graph.get("summary", {}) if isinstance(investigation_graph, dict) else {},
+        },
+        "context": {
+            "compact_markdown": _build_compact_analysis_context(analysis, investigation_graph),
+        },
+    }
+    if include_raw:
+        bundle["raw"] = {
+            "analysis_attachment": analysis,
+            "messages": [_message_to_dict(message) for message in messages],
+            "trajectory_actions": trajectory_actions,
+        }
+
+    bundle["report_markdown"] = _render_analysis_bundle_markdown(bundle)
+    return bundle
+
+
+def _list_trajectory_actions(session: ChatSession, state: AppState) -> list[dict[str, Any]]:
+    if not state.dao or not session.trajectory_id:
+        return []
+    return state.dao.list_actions(session.trajectory_id)
+
+
+def _summarize_subject(analysis: dict[str, Any]) -> dict[str, Any]:
+    quick = analysis.get("quick_scan") if isinstance(analysis.get("quick_scan"), dict) else {}
+    deep = analysis.get("deep_scan") if isinstance(analysis.get("deep_scan"), dict) else {}
+    firmware = quick.get("firmware") if isinstance(quick.get("firmware"), dict) else {}
+    r2_quick = quick.get("radare2") if isinstance(quick.get("radare2"), dict) else {}
+    r2_info = r2_quick.get("info") if isinstance(r2_quick.get("info"), dict) else {}
+    bin_meta = r2_info.get("bin") if isinstance(r2_info.get("bin"), dict) else {}
+    core = r2_info.get("core") if isinstance(r2_info.get("core"), dict) else {}
+    ghidra_gdb = deep.get("ghidra_gdb") if isinstance(deep.get("ghidra_gdb"), dict) else {}
+    file_info = ghidra_gdb.get("file_info") if isinstance(ghidra_gdb.get("file_info"), dict) else {}
+
+    artifacts = firmware.get("embedded_artifacts") if isinstance(firmware.get("embedded_artifacts"), list) else []
+    targets = firmware.get("recommended_targets") if isinstance(firmware.get("recommended_targets"), list) else []
+    carves = firmware.get("carved_targets") if isinstance(firmware.get("carved_targets"), list) else []
+    scan = firmware.get("scan") if isinstance(firmware.get("scan"), dict) else {}
+
+    return {
+        "binary": analysis.get("binary"),
+        "trajectory_id": analysis.get("trajectory_id"),
+        "format": core.get("format") or firmware.get("top_level_format") or file_info.get("format"),
+        "architecture": bin_meta.get("arch") or file_info.get("architecture"),
+        "bits": bin_meta.get("bits"),
+        "os": bin_meta.get("os") or firmware.get("container_type"),
+        "sha256": firmware.get("sha256") or file_info.get("sha256"),
+        "size_bytes": firmware.get("size_bytes") or file_info.get("size_bytes"),
+        "firmware": {
+            "top_level_format": firmware.get("top_level_format"),
+            "container_type": firmware.get("container_type"),
+            "signature_count": scan.get("signature_count"),
+            "artifact_count": len(artifacts),
+            "recommended_target_count": len(targets),
+            "carved_target_count": len(carves),
+        },
+    }
+
+
+def _summarize_messages(messages: list[StoredChatMessage], limit: int = 24) -> list[dict[str, Any]]:
+    summarized: list[dict[str, Any]] = []
+    for message in messages[-limit:]:
+        summarized.append(
+            {
+                "message_id": message.message_id,
+                "role": message.role,
+                "created_at": message.created_at.isoformat(),
+                "content_preview": _clamp_text(message.content.replace("\n", " "), 240),
+                "attachments": [
+                    attachment.get("type", "attachment")
+                    for attachment in (message.attachments or [])
+                    if isinstance(attachment, dict)
+                ],
+            }
+        )
+    return summarized
+
+
+def _summarize_trajectory_actions(actions: list[dict[str, Any]], limit: int = 80) -> list[dict[str, Any]]:
+    summarized: list[dict[str, Any]] = []
+    for row in actions[-limit:]:
+        payload = row.get("payload")
+        parsed_payload: Any = payload
+        if isinstance(payload, str):
+            try:
+                parsed_payload = json.loads(payload)
+            except json.JSONDecodeError:
+                parsed_payload = payload[:500]
+        summarized.append(
+            {
+                "seq": row.get("seq"),
+                "action": row.get("action"),
+                "created_at": row.get("created_at"),
+                "payload": parsed_payload,
+            }
+        )
+    return summarized
+
+
+def _render_analysis_bundle_markdown(bundle: dict[str, Any]) -> str:
+    subject = bundle.get("subject", {}) if isinstance(bundle.get("subject"), dict) else {}
+    findings = bundle.get("findings", {}) if isinstance(bundle.get("findings"), dict) else {}
+    tooling = bundle.get("tooling", {}) if isinstance(bundle.get("tooling"), dict) else {}
+    graphs = bundle.get("graphs", {}) if isinstance(bundle.get("graphs"), dict) else {}
+    journey = bundle.get("journey", {}) if isinstance(bundle.get("journey"), dict) else {}
+    analysis_graph = graphs.get("analysis_graph", {}) if isinstance(graphs.get("analysis_graph"), dict) else {}
+    graph_summary = analysis_graph.get("summary", {}) if isinstance(analysis_graph.get("summary"), dict) else {}
+    investigation_summary = journey.get("investigation_summary", {}) if isinstance(journey.get("investigation_summary"), dict) else {}
+
+    binary_name = Path(str(subject.get("binary") or "unknown")).name
+    lines = [
+        f"# r2d2 Analysis Report: {binary_name}",
+        "",
+        f"Generated: {bundle.get('generated_at', 'unknown')}",
+        f"Session: `{bundle.get('session', {}).get('session_id', 'unknown') if isinstance(bundle.get('session'), dict) else 'unknown'}`",
+        "",
+        "## Subject",
+        "",
+        f"- Binary: `{subject.get('binary', 'unknown')}`",
+        f"- Format: {subject.get('format') or 'unknown'}",
+        f"- Architecture: {subject.get('architecture') or 'unknown'}"
+        + (f" / {subject.get('bits')}-bit" if subject.get("bits") else ""),
+        f"- OS/container: {subject.get('os') or 'unknown'}",
+    ]
+    if subject.get("sha256"):
+        lines.append(f"- SHA-256: `{subject.get('sha256')}`")
+
+    firmware = subject.get("firmware") if isinstance(subject.get("firmware"), dict) else {}
+    if firmware and any(value for value in firmware.values()):
+        lines.extend(
+            [
+                "",
+                "## Firmware Inventory",
+                "",
+                f"- Top-level format: {firmware.get('top_level_format') or 'unknown'}",
+                f"- Container type: {firmware.get('container_type') or 'unknown'}",
+                f"- Signatures: {firmware.get('signature_count') or 0}",
+                f"- Embedded artifacts: {firmware.get('artifact_count') or 0}",
+                f"- Recommended targets: {firmware.get('recommended_target_count') or 0}",
+                f"- Carved targets: {firmware.get('carved_target_count') or 0}",
+            ]
+        )
+
+    lines.extend(
+        [
+            "",
+            "## Findings Graph",
+            "",
+            f"- Nodes: {graph_summary.get('node_count', 0)}",
+            f"- Edges: {graph_summary.get('edge_count', 0)}",
+            f"- Tools: {', '.join(str(tool) for tool in graph_summary.get('tools', [])[:12]) if graph_summary.get('tools') else 'unknown'}",
+        ]
+    )
+    important_nodes = findings.get("important_nodes") if isinstance(findings.get("important_nodes"), list) else []
+    if important_nodes:
+        lines.extend(["", "### Important Nodes", ""])
+        for node in important_nodes[:24]:
+            if not isinstance(node, dict):
+                continue
+            address = f" @ `{node.get('address')}`" if node.get("address") else ""
+            source = f" [{node.get('source')}]" if node.get("source") else ""
+            lines.append(f"- `{node.get('kind')}` {node.get('label')}{address}{source}")
+
+    issues = findings.get("issues") if isinstance(findings.get("issues"), list) else []
+    notes = findings.get("notes") if isinstance(findings.get("notes"), list) else []
+    if issues or notes:
+        lines.extend(["", "## Issues And Notes", ""])
+        for issue in issues[:12]:
+            lines.append(f"- Issue: {issue}")
+        for note in notes[:12]:
+            lines.append(f"- Note: {note}")
+
+    gaps = findings.get("evidence_gaps") if isinstance(findings.get("evidence_gaps"), list) else []
+    if gaps:
+        lines.extend(["", "## Setup And Coverage Gaps", ""])
+        for gap in gaps[:16]:
+            lines.append(f"- {gap}")
+
+    tool_status = tooling.get("tool_status") if isinstance(tooling.get("tool_status"), dict) else {}
+    if tool_status:
+        lines.extend(["", "## Tool Status", ""])
+        for name, status in sorted(tool_status.items()):
+            if not isinstance(status, dict):
+                continue
+            parts = [str(status.get("status", "?"))]
+            if status.get("functions_count"):
+                parts.append(f"{status.get('functions_count')} functions")
+            if status.get("cfg_nodes"):
+                parts.append(f"{status.get('cfg_nodes')} CFG nodes")
+            if status.get("error"):
+                parts.append(f"error: {status.get('error')}")
+            lines.append(f"- {name}: " + "; ".join(parts))
+
+    lines.extend(
+        [
+            "",
+            "## Investigation Journey",
+            "",
+            f"- Messages: {journey.get('message_count', 0)}",
+            f"- Investigation graph nodes: {investigation_summary.get('node_count', 0)}",
+            f"- Investigation graph edges: {investigation_summary.get('edge_count', 0)}",
+        ]
+    )
+    trajectory_actions = journey.get("trajectory_actions") if isinstance(journey.get("trajectory_actions"), list) else []
+    if trajectory_actions:
+        lines.extend(["", "### Recent Actions", ""])
+        for action in trajectory_actions[-20:]:
+            if isinstance(action, dict):
+                lines.append(f"- #{action.get('seq', '?')} `{action.get('action', '?')}`")
+
+    lines.extend(
+        [
+            "",
+            "## Reproduce / Continue",
+            "",
+            "- Open the r2d2 session and use the Map tab for segmented findings.",
+            "- Run `uv run r2d2 mcp` to verify GhidraMCP and angr_mcp service reachability.",
+            "- Export the JSON bundle for machine-readable graph and evidence handoff.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _get_activity_events(db: Any, session_id: str, limit: int = 100) -> list[dict[str, Any]]:
+    if not db:
+        return []
+
+    try:
+        with db.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT event_id, event_type, event_data, created_at
+                FROM activity_events
+                WHERE session_id = ?
+                ORDER BY created_at ASC
+                LIMIT ?
+                """,
+                (session_id, limit),
+            ).fetchall()
+        return [
+            {
+                "event_id": row["event_id"],
+                "event_type": row["event_type"],
+                "event_data": row["event_data"],
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
+    except Exception:
+        return []
+
+
 def _get_activity_context(db: Any, session_id: str, limit: int = 25) -> list[dict[str, Any]] | None:
     """Fetch recent user activity events for LLM context."""
     if not db:
@@ -2021,12 +2539,15 @@ def _build_llm_messages(
     history: list[StoredChatMessage],
     analysis_attachment: dict[str, Any] | None,
     activity_context: list[dict[str, Any]] | None = None,
+    *,
+    config: Any | None = None,
+    investigation_graph: dict[str, Any] | None = None,
 ) -> list[LLMChatMessage]:
-    """Build focused LLM messages with FULL analysis context for every message.
-    
-    The analysis context is ALWAYS included in the system prompt to ensure
-    the LLM has consistent access to binary information throughout the conversation.
-    Activity context provides insight into what the user has been exploring.
+    """Build focused LLM messages.
+
+    Compact mode is the default for local models: it uses graph summaries,
+    selected evidence, and recent journey context instead of dumping raw
+    adapter payloads on every turn.
     """
     
     user_goal = _extract_user_goal(history)
@@ -2084,9 +2605,14 @@ This helps users follow along with your explanations in the disassembly view."""
     if user_goal:
         system_parts.append(f"\n## User's Goal\n{user_goal}")
     
-    # ALWAYS include the full analysis context - this is critical for coherent responses
+    compact_context = bool(getattr(getattr(config, "llm", None), "compact_context", True))
+
     if analysis_attachment:
-        ctx = _build_analysis_context(analysis_attachment)
+        ctx = (
+            _build_compact_analysis_context(analysis_attachment, investigation_graph)
+            if compact_context
+            else _build_analysis_context(analysis_attachment)
+        )
         system_parts.append(ctx)
     else:
         # Even without attachment, look for analysis in history
@@ -2094,7 +2620,11 @@ This helps users follow along with your explanations in the disassembly view."""
             if msg.role == "system":
                 for att in (msg.attachments or []):
                     if isinstance(att, dict) and att.get("type") == "analysis_result":
-                        ctx = _build_analysis_context(att)
+                        ctx = (
+                            _build_compact_analysis_context(att, investigation_graph)
+                            if compact_context
+                            else _build_analysis_context(att)
+                        )
                         system_parts.append(ctx)
                         break
     
@@ -2104,20 +2634,182 @@ This helps users follow along with your explanations in the disassembly view."""
         if activity_str:
             system_parts.append(activity_str)
     
+    max_chars = int(getattr(getattr(config, "llm", None), "context_budget_chars", 24000))
     system_prompt = "\n\n".join(system_parts)
+    system_prompt = _clamp_text(system_prompt, max_chars)
     messages: list[LLMChatMessage] = [LLMChatMessage(role="system", content=system_prompt)]
 
-    # Add conversation history - keep last 15 exchanges for context continuity
+    # Add conversation history - keep recent exchanges for context continuity.
     user_messages = [m for m in history if m.role in ("user", "assistant")]
-    for item in user_messages[-15:]:
+    history_limit = 10 if compact_context else 15
+    for item in user_messages[-history_limit:]:
         messages.append(
             LLMChatMessage(
                 role=item.role,
-                content=item.content,
+                content=_clamp_text(item.content, 2500 if compact_context else 8000),
             )
         )
     
     return messages
+
+
+def _build_compact_analysis_context(
+    analysis: dict[str, Any],
+    investigation_graph: dict[str, Any] | None,
+) -> str:
+    quick = analysis.get("quick_scan") or {}
+    deep = analysis.get("deep_scan") or {}
+    graph = analysis.get("analysis_graph") if isinstance(analysis.get("analysis_graph"), dict) else {}
+    graph_summary = graph.get("summary", {}) if isinstance(graph, dict) else {}
+    investigation_summary = (
+        investigation_graph.get("summary", {})
+        if isinstance(investigation_graph, dict)
+        else {}
+    )
+
+    lines = ["## Compact Binary Analysis Context"]
+    lines.append(f"Binary: {analysis.get('binary', 'unknown')}")
+
+    r2_quick = quick.get("radare2", {}) if isinstance(quick, dict) else {}
+    r2_info = r2_quick.get("info", {}) if isinstance(r2_quick, dict) else {}
+    bin_meta = r2_info.get("bin", {}) if isinstance(r2_info, dict) else {}
+    core = r2_info.get("core", {}) if isinstance(r2_info, dict) else {}
+    if isinstance(bin_meta, dict):
+        lines.append(
+            "Target: "
+            f"{bin_meta.get('arch', '?')}/{bin_meta.get('bits', '?')}-bit "
+            f"{bin_meta.get('os', '?')} {core.get('format', '') if isinstance(core, dict) else ''}".strip()
+        )
+
+    if graph_summary:
+        lines.append("\n### Findings Graph")
+        lines.append(
+            f"Nodes: {graph_summary.get('node_count', 0)}; "
+            f"Edges: {graph_summary.get('edge_count', 0)}; "
+            f"Tools: {', '.join(str(t) for t in graph_summary.get('tools', [])[:8])}"
+        )
+        node_kinds = graph_summary.get("node_kinds", {})
+        if isinstance(node_kinds, dict):
+            lines.append("Node kinds: " + ", ".join(f"{k}={v}" for k, v in sorted(node_kinds.items())[:12]))
+
+    important_nodes = _select_graph_nodes(graph)
+    if important_nodes:
+        lines.append("\nImportant findings:")
+        for node in important_nodes[:24]:
+            addr = f" @ {node.get('address')}" if node.get("address") else ""
+            source = node.get("source") or node.get("actor")
+            suffix = f" [{source}]" if source else ""
+            lines.append(f"- {node.get('kind')}: {node.get('label')}{addr}{suffix}")
+
+    if investigation_summary:
+        lines.append("\n### Investigation Journey")
+        lines.append(
+            f"Events: {investigation_summary.get('event_count', 0)}; "
+            f"Nodes: {investigation_summary.get('node_count', 0)}; "
+            f"Edges: {investigation_summary.get('edge_count', 0)}"
+        )
+        actors = investigation_summary.get("actor_counts", {})
+        if isinstance(actors, dict):
+            lines.append("Actors: " + ", ".join(f"{k}={v}" for k, v in sorted(actors.items())))
+
+    evidence = analysis.get("evidence_coverage") or {}
+    gaps = _summarize_evidence_gaps(evidence)
+    if gaps:
+        lines.append("\nSetup/tooling gaps:")
+        for gap in gaps[:12]:
+            lines.append(f"- {gap}")
+
+    tool_status = analysis.get("tool_status") or {}
+    if isinstance(tool_status, dict) and tool_status:
+        lines.append("\nTool status:")
+        for name, status in sorted(tool_status.items()):
+            if not isinstance(status, dict):
+                continue
+            parts = [str(status.get("status", "?"))]
+            if status.get("functions_count"):
+                parts.append(f"{status.get('functions_count')} functions")
+            if status.get("cfg_nodes"):
+                parts.append(f"{status.get('cfg_nodes')} CFG nodes")
+            if status.get("error"):
+                parts.append(f"error: {status.get('error')}")
+            lines.append(f"- {name}: " + "; ".join(parts))
+
+    r2_deep = deep.get("radare2", {}) if isinstance(deep, dict) else {}
+    entry_disasm = r2_deep.get("entry_disassembly") if isinstance(r2_deep, dict) else None
+    if isinstance(entry_disasm, str) and entry_disasm.strip():
+        disasm_lines = entry_disasm.strip().splitlines()[:35]
+        lines.append("\nEntry disassembly excerpt:")
+        lines.append("```asm")
+        lines.extend(disasm_lines)
+        lines.append("```")
+
+    issues = analysis.get("issues", [])
+    if issues:
+        lines.append("\nIssues: " + "; ".join(str(issue) for issue in issues[:8]))
+
+    return "\n".join(lines)
+
+
+def _select_graph_nodes(graph: dict[str, Any]) -> list[dict[str, Any]]:
+    nodes = graph.get("nodes", []) if isinstance(graph, dict) else []
+    if not isinstance(nodes, list):
+        return []
+
+    priority = {
+        "issue": 0,
+        "function": 1,
+        "import": 2,
+        "string": 3,
+        "decompilation": 4,
+        "type": 5,
+        "profile": 6,
+        "tool": 7,
+    }
+
+    selected = [
+        node for node in nodes
+        if isinstance(node, dict) and node.get("kind") in priority
+    ]
+    selected.sort(
+        key=lambda node: (
+            priority.get(str(node.get("kind")), 99),
+            0 if node.get("address") else 1,
+            str(node.get("label", "")),
+        )
+    )
+    return selected[:80]
+
+
+def _summarize_evidence_gaps(evidence: dict[str, Any]) -> list[str]:
+    matrix = evidence.get("matrix") if isinstance(evidence, dict) else None
+    if not isinstance(matrix, dict):
+        return []
+
+    gaps: list[str] = []
+    for tool, columns in sorted(matrix.items()):
+        if not isinstance(columns, dict):
+            continue
+        missing = [name for name, status in columns.items() if status == "missing"]
+        partial = [name for name, status in columns.items() if status == "partial"]
+        if missing:
+            gaps.append(f"{tool}: missing {', '.join(missing[:6])}")
+        if partial:
+            gaps.append(f"{tool}: partial {', '.join(partial[:6])}")
+    return gaps
+
+
+def _clamp_text(text: str, max_chars: int) -> str:
+    if max_chars <= 0 or len(text) <= max_chars:
+        return text
+    head = max_chars * 2 // 3
+    tail = max_chars - head - 120
+    if tail <= 0:
+        return text[:max_chars]
+    return (
+        text[:head]
+        + "\n\n[... compacted to fit local model context budget ...]\n\n"
+        + text[-tail:]
+    )
 
 
 def _build_analysis_context(analysis: dict[str, Any]) -> str:

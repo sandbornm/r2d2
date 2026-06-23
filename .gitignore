@@ -10,7 +10,7 @@ coverage/
 web/frontend/node_modules/
 web/frontend/dist/
 web/frontend/.vite/
-uv.lock
+web/frontend/.npm-cache/
 
 # Ghidra build outputs
 *.log

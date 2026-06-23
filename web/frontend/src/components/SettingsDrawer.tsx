@@ -30,17 +30,22 @@ import MemoryIcon from '@mui/icons-material/Memory';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import ErrorIcon from '@mui/icons-material/Error';
 import InfoIcon from '@mui/icons-material/Info';
+import RefreshIcon from '@mui/icons-material/Refresh';
 import { FC, useCallback, useEffect, useState } from 'react';
 
-// Available AI models - must match backend LLMBridge.AVAILABLE_MODELS
-// Default is Claude 4.5 Opus; user can override with 5.1 or Sonnet
+// Static defaults; the top bar model picker is populated from backend health.
 export const AI_MODELS = [
-  { id: 'claude-opus-4-5', name: 'Claude Opus 4.5', provider: 'Anthropic', isDefault: true },
+  { id: 'gemma4:latest', name: 'Gemma 4 8B', provider: 'Ollama local', isDefault: true },
+  { id: 'gemma3:4b', name: 'Gemma 3 4B', provider: 'Ollama local', isDefault: false },
+  { id: 'gemma3:12b', name: 'Gemma 3 12B', provider: 'Ollama local', isDefault: false },
+  { id: 'gemma2:9b', name: 'Gemma 2 9B', provider: 'Ollama local', isDefault: false },
+  { id: 'claude-opus-4-5', name: 'Claude Opus 4.5', provider: 'Anthropic', isDefault: false },
   { id: 'claude-5-1', name: 'Claude 5.1', provider: 'Anthropic', isDefault: false },
   { id: 'claude-sonnet-4-5', name: 'Claude Sonnet 4.5', provider: 'Anthropic', isDefault: false },
+  { id: 'gpt-4o', name: 'GPT-4o', provider: 'OpenAI', isDefault: false },
 ] as const;
 
-export type ModelId = typeof AI_MODELS[number]['id'];
+export type ModelId = string;
 
 export interface AnalysisSettings {
   quickScanOnly: boolean;
@@ -54,17 +59,43 @@ export interface AnalysisSettings {
 
 interface ToolStatus {
   available: boolean;
+  enabled?: boolean;
   install_hint?: string;
   description?: string;
+  details?: string;
+  path?: string | null;
+  binwalk_available?: boolean;
+  python_package_available?: boolean;
   bridge_connected?: boolean;
   bridge_available?: boolean;
   headless_ready?: boolean;
+  headless_available?: boolean;
+  bridge_program_loaded?: string | null;
   docker_available?: boolean;
   image_built?: boolean;
+  cli_available?: boolean;
+  service_available?: boolean;
+  installed_models?: string[];
+  selected_model?: string;
+  selected_model_available?: boolean;
+  transport?: string;
+  url?: string;
+  active_url?: string;
+  command?: string;
+  command_available?: boolean;
+  status_code?: number;
+  capabilities_count?: number;
+  latency_ms?: number;
 }
 
 interface ToolsStatusMap {
   [key: string]: ToolStatus;
+}
+
+interface ToolsStatusMeta {
+  cached?: boolean;
+  live?: boolean;
+  generated_at?: string | null;
 }
 
 interface SettingsDrawerProps {
@@ -182,16 +213,26 @@ const SettingRow: FC<SettingRowProps> = ({
 
 // Tool status indicator component
 const ToolStatusIndicator: FC<{ name: string; status: ToolStatus }> = ({ name, status }) => {
-  const theme = useTheme();
-  
+  const detail = [
+    status.details,
+    status.path ? `path: ${status.path}` : null,
+    status.python_package_available !== undefined ? `python: ${status.python_package_available ? 'yes' : 'no'}` : null,
+    status.binwalk_available !== undefined ? `binwalk: ${status.binwalk_available ? 'yes' : 'no'}` : null,
+    status.transport ? `transport: ${status.transport}` : null,
+    status.active_url || status.url || status.command || null,
+    status.capabilities_count !== undefined ? `${status.capabilities_count} capabilities` : null,
+  ].filter(Boolean).join(' | ');
+
   return (
     <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ py: 0.5 }}>
       <Typography variant="caption">{name}</Typography>
       <Stack direction="row" alignItems="center" spacing={0.5}>
         {status.available ? (
-          <CheckCircleIcon sx={{ fontSize: 14, color: 'success.main' }} />
+          <Tooltip title={detail || status.description || 'Ready'}>
+            <CheckCircleIcon sx={{ fontSize: 14, color: 'success.main', cursor: 'help' }} />
+          </Tooltip>
         ) : (
-          <Tooltip title={status.install_hint || 'Not available'}>
+          <Tooltip title={detail || status.install_hint || 'Not available'}>
             <ErrorIcon sx={{ fontSize: 14, color: 'error.main', cursor: 'help' }} />
           </Tooltip>
         )}
@@ -219,16 +260,19 @@ export const SettingsDrawer: FC<SettingsDrawerProps> = ({
 }) => {
   const theme = useTheme();
   const [toolsStatus, setToolsStatus] = useState<ToolsStatusMap>({});
+  const [toolsMeta, setToolsMeta] = useState<ToolsStatusMeta>({});
   const [loadingTools, setLoadingTools] = useState(true);
 
   // Fetch tools status from backend
   const fetchToolsStatus = useCallback(async () => {
+    setLoadingTools(true);
     try {
-      const response = await fetch('/api/health');
+      const response = await fetch('/api/tools/status?live=1');
       const data = await response.json();
       if (data.tools) {
         setToolsStatus(data.tools);
       }
+      setToolsMeta(data.meta ?? {});
     } catch (err) {
       console.error('Failed to fetch tools status:', err);
     } finally {
@@ -249,6 +293,36 @@ export const SettingsDrawer: FC<SettingsDrawerProps> = ({
   // Count available tools
   const availableCount = Object.values(toolsStatus).filter(t => t.available).length;
   const totalCount = Object.keys(toolsStatus).length;
+  const generatedAtLabel = toolsMeta.generated_at
+    ? new Date(toolsMeta.generated_at).toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+      })
+    : null;
+  const orderedToolEntries = Object.entries(toolsStatus).sort(([left], [right]) => {
+    const order = [
+      'firmware',
+      'binwalk',
+      'autoprofile',
+      'ollama',
+      'ghidra_mcp',
+      'ghidra_gdb',
+      'angr_mcp',
+      'radare2',
+      'angr',
+      'ghidra',
+      'capstone',
+      'dwarf',
+      'libmagic',
+      'gef',
+      'gdb',
+      'frida',
+    ];
+    const leftIndex = order.indexOf(left);
+    const rightIndex = order.indexOf(right);
+    return (leftIndex === -1 ? 999 : leftIndex) - (rightIndex === -1 ? 999 : rightIndex) || left.localeCompare(right);
+  });
 
   return (
     <Drawer
@@ -312,9 +386,18 @@ export const SettingsDrawer: FC<SettingsDrawerProps> = ({
         {/* Content */}
         <Box sx={{ flex: 1, overflow: 'auto', p: 2 }}>
           {/* Tools Status Overview */}
-          <Typography variant="overline" color="text.secondary" sx={{ px: 1 }}>
-            Tools Status
-          </Typography>
+          <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ px: 1 }}>
+            <Typography variant="overline" color="text.secondary">
+              Tools Status
+            </Typography>
+            <Tooltip title="Refresh live tool status">
+              <span>
+                <IconButton size="small" onClick={fetchToolsStatus} disabled={loadingTools}>
+                  <RefreshIcon sx={{ fontSize: 16 }} />
+                </IconButton>
+              </span>
+            </Tooltip>
+          </Stack>
           <Box
             sx={{
               mt: 1,
@@ -337,6 +420,12 @@ export const SettingsDrawer: FC<SettingsDrawerProps> = ({
                     <InfoIcon sx={{ fontSize: 16, color: 'text.secondary', cursor: 'help' }} />
                   </Tooltip>
                 </Stack>
+                {generatedAtLabel && (
+                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
+                    {toolsMeta.live ? 'Live' : 'Cached'} check at {generatedAtLabel}
+                    {toolsMeta.cached ? ' from cache' : ''}
+                  </Typography>
+                )}
                 <LinearProgress 
                   variant="determinate" 
                   value={(availableCount / Math.max(totalCount, 1)) * 100} 
@@ -350,7 +439,7 @@ export const SettingsDrawer: FC<SettingsDrawerProps> = ({
                   }} 
                 />
                 <Box sx={{ mt: 1.5 }}>
-                  {Object.entries(toolsStatus).map(([name, status]) => (
+                  {orderedToolEntries.map(([name, status]) => (
                     <ToolStatusIndicator key={name} name={name} status={status} />
                   ))}
                 </Box>
@@ -534,7 +623,7 @@ export const SettingsDrawer: FC<SettingsDrawerProps> = ({
             <SettingRow
               icon={<PsychologyIcon sx={{ fontSize: 20 }} />}
               label="Auto-analyze with AI"
-              description="Automatically ask Claude about the binary after analysis"
+              description="Automatically ask the selected model about the binary after analysis"
               checked={settings.autoAskLLM}
               onChange={(v) => updateSetting('autoAskLLM', v)}
             />

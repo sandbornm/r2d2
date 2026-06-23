@@ -3,6 +3,7 @@ import ChevronLeftIcon from '@mui/icons-material/ChevronLeft';
 import ChevronRightIcon from '@mui/icons-material/ChevronRight';
 import CloudUploadIcon from '@mui/icons-material/CloudUpload';
 import CodeIcon from '@mui/icons-material/Code';
+import MapIcon from '@mui/icons-material/Map';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import SettingsIcon from '@mui/icons-material/Settings';
 import DarkModeIcon from '@mui/icons-material/DarkMode';
@@ -38,6 +39,7 @@ import {
 } from 'react';
 import ChatPanel from './components/ChatPanel';
 import CompilerPanel from './components/CompilerPanel';
+import GraphExplorer from './components/GraphExplorer';
 import type { CFGContext } from './components/ResultViewer';
 import ProgressLog from './components/ProgressLog';
 import ResultViewer from './components/ResultViewer';
@@ -55,6 +57,7 @@ import type {
   ChatMessageItem,
   ChatPostResponse,
   ChatSessionSummary,
+  ExplorerGraphNode,
   HealthStatus,
   ProgressEventEntry,
   ProgressEventName,
@@ -79,10 +82,13 @@ const EVENT_NAMES: ProgressEventName[] = [
 ];
 
 type JobStatus = 'idle' | 'running' | 'done' | 'error';
-type TabValue = 'results' | 'chat' | 'logs' | 'compiler';
+type TabValue = 'results' | 'map' | 'chat' | 'logs' | 'compiler';
 
 type AnalysisResponseEvent = AnalysisResultPayload & { session_id?: string };
 type SSEHandlers = Partial<Record<ProgressEventName, (payload: ProgressEventPayload) => void>>;
+
+const MAX_UPLOAD_BYTES = 200 * 1024 * 1024;
+const MAX_UPLOAD_LABEL = '200 MB';
 
 const DEFAULT_SETTINGS: AnalysisSettings = {
   quickScanOnly: false,
@@ -91,7 +97,7 @@ const DEFAULT_SETTINGS: AnalysisSettings = {
   enableGef: true,
   enableFrida: false,
   autoAskLLM: false,
-  selectedModel: 'claude-opus-4-5',
+  selectedModel: 'gemma4:latest',
 };
 
 const loadSettings = (): AnalysisSettings => {
@@ -102,6 +108,12 @@ const loadSettings = (): AnalysisSettings => {
     // ignore
   }
   return DEFAULT_SETTINGS;
+};
+
+const formatBytes = (bytes: number): string => {
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${bytes} B`;
 };
 
 const AppContent = () => {
@@ -140,10 +152,20 @@ const AppContent = () => {
     () => sessions.find((session) => session.session_id === activeSessionId) ?? null,
     [sessions, activeSessionId],
   );
+  const showCompiler = health?.features?.show_compiler === true;
+  const visibleActiveTab: TabValue = !showCompiler && activeTab === 'compiler' ? 'results' : activeTab;
+  const mapNodeCount = result?.analysis_graph?.nodes?.length ?? 0;
+  const mapTabLabel = mapNodeCount > 0 ? `Map (${mapNodeCount})` : 'Map';
 
   useEffect(() => {
     activeSessionIdRef.current = activeSessionId;
   }, [activeSessionId]);
+
+  useEffect(() => {
+    if (!showCompiler && activeTab === 'compiler') {
+      setActiveTab('results');
+    }
+  }, [activeTab, showCompiler]);
 
   useEffect(() => {
     localStorage.setItem('r2d2-settings', JSON.stringify(settings));
@@ -243,6 +265,7 @@ const AppContent = () => {
           tool_availability: analysisAttachment.tool_availability as Record<string, boolean> | undefined,
           tool_status: analysisAttachment.tool_status as Record<string, ToolStatusSummary> | undefined,
           evidence_coverage: analysisAttachment.evidence_coverage as EvidenceCoverage | undefined,
+          analysis_graph: analysisAttachment.analysis_graph as AnalysisResultPayload['analysis_graph'],
         };
         setResult(restoredResult);
         setInCache(CacheKeys.analysisResult(data.session.session_id), restoredResult);
@@ -331,6 +354,12 @@ const AppContent = () => {
   );
 
   const handleFileUpload = async (file: File) => {
+    if (file.size > MAX_UPLOAD_BYTES) {
+      setStatus('error');
+      setStatusMessage(`File exceeds ${MAX_UPLOAD_LABEL} hard limit`);
+      return;
+    }
+
     setUploading(true);
     setStatusMessage('Uploading...');
     setStatus('running');
@@ -353,7 +382,7 @@ const AppContent = () => {
       setBinaryPath(data.path);
       setFileName(data.filename);
       setStatus('idle');
-      setStatusMessage(null);
+      setStatusMessage(`Uploaded ${data.filename} (${formatBytes(file.size)})`);
       lastSyncedSessionIdRef.current = null;
     } catch (error) {
       console.error(error);
@@ -479,6 +508,9 @@ const AppContent = () => {
         analysis_result: (payload) => {
           const analysis = payload as unknown as AnalysisResponseEvent;
           setResult(analysis);
+          if (analysis.analysis_graph?.nodes?.length) {
+            setActiveTab('map');
+          }
           // Cache the analysis result for faster switching
           if (analysis.session_id) {
             setInCache(CacheKeys.analysisResult(analysis.session_id), analysis);
@@ -692,6 +724,7 @@ In 2-3 sentences: what is it and what does it do? I'm ${funcCount > 0 ? 'seeing 
   };
 
   const handleTabChange = (_: SyntheticEvent, value: TabValue) => {
+    if (value === 'compiler' && !showCompiler) return;
     debug.activity.tabSwitch(activeTab, value);
     setActiveTab(value);
     // Track tab switch for activity context
@@ -728,6 +761,25 @@ In 2-3 sentences: what is it and what does it do? I'm ${funcCount > 0 ? 'seeing 
     // Could add scrolling to the address in disassembly view in the future
   }, [activity]);
 
+  const handleAskAboutGraphNode = useCallback((node: ExplorerGraphNode, mode: 'findings' | 'journey') => {
+    const addressLine = node.address ? `Address: ${node.address}\n` : '';
+    const sourceLine = node.source ? `Source: ${node.source}\n` : '';
+    const actorLine = node.actor ? `Actor: ${node.actor}\n` : '';
+    const prompt = `I'm looking at this ${mode} map node.
+
+Kind: ${node.kind}
+Label: ${node.label}
+${addressLine}${sourceLine}${actorLine}
+Properties:
+\`\`\`json
+${JSON.stringify(node.properties ?? {}, null, 2).slice(0, 2500)}
+\`\`\`
+
+Explain why this node matters for behavior triage, dynamic-analysis targeting, or patch planning.`;
+    setActiveTab('chat');
+    handleSendMessage(prompt, { callLLM: true });
+  }, [handleSendMessage]);
+
   const clearFile = () => {
     setBinaryPath('');
     setFileName(null);
@@ -735,6 +787,7 @@ In 2-3 sentences: what is it and what does it do? I'm ${funcCount > 0 ? 'seeing 
     setResult(null);
     setEvents([]);
     setStatus('idle');
+    setActiveTab('results');
   };
 
   const handleNewSession = () => {
@@ -825,7 +878,13 @@ In 2-3 sentences: what is it and what does it do? I'm ${funcCount > 0 ? 'seeing 
               .finally(() => setSendingMessage(false));
           }
         },
-        analysis_result: (payload) => setResult(payload as unknown as AnalysisResultPayload),
+        analysis_result: (payload) => {
+          const analysis = payload as unknown as AnalysisResultPayload;
+          setResult(analysis);
+          if (analysis.analysis_graph?.nodes?.length) {
+            setActiveTab('map');
+          }
+        },
         job_failed: (payload) => {
           setStatus('error');
           setStatusMessage(payload.error ?? 'Failed');
@@ -995,14 +1054,16 @@ In 2-3 sentences: what is it and what does it do? I'm ${funcCount > 0 ? 'seeing 
             <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
               {/* Tabs for empty state */}
               <Box sx={{ borderBottom: 1, borderColor: 'divider', px: 2 }}>
-                <Tabs value={activeTab} onChange={handleTabChange}>
-                  <Tab value="compiler" label="Compiler" icon={<CodeIcon sx={{ fontSize: 16 }} />} iconPosition="start" />
+                <Tabs value={visibleActiveTab} onChange={handleTabChange}>
+                  {showCompiler && (
+                    <Tab value="compiler" label="Compiler" icon={<CodeIcon sx={{ fontSize: 16 }} />} iconPosition="start" />
+                  )}
                   <Tab value="results" label="Upload Binary" icon={<CloudUploadIcon sx={{ fontSize: 16 }} />} iconPosition="start" />
                 </Tabs>
               </Box>
 
               <Box sx={{ flex: 1, overflow: 'auto', p: 2 }}>
-                {activeTab === 'compiler' ? (
+                {showCompiler && activeTab === 'compiler' ? (
                   <CompilerPanel onBinaryCompiled={handleBinaryCompiled} onAnalyzeAndChat={handleAnalyzeAndChat} />
                 ) : (
                   /* Drop zone */
@@ -1032,7 +1093,7 @@ In 2-3 sentences: what is it and what does it do? I'm ${funcCount > 0 ? 'seeing 
                       or click to browse
                     </Typography>
                     <Typography variant="caption" color="text.disabled" sx={{ mt: 2 }}>
-                      Supports ELF binaries (ARM, x86, etc.)
+                      Supports generic binaries and firmware images up to {MAX_UPLOAD_LABEL}
                     </Typography>
                   </Box>
                 )}
@@ -1103,10 +1164,13 @@ In 2-3 sentences: what is it and what does it do? I'm ${funcCount > 0 ? 'seeing 
 
               {/* Tabs */}
               <Box sx={{ borderBottom: 1, borderColor: 'divider', px: 2 }}>
-                <Tabs value={activeTab} onChange={handleTabChange}>
+                <Tabs value={visibleActiveTab} onChange={handleTabChange}>
                   <Tab value="results" label="Results" />
+                  <Tab value="map" label={mapTabLabel} icon={<MapIcon sx={{ fontSize: 16 }} />} iconPosition="start" />
                   <Tab value="chat" label="Chat" />
-                  <Tab value="compiler" label="Compiler" icon={<CodeIcon sx={{ fontSize: 16 }} />} iconPosition="start" />
+                  {showCompiler && (
+                    <Tab value="compiler" label="Compiler" icon={<CodeIcon sx={{ fontSize: 16 }} />} iconPosition="start" />
+                  )}
                   <Tab value="logs" label={`Logs${events.length ? ` (${events.length})` : ''}`} />
                 </Tabs>
               </Box>
@@ -1199,6 +1263,14 @@ In 2-3 sentences: what is it and what does it do? I'm ${funcCount > 0 ? 'seeing 
                     />
                   </>
                 )}
+                {activeTab === 'map' && (
+                  <GraphExplorer
+                    sessionId={activeSessionId}
+                    analysisGraph={result?.analysis_graph ?? null}
+                    onAskAboutNode={handleAskAboutGraphNode}
+                    onNavigateToAddress={handleNavigateToAddress}
+                  />
+                )}
                 {activeTab === 'chat' && (
                   <ChatPanel
                     session={activeSession}
@@ -1211,7 +1283,7 @@ In 2-3 sentences: what is it and what does it do? I'm ${funcCount > 0 ? 'seeing 
                     trajectoryContext={trajectory.getLLMContext()}
                   />
                 )}
-                {activeTab === 'compiler' && (
+                {showCompiler && activeTab === 'compiler' && (
                   <CompilerPanel onBinaryCompiled={handleBinaryCompiled} onAnalyzeAndChat={handleAnalyzeAndChat} />
                 )}
                 {activeTab === 'logs' && <ProgressLog entries={events} />}

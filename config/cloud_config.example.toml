@@ -22,12 +22,12 @@ temperature = 0.1
 
 [analysis]
 auto_analyze = true
-max_binary_size = "10MB"  # Increase for cloud deployments
+max_binary_size = "200MB"
 timeout_quick = 10
 timeout_deep = 120  # More time for cloud servers
 enable_angr = true
 enable_ghidra = false  # Set true if Ghidra is installed
-require_elf = true
+require_elf = false
 enable_trajectory_recording = true
 
 [output]
@@ -45,6 +45,9 @@ cache_results = true
 # Use Docker volume path for cloud deployment
 database_path = "/app/data/r2d2.db"
 auto_migrate = true
+
+[ui]
+show_compiler = false
 
 [ghidra]
 use_bridge = false
@@ -66,4 +69,3 @@ project_dir = "/app/data/ghidra-projects"
 #   R2D2_WEB_PORT=5050             (API server port)
 #   R2D2_FRONTEND_PORT=5173        (Frontend port)
 #   R2D2_CONFIG_PATH=/path/to/config.toml
-

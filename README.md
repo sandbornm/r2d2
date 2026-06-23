@@ -207,7 +207,24 @@ cp .venv/lib/python*/site-packages/ghidra_bridge/server/*.py ~/ghidra_scripts/
 docker build -t r2d2-gef -f Dockerfile.gef .
 ```
 
-### Step 6: Install Frida (Optional)
+### Step 6: Start MCP Analysis Services (Optional)
+
+r2d2 can fan out to sibling GhidraMCP and angr_mcp services when they are
+running. The defaults use:
+
+- GhidraMCP plugin API: `http://127.0.0.1:8080`
+- GhidraMCP GDB API: `http://127.0.0.1:5051`
+- angr MCP streamable HTTP: `http://127.0.0.1:8766/mcp`
+
+See [docs/MCP_SERVICES.md](docs/MCP_SERVICES.md) for launch commands. Check
+status with:
+
+```bash
+uv run r2d2 mcp
+uv run r2d2 mcp --json
+```
+
+### Step 7: Install Frida (Optional)
 
 ```bash
 # For dynamic instrumentation
@@ -263,7 +280,17 @@ uv run r2d2 analyze binary.elf --ask "What does this binary do?"
 
 # Check environment
 uv run r2d2 env
+
+# Check MCP service reachability and launch commands
+uv run r2d2 mcp
 ```
+
+### Report Exports
+
+Every completed analysis session can export a compact JSON bundle and Markdown
+report from the results header. The bundle joins the findings graph,
+investigation journey, tool coverage, and compact local-model context. See
+[docs/REPORTING.md](docs/REPORTING.md) for the API and schema.
 
 ### Web UI Workflow
 

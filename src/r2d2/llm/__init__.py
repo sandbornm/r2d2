@@ -2,6 +2,7 @@
 
 from .claude_client import ClaudeClient, ClaudeError
 from .manager import LLMBridge, LLMError, ChatMessage
+from .ollama_client import OllamaClient, OllamaError
 from .openai_client import OpenAIClient, OpenAIError
 
 __all__ = [
@@ -9,6 +10,8 @@ __all__ = [
     "OpenAIError",
     "ClaudeClient",
     "ClaudeError",
+    "OllamaClient",
+    "OllamaError",
     "ChatMessage",
     "LLMBridge",
     "LLMError",

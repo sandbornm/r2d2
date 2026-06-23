@@ -1,5 +1,5 @@
 """Environment detection utilities."""
 
-from .detectors import EnvironmentReport, detect_environment
+from .detectors import EnvironmentReport, MCPConnectionCheck, detect_environment, detect_mcp_connections
 
-__all__ = ["EnvironmentReport", "detect_environment"]
+__all__ = ["EnvironmentReport", "MCPConnectionCheck", "detect_environment", "detect_mcp_connections"]

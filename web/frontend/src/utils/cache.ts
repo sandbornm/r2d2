@@ -149,4 +149,5 @@ export const CacheKeys = {
   functionNames: (sessionId: string) => `funcnames-${sessionId}`,
   annotations: (sessionId: string) => `annotations-${sessionId}`,
   events: (sessionId: string) => `events-${sessionId}`,
+  graphs: (sessionId: string) => `graphs-${sessionId}`,
 };

@@ -21,8 +21,8 @@ DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent.parent / "config" /
 
 
 class LLMSettings(BaseModel):
-    provider: str = "anthropic"
-    model: str = "claude-opus-4-5"  # Default to Opus 4.5; user can override via UI
+    provider: str = "ollama"
+    model: str = "gemma3:4b"
     api_key_env: str = "ANTHROPIC_API_KEY"
     fallback_provider: str | None = "openai"
     fallback_model: str | None = "gpt-4o"
@@ -30,11 +30,14 @@ class LLMSettings(BaseModel):
     enable_fallback: bool = False  # Disabled by default - user enables if needed
     max_tokens: int = 8192
     temperature: float = 0.1
+    base_url: str = "http://127.0.0.1:11434"
+    compact_context: bool = True
+    context_budget_chars: int = 24000
 
 
 class AnalysisSettings(BaseModel):
     auto_analyze: bool = True
-    max_binary_size: str = "5MB"
+    max_binary_size: str = "200MB"
     timeout_quick: int = 5
     timeout_deep: int = 60
     enable_angr: bool = True  # Symbolic execution - skipped if not available
@@ -43,7 +46,7 @@ class AnalysisSettings(BaseModel):
     enable_gef: bool = True  # GDB+GEF in Docker - skipped if not available
     gef_timeout: int = 60
     gef_max_instructions: int = 10000
-    require_elf: bool = True
+    require_elf: bool = False
     # Radare2 profile: placeholder for future use. Intended: "analysis.quick" (aa),
     # "analysis.deep" (aaa), "analysis.full" (aaaa). Currently always uses aaa.
     default_radare_profile: str = "analysis.quick"
@@ -67,6 +70,10 @@ class StorageSettings(BaseModel):
     auto_migrate: bool = True
 
 
+class UISettings(BaseModel):
+    show_compiler: bool = False
+
+
 class GhidraSettings(BaseModel):
     use_bridge: bool = True  # Try bridge first - falls back to headless if unavailable
     bridge_host: str = "127.0.0.1"
@@ -79,13 +86,86 @@ class GhidraSettings(BaseModel):
     max_strings: int = 200
 
 
+class MCPServerSettings(BaseModel):
+    enabled: bool = True
+    description: str = ""
+    transport: str = "http"
+    url: str | None = None
+    fallback_urls: list[str] = Field(default_factory=list)
+    command: str | None = None
+    args: list[str] = Field(default_factory=list)
+    start_command: list[str] = Field(default_factory=list)
+    working_dir: str | None = None
+    health_path: str | None = None
+    capabilities_path: str | None = None
+    timeout: float = 1.5
+    install_hint: str | None = None
+
+
+class MCPSettings(BaseModel):
+    ghidra_mcp: MCPServerSettings = Field(
+        default_factory=lambda: MCPServerSettings(
+            description="GhidraMCP static analysis HTTP API",
+            transport="http",
+            url="http://127.0.0.1:8080",
+            fallback_urls=["http://127.0.0.1:18080"],
+            health_path="/methods",
+            capabilities_path="/methods",
+            install_hint="Start Ghidra with the GhidraMCP plugin enabled, then load the target program.",
+        )
+    )
+    ghidra_gdb: MCPServerSettings = Field(
+        default_factory=lambda: MCPServerSettings(
+            description="GhidraMCP GDB/Docker dynamic analysis API",
+            transport="http",
+            url="http://127.0.0.1:5051",
+            command="docker",
+            start_command=["docker", "compose", "up", "-d", "--build"],
+            working_dir="../GhidraMCP/docker",
+            health_path="/health",
+            install_hint="Run the GhidraMCP docker service from the sibling GhidraMCP/docker directory.",
+        )
+    )
+    angr_mcp: MCPServerSettings = Field(
+        default_factory=lambda: MCPServerSettings(
+            description="angr_mcp streamable HTTP server",
+            transport="streamable-http",
+            url="http://127.0.0.1:8766/mcp",
+            command="angr-mcp-dev-server",
+            args=["--transport", "streamable-http", "--host", "127.0.0.1", "--port", "8766"],
+            start_command=[
+                "uv",
+                "run",
+                "angr-mcp-dev-server",
+                "--transport",
+                "streamable-http",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "8766",
+            ],
+            working_dir="../angr_mcp",
+            install_hint="Run the streamable HTTP dev server from the sibling angr_mcp checkout.",
+        )
+    )
+
+    def configured_servers(self) -> dict[str, MCPServerSettings]:
+        return {
+            "ghidra_mcp": self.ghidra_mcp,
+            "ghidra_gdb": self.ghidra_gdb,
+            "angr_mcp": self.angr_mcp,
+        }
+
+
 class AppConfig(BaseModel):
     llm: LLMSettings = Field(default_factory=LLMSettings)
     analysis: AnalysisSettings = Field(default_factory=AnalysisSettings)
     output: OutputSettings = Field(default_factory=OutputSettings)
     performance: PerformanceSettings = Field(default_factory=PerformanceSettings)
     storage: StorageSettings = Field(default_factory=StorageSettings)
+    ui: UISettings = Field(default_factory=UISettings)
     ghidra: GhidraSettings = Field(default_factory=GhidraSettings)
+    mcp: MCPSettings = Field(default_factory=MCPSettings)
     raw: dict[str, Any] = Field(default_factory=dict)
 
     @property
@@ -149,12 +229,16 @@ def load_config(config_path: Path | None = None) -> AppConfig:
         config.performance = PerformanceSettings.model_validate(data["performance"])
     if "storage" in data:
         config.storage = StorageSettings.model_validate(data["storage"])
+    if "ui" in data:
+        config.ui = UISettings.model_validate(data["ui"])
     if "ghidra" in data:
         ghidra_data = dict(data["ghidra"])
         # Handle empty string install_dir - treat as None so env var can apply
         if ghidra_data.get("install_dir") == "":
             ghidra_data["install_dir"] = None
         config.ghidra = GhidraSettings.model_validate(ghidra_data)
+    if "mcp" in data:
+        config.mcp = MCPSettings.model_validate(data["mcp"])
 
     # Environment variable overrides (highest precedence)
     env_install_dir = os.getenv("GHIDRA_INSTALL_DIR")
@@ -165,5 +249,9 @@ def load_config(config_path: Path | None = None) -> AppConfig:
     if env_api_key:
         config.raw.setdefault("llm", {})
         config.raw["llm"]["api_key_present"] = True
+
+    env_show_compiler = os.getenv("R2D2_SHOW_COMPILER")
+    if env_show_compiler is not None:
+        config.ui.show_compiler = env_show_compiler.strip().lower() in {"1", "true", "yes", "on"}
 
     return config

@@ -1,15 +1,12 @@
 import AccountTreeIcon from '@mui/icons-material/AccountTree';
-import BugReportIcon from '@mui/icons-material/BugReport';
 import CodeIcon from '@mui/icons-material/Code';
-import FunctionsIcon from '@mui/icons-material/Functions';
+import DownloadIcon from '@mui/icons-material/Download';
 import InfoIcon from '@mui/icons-material/Info';
 import MemoryIcon from '@mui/icons-material/Memory';
-import PlayArrowIcon from '@mui/icons-material/PlayArrow';
-import SecurityIcon from '@mui/icons-material/Security';
 import TerminalIcon from '@mui/icons-material/Terminal';
-import TextSnippetIcon from '@mui/icons-material/TextSnippet';
 import {
   Box,
+  Button,
   Chip,
   CircularProgress,
   Grid,
@@ -22,6 +19,7 @@ import {
 } from '@mui/material';
 import { FC, Suspense, lazy, memo, useCallback, useEffect, useMemo, useState } from 'react';
 import type {
+  AnalysisBundleResponse,
   AnalysisResultPayload,
   AssemblyAnnotation,
   AutoProfileData,
@@ -34,6 +32,7 @@ import type {
 } from '../types';
 import AutoProfilePanel from './AutoProfilePanel';
 import DisassemblyViewer from './DisassemblyViewer';
+import FirmwareTriagePanel from './FirmwareTriagePanel';
 import ToolAttribution from './ToolAttribution';
 
 // Lazy load heavy components for better initial load performance
@@ -96,6 +95,18 @@ const saveAnnotations = (binaryPath: string, annotations: AssemblyAnnotation[]) 
   } catch {
     // Ignore storage errors
   }
+};
+
+const downloadBlob = (body: BlobPart, filename: string, type: string) => {
+  const blob = new Blob([body], { type });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
 };
 
 const ResultViewer: FC<ResultViewerProps> = memo(({ result, sessionId, toolsInfo, onAskAboutCode, onAskAboutCFG }) => {
@@ -161,6 +172,20 @@ const ResultViewer: FC<ResultViewerProps> = memo(({ result, sessionId, toolsInfo
     });
   }, [result?.binary, sessionId]);
 
+  const handleExportBundle = useCallback(async (format: 'json' | 'markdown') => {
+    if (!sessionId || !result?.binary) return;
+    const response = await fetch(`/api/chats/${sessionId}/bundle${format === 'markdown' ? '?format=markdown' : ''}`);
+    if (!response.ok) return;
+    const baseName = (result.binary.split('/').pop() || 'analysis').replace(/[^\w.-]+/g, '_');
+    if (format === 'markdown') {
+      const text = await response.text();
+      downloadBlob(text, `${baseName}-r2d2-report.md`, 'text/markdown');
+      return;
+    }
+    const data = await response.json() as AnalysisBundleResponse;
+    downloadBlob(JSON.stringify(data, null, 2), `${baseName}-r2d2-bundle.json`, 'application/json');
+  }, [result?.binary, sessionId]);
+
   const hasResult = Boolean(result);
   const quickScan = result?.quick_scan ?? {};
   const deepScan = result?.deep_scan ?? {};
@@ -173,6 +198,8 @@ const ResultViewer: FC<ResultViewerProps> = memo(({ result, sessionId, toolsInfo
   const ghidraDeep = (deepScan.ghidra ?? null) as GhidraData | null;
   const gefDeep = (deepScan.gef ?? null) as GEFData | null;
   const autoprofileQuick = (quickScan.autoprofile ?? null) as AutoProfileData | null;
+  const firmwareQuick = (quickScan.firmware ?? null) as Record<string, unknown> | null;
+  const firmwareChildren = (deepScan.firmware_children ?? null) as Record<string, unknown> | null;
   const runtimeRequirements = (quickScan.runtime ?? null) as RuntimeRequirements | null;
   const toolStatus = (result?.tool_status ?? {}) as Record<string, ToolStatusSummary>;
   const evidenceCoverage = (result?.evidence_coverage ?? null) as EvidenceCoverage | null;
@@ -188,6 +215,10 @@ const ResultViewer: FC<ResultViewerProps> = memo(({ result, sessionId, toolsInfo
   const binType = (binInfo.bintype as string | undefined) ?? (binInfo.class as string | undefined) ?? 'unknown';
   const compiler = (binInfo.compiler as string | undefined) ?? '';
   const format = (coreInfo.format as string | undefined) ?? 'unknown';
+  const firmwareFormat = (firmwareQuick?.top_level_format as string | undefined) ?? null;
+  const firmwareContainer = (firmwareQuick?.container_type as string | undefined) ?? null;
+  const formatDisplay = format !== 'unknown' ? format : (firmwareFormat ?? format);
+  const osDisplay = os !== 'unknown' ? os : (firmwareContainer ?? os);
 
   // Compute a more readable architecture string
   // For ARM: bits=16 means Thumb mode (still 32-bit architecture)
@@ -242,6 +273,9 @@ const ResultViewer: FC<ResultViewerProps> = memo(({ result, sessionId, toolsInfo
   const strings = Array.isArray(r2Quick.strings) ? r2Quick.strings : [];
   const imports = Array.isArray(r2Quick.imports) ? r2Quick.imports : [];
   const functionCfgs = Array.isArray(r2Deep.function_cfgs) ? r2Deep.function_cfgs : [];
+  const firmwareArtifacts = Array.isArray(firmwareQuick?.embedded_artifacts) ? firmwareQuick.embedded_artifacts : [];
+  const firmwareTargets = Array.isArray(firmwareQuick?.recommended_targets) ? firmwareQuick.recommended_targets : [];
+  const firmwareCarves = Array.isArray(firmwareQuick?.carved_targets) ? firmwareQuick.carved_targets : [];
   
   // angr data - properly extract CFG nodes, edges, and stats
   const angrCfg = (angrDeep.cfg ?? {}) as Record<string, unknown>;
@@ -320,13 +354,37 @@ const ResultViewer: FC<ResultViewerProps> = memo(({ result, sessionId, toolsInfo
               {fileName}
             </Typography>
             <Typography variant="caption" color="text.secondary">
-              {format} · {archDisplay.short} · {os}
+              {formatDisplay} · {archDisplay.short} · {osDisplay}
             </Typography>
           </Box>
           <Stack direction="row" spacing={0.5}>
             <Chip size="small" label={`${functions.length} fn`} variant="outlined" />
             <Chip size="small" label={`${imports.length} imp`} variant="outlined" />
             <Chip size="small" label={`${strings.length} str`} variant="outlined" />
+            {firmwareArtifacts.length > 0 && <Chip size="small" label={`${firmwareArtifacts.length} art`} variant="outlined" />}
+            {firmwareTargets.length > 0 && <Chip size="small" label={`${firmwareTargets.length} tgt`} variant="outlined" />}
+            {sessionId && (
+              <>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  startIcon={<DownloadIcon sx={{ fontSize: 14 }} />}
+                  onClick={() => handleExportBundle('json')}
+                  sx={{ minHeight: 24, py: 0, px: 1 }}
+                >
+                  JSON
+                </Button>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  startIcon={<DownloadIcon sx={{ fontSize: 14 }} />}
+                  onClick={() => handleExportBundle('markdown')}
+                  sx={{ minHeight: 24, py: 0, px: 1 }}
+                >
+                  Report
+                </Button>
+              </>
+            )}
           </Stack>
         </Stack>
       </Paper>
@@ -348,6 +406,15 @@ const ResultViewer: FC<ResultViewerProps> = memo(({ result, sessionId, toolsInfo
         {/* OVERVIEW TAB - Binary info, Profile, Tool attribution */}
         {view === 'overview' && (
           <Stack spacing={1.5}>
+            {firmwareQuick && (
+              <FirmwareTriagePanel
+                firmware={firmwareQuick}
+                profile={autoprofileQuick}
+                childrenAnalysis={firmwareChildren}
+                compact
+              />
+            )}
+
             {/* Runtime requirements */}
             {runtimeRequirements && (
               <Paper variant="outlined" sx={{ p: 1.5 }}>
@@ -497,6 +564,9 @@ const ResultViewer: FC<ResultViewerProps> = memo(({ result, sessionId, toolsInfo
                       ['Architecture', archDisplay.full],
                       ['OS', os],
                       ['Type', binType],
+                      firmwareFormat ? ['Firmware format', firmwareFormat] : null,
+                      firmwareContainer ? ['Container', firmwareContainer] : null,
+                      firmwareCarves.length ? ['Carved targets', `${firmwareCarves.length}`] : null,
                       compiler ? ['Compiler', compiler] : null,
                     ] as (readonly [string, string] | null)[]).filter((item): item is readonly [string, string] => item !== null).map(([label, value]) => (
                       <Box key={label} sx={{ display: 'flex', justifyContent: 'space-between', py: 0.25 }}>
@@ -585,6 +655,14 @@ const ResultViewer: FC<ResultViewerProps> = memo(({ result, sessionId, toolsInfo
         {/* ANALYSIS TAB - Functions, Strings, CFG */}
         {view === 'analysis' && (
           <Stack spacing={1.5}>
+            {firmwareQuick && (
+              <FirmwareTriagePanel
+                firmware={firmwareQuick}
+                profile={autoprofileQuick}
+                childrenAnalysis={firmwareChildren}
+              />
+            )}
+
             {/* Functions and Strings side by side */}
             <Grid container spacing={1.5}>
               <Grid item xs={12} md={6}>
@@ -681,5 +759,7 @@ const ResultViewer: FC<ResultViewerProps> = memo(({ result, sessionId, toolsInfo
     )
   );
 });
+
+ResultViewer.displayName = 'ResultViewer';
 
 export default ResultViewer;

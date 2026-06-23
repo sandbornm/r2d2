@@ -8,9 +8,9 @@ Overview of autonomous components inside r2d2 and how they cooperate to deliver 
 - **Entry point**: `r2d2.analysis.orchestrator.AnalysisOrchestrator`
 - **Inputs**: file path, analysis plan, environment report, trajectory DAO
 - **Responsibilities**:
-  - enforce ELF-only analyses (magic header guard) before dispatching any adapter
-  - assemble adapter registry (`libmagic`, `radare2`, `capstone`, eager `angr`, optional `ghidra`)
-  - execute quick/deep stages, record outputs + issues, and attach results to chat sessions
+  - classify binaries and firmware blobs before dispatching adapter work
+  - assemble adapter registry (`libmagic`, `firmware`, `radare2`, `capstone`, eager `angr`, MCP-backed `angr_mcp`, optional `ghidra`/`ghidra_gdb`)
+  - execute quick/deep stages, fan out extracted firmware artifacts to available analyzers, record outputs + issues, and attach results to chat sessions
   - maintain OFRAK-style resource tree for downstream use
   - log every action to the trajectory store (`TrajectoryDAO`)
 - **Outputs**: `AnalysisResult` bundle (resource tree, quick/deep payloads, notes, issues)
@@ -21,10 +21,13 @@ Each adapter provides a uniform interface (`AnalyzerAdapter` protocol) and can b
 | Adapter | Module | Capability | Notes |
 |---------|--------|------------|-------|
 | Libmagic | `r2d2.adapters.libmagic` | file identification | minimal dependencies, sanity check |
+| Firmware | `r2d2.adapters.firmware` | firmware inventory, signatures, bounded carving, fanout recommendations | handles generic firmware blobs and embedded files before ELF-only tools run |
 | Radare2 | `r2d2.adapters.radare2` | metadata, CFG, functions | multi-arch baseline (x86_64/arm64/armv7) via `radare2` + `r2pipe` |
 | Capstone | `r2d2.adapters.capstone` | first-chunk disassembly | derives architecture from radare2 quick scan |
 | Ghidra | `r2d2.adapters.ghidra` | decompilation, types | headless (subprocess) or bridge (RPC) modes |
+| Ghidra MCP | `r2d2.adapters.ghidra_mcp` | dynamic GDB-backed MCP analysis | uses the GhidraMCP GDB service when available |
 | angr | `r2d2.adapters.angr` | symbolic execution | enabled by default; heavy but fallbacks gracefully |
+| angr MCP | `r2d2.adapters.angr_mcp` | MCP-backed entry/CFG pivots | probes streamable HTTP MCP and records tool availability |
 | DWARF | `r2d2.adapters.dwarf` | debug symbol parsing | extracts source-level type info from binaries |
 | Frida | `r2d2.adapters.frida` | dynamic instrumentation | runtime memory/module inspection |
 | GEF | `r2d2.adapters.gef` | execution tracing | Docker-isolated GDB with register snapshots |
@@ -43,8 +46,9 @@ The Ghidra adapter supports two modes:
 ## Environment Sentinel
 - **Module**: `r2d2.environment.detectors`
 - **Purpose**: gather telemetry about installed tools before running expensive stages.
-- **Outputs**: `EnvironmentReport` consumed by CLI + orchestrator, plus dedicated Ghidra detection payload.
-- **Extensibility**: `_COMMANDS` now includes optional `qemu`/`frida` probes and the detector inspects Anthropic availability when LLM fallback is enabled.
+- **Outputs**: `EnvironmentReport` consumed by CLI + orchestrator, plus dedicated Ghidra/MCP detection payloads.
+- **MCP Probes**: `r2d2 mcp` reports availability, launch commands, service URLs, capability counts, and install hints for `angr_mcp`, `ghidra_mcp`, and `ghidra_gdb`.
+- **Extensibility**: `_COMMANDS` now includes optional `qemu`/`frida` probes and the detector inspects local/remote LLM availability.
 
 ## Trajectory Recorder
 - **Storage**: SQLite via `r2d2.storage.Database` and `TrajectoryDAO`
@@ -62,9 +66,36 @@ The Ghidra adapter supports two modes:
   - Web UI/API append user prompts and LLM responses (metadata tracks active provider: OpenAI → Claude fallback).
 - **Downstream**: transcripts power replay, progress reports, and LLM context rebuilding.
 
+## Firmware Triage Agent
+- **Backend Module**: `r2d2.adapters.firmware`
+- **Frontend Module**: `web/frontend/src/components/FirmwareTriagePanel.tsx`
+- **Capabilities**:
+  - identify common firmware/container signatures in generic binary blobs
+  - carve bounded embedded artifacts for follow-on analysis
+  - summarize entropy, strings, candidate filesystems, and tool gaps
+  - recommend analyzer fanout targets for `radare2`, `ghidra`, `angr`, `ghidra_gdb`, and `angr_mcp`
+- **Limits**: uploads are capped at 200MB and firmware extraction is deliberately bounded to keep the dashboard responsive.
+
+## Graph Explorer Agent
+- **Frontend Module**: `web/frontend/src/components/GraphExplorer.tsx`
+- **Backend Sources**: `r2d2.analysis.graph`, `r2d2.analysis.investigation_graph`, `/api/chats/<session_id>/graphs`
+- **Purpose**: explore subject-under-test findings and investigation journey data together as a segmented map.
+- **Views**:
+  - overview map groups subject, artifacts, code, behavior, tools, and findings
+  - segment map compacts noisy node types into aggregate nodes and keeps context links
+  - full graph remains available for raw inspection
+- **Triage Support**: the inspector ranks high-signal nodes and groups based on credentials, network exposure, firmware structure, dangerous APIs, and confirmed findings.
+
+## Reporting Agent
+- **Backend Endpoint**: `GET /api/chats/<session_id>/bundle`
+- **Schema**: `schemas/analysis_bundle.schema.json`
+- **Docs**: `docs/REPORTING.md`
+- **Purpose**: export replayable JSON and Markdown reports containing subject metadata, findings, tooling, graphs, journey actions, and optional raw evidence.
+- **Release Artifact**: release workflow packages the reporting contract and MCP docs for tagged releases.
+
 ## LLM Companion
 - **Module**: `r2d2.llm.manager.LLMBridge`
-- **Role**: orchestrates Anthropic Claude (primary) with OpenAI fallback for chat/summarize workloads.
+- **Role**: orchestrates configured chat/summarize providers, including local Ollama/Gemma and remote OpenAI/Anthropic-compatible clients.
 - **Context Management**:
   - Full analysis context (binary info, disassembly, functions) is included in every LLM message
   - Last 15 conversation exchanges are maintained for continuity

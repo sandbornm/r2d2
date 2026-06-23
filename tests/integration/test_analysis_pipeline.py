@@ -147,6 +147,24 @@ class TestAnalysisOrchestrator:
         result = orchestrator.analyze(non_elf, plan)
         assert result is not None
 
+    def test_non_elf_firmware_routes_away_from_elf_only_deep_scans(self, minimal_config, mock_env, tmp_path):
+        """Non-ELF firmware should inventory artifacts without noisy ELF parser failures."""
+        orchestrator = AnalysisOrchestrator(
+            minimal_config,
+            mock_env,
+            trajectory_dao=None,
+        )
+        non_elf = tmp_path / "firmware.bin"
+        non_elf.write_bytes(b"TP-LINK" + b"\x00" * 32 + b"OpenWrt" + b"\x00" * 32)
+
+        result = orchestrator.analyze(non_elf, orchestrator.create_plan())
+
+        assert result.quick_scan["firmware"]["is_elf"] is False
+        assert result.quick_scan["runtime"]["skipped"] is True
+        assert "dwarf" not in result.deep_scan
+        assert result.tool_status["dwarf"]["status"] == "skipped"
+        assert result.analysis_graph["schema_version"] == "r2d2.analysis_graph.v1"
+
 
 class TestAnalysisWithMockedAdapters:
     """Tests for analysis with mocked adapters."""

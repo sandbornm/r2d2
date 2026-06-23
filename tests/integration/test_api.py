@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-import json
-import tempfile
-import time
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -77,6 +74,7 @@ class TestHealthEndpoint:
         assert data['status'] == 'ok'
         assert 'model' in data
         assert 'provider' in data
+        assert data['features']['show_compiler'] is False
 
     def test_health_includes_model_info(self, app_client):
         """Test health includes model information."""
@@ -156,6 +154,82 @@ class TestChatsEndpoint:
 
         assert response.status_code == 404
 
+    def test_chat_bundle_exports_json_and_markdown(self, app_client, minimal_elf):
+        """Test compact analysis bundle export for an existing chat session."""
+        analyze_response = app_client.post(
+            '/api/analyze',
+            json={
+                'binary': str(minimal_elf),
+                'quick_only': True,
+                'enable_angr': False,
+                'enable_ghidra': False,
+                'enable_gef': False,
+                'enable_frida': False,
+            },
+            content_type='application/json',
+        )
+        session_id = analyze_response.get_json()['session_id']
+        attachment = {
+            "type": "analysis_result",
+            "binary": str(minimal_elf),
+            "plan": {"quick": True, "deep": False, "run_angr": False, "persist_trajectory": True},
+            "quick_scan": {
+                "firmware": {
+                    "top_level_format": "firmware_container",
+                    "container_type": "filesystem_image",
+                    "sha256": "abc123",
+                    "size_bytes": 1024,
+                    "scan": {"signature_count": 2},
+                    "embedded_artifacts": [{"kind": "squashfs", "name": "SquashFS"}],
+                    "recommended_targets": [{"kind": "squashfs"}],
+                    "carved_targets": [{"path": "/tmp/rootfs"}],
+                },
+                "radare2": {"info": {"bin": {"arch": "arm", "bits": 32, "os": "linux"}, "core": {"format": "elf"}}},
+            },
+            "deep_scan": {},
+            "notes": ["firmware inventory completed"],
+            "issues": ["missing ghidra_gdb"],
+            "trajectory_id": "traj-test",
+            "tool_availability": {"firmware": True, "angr_mcp": False},
+            "tool_status": {"firmware": {"status": "completed", "functions_count": 0}},
+            "evidence_coverage": {
+                "columns": ["metadata"],
+                "rows": ["ghidra_gdb"],
+                "matrix": {"ghidra_gdb": {"metadata": "missing"}},
+            },
+            "analysis_graph": {
+                "schema_version": "r2d2.analysis_graph.v1",
+                "binary": str(minimal_elf),
+                "generated_at": "2026-01-01T00:00:00Z",
+                "nodes": [
+                    {"id": "issue:1", "kind": "issue", "label": "missing ghidra_gdb", "properties": {}},
+                    {"id": "string:1", "kind": "string", "label": "http://example", "address": "0x1000", "properties": {}},
+                ],
+                "edges": [],
+                "summary": {"node_count": 2, "edge_count": 0, "tools": ["firmware"]},
+            },
+        }
+        message_response = app_client.post(
+            f'/api/chats/{session_id}/messages',
+            json={"content": "synthetic analysis", "attachments": [attachment]},
+            content_type='application/json',
+        )
+        assert message_response.status_code == 200
+
+        bundle_response = app_client.get(f'/api/chats/{session_id}/bundle')
+        assert bundle_response.status_code == 200
+        bundle = bundle_response.get_json()
+        assert bundle["schema_version"] == "r2d2.analysis_bundle.v1"
+        assert bundle["schema_url"] == "schemas/analysis_bundle.schema.json"
+        assert bundle["subject"]["sha256"] == "abc123"
+        assert bundle["findings"]["evidence_gaps"] == ["ghidra_gdb: missing metadata"]
+        assert "report_markdown" in bundle
+
+        markdown_response = app_client.get(f'/api/chats/{session_id}/bundle?format=markdown')
+        assert markdown_response.status_code == 200
+        assert markdown_response.mimetype == "text/markdown"
+        assert "# r2d2 Analysis Report" in markdown_response.get_data(as_text=True)
+
 
 class TestAnalyzeEndpoint:
     """Tests for /api/analyze endpoint."""
@@ -223,6 +297,25 @@ class TestUploadEndpoint:
         data = response.get_json()
         assert 'path' in data
         assert 'filename' in data
+        assert 'size_bytes' in data
+        assert 'max_size_bytes' in data
+
+    def test_upload_rejects_file_over_limit(self, app_client, tmp_path):
+        """Test oversized uploads return JSON error."""
+        app_client.application.config['MAX_CONTENT_LENGTH'] = 8
+        oversized = tmp_path / "oversized.bin"
+        oversized.write_bytes(b"A" * 64)
+
+        with open(oversized, 'rb') as f:
+            response = app_client.post(
+                '/api/upload',
+                data={'file': (f, 'oversized.bin')},
+                content_type='multipart/form-data',
+            )
+
+        assert response.status_code == 413
+        data = response.get_json()
+        assert 'hard limit' in data['error']
 
 
 class TestChatMessagesEndpoint:
@@ -256,6 +349,29 @@ class TestChatMessagesEndpoint:
         )
 
         assert response.status_code == 400
+
+    def test_llm_error_returns_service_unavailable(self, app_client, minimal_elf):
+        """Test LLM failures return JSON 503 instead of bubbling as 500."""
+        from r2d2.llm import LLMError
+
+        analyze_response = app_client.post(
+            '/api/analyze',
+            json={'binary': str(minimal_elf)},
+            content_type='application/json',
+        )
+        session_id = analyze_response.get_json()['session_id']
+
+        with patch('r2d2.web.app.LLMBridge.chat', side_effect=LLMError("model missing")):
+            response = app_client.post(
+                f'/api/chats/{session_id}/messages',
+                json={'content': 'summarize briefly', 'call_llm': True},
+                content_type='application/json',
+            )
+
+        assert response.status_code == 503
+        data = response.get_json()
+        assert data['error'] == "model missing"
+        assert any(message['role'] == 'user' for message in data['messages'])
 
 
 class TestAnnotationsEndpoint:

@@ -4,27 +4,30 @@
 #   R2D2_CONFIG=/path/to/config.toml
 #
 # Required environment variables:
-#   ANTHROPIC_API_KEY  - API key for Claude
 #   GHIDRA_INSTALL_DIR - Path to Ghidra installation (for decompilation)
 #
 # Optional:
+#   ANTHROPIC_API_KEY  - API key for Claude, if selected
 #   OPENAI_API_KEY     - Fallback API key
 
 [llm]
-provider = "anthropic"
-model = "claude-opus-4-5"
+provider = "ollama"
+model = "gemma3:4b"
 api_key_env = "ANTHROPIC_API_KEY"
-# Available models: claude-opus-4-5, claude-5-1, claude-sonnet-4-5
+# Available models include local Ollama Gemma plus Claude/OpenAI options.
+base_url = "http://127.0.0.1:11434"
 fallback_provider = "openai"
 fallback_model = "gpt-4o"
 fallback_api_key_env = "OPENAI_API_KEY"
 enable_fallback = false
 max_tokens = 8192
 temperature = 0.1
+compact_context = true
+context_budget_chars = 24000
 
 [analysis]
 auto_analyze = true
-max_binary_size = "5MB"
+max_binary_size = "200MB"
 timeout_quick = 5
 timeout_deep = 120
 
@@ -36,7 +39,7 @@ enable_gef = true       # GDB+GEF in Docker
 gef_timeout = 60
 gef_max_instructions = 10000
 
-require_elf = true
+require_elf = false
 default_radare_profile = "analysis.quick"
 enable_trajectory_recording = true
 
@@ -53,6 +56,9 @@ cache_results = true
 [storage]
 database_path = "~/.local/share/r2d2/r2d2.db"
 auto_migrate = true
+
+[ui]
+show_compiler = false
 
 [ghidra]
 # Ghidra decompilation supports two modes:
@@ -78,3 +84,38 @@ project_dir = "~/.local/share/r2d2/ghidra-projects"
 max_decompile_functions = 20
 max_types = 100
 max_strings = 200
+
+[mcp.ghidra_mcp]
+enabled = true
+description = "GhidraMCP static analysis HTTP API"
+transport = "http"
+url = "http://127.0.0.1:8080"
+fallback_urls = ["http://127.0.0.1:18080"]
+health_path = "/methods"
+capabilities_path = "/methods"
+timeout = 1.5
+install_hint = "Start Ghidra with the GhidraMCP plugin enabled, then load the target program."
+
+[mcp.ghidra_gdb]
+enabled = true
+description = "GhidraMCP GDB/Docker dynamic analysis API"
+transport = "http"
+url = "http://127.0.0.1:5051"
+command = "docker"
+start_command = ["docker", "compose", "up", "-d", "--build"]
+working_dir = "../GhidraMCP/docker"
+health_path = "/health"
+timeout = 1.5
+install_hint = "Run the GhidraMCP docker service from the sibling GhidraMCP/docker directory."
+
+[mcp.angr_mcp]
+enabled = true
+description = "angr_mcp streamable HTTP server"
+transport = "streamable-http"
+url = "http://127.0.0.1:8766/mcp"
+command = "angr-mcp-dev-server"
+args = ["--transport", "streamable-http", "--host", "127.0.0.1", "--port", "8766"]
+start_command = ["uv", "run", "angr-mcp-dev-server", "--transport", "streamable-http", "--host", "127.0.0.1", "--port", "8766"]
+working_dir = "../angr_mcp"
+timeout = 1.5
+install_hint = "Run the streamable HTTP dev server from the sibling angr_mcp checkout."

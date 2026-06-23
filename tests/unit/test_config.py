@@ -4,13 +4,14 @@ from pathlib import Path
 from unittest.mock import patch
 import os
 
-import pytest
-
 from r2d2.config import (
     AppConfig,
     AnalysisSettings,
     LLMSettings,
+    MCPServerSettings,
+    MCPSettings,
     StorageSettings,
+    UISettings,
     GhidraSettings,
     OutputSettings,
     PerformanceSettings,
@@ -29,7 +30,9 @@ class TestAppConfig:
         assert isinstance(config.llm, LLMSettings)
         assert isinstance(config.analysis, AnalysisSettings)
         assert isinstance(config.storage, StorageSettings)
+        assert isinstance(config.ui, UISettings)
         assert isinstance(config.ghidra, GhidraSettings)
+        assert isinstance(config.mcp, MCPSettings)
         assert isinstance(config.output, OutputSettings)
         assert isinstance(config.performance, PerformanceSettings)
 
@@ -48,8 +51,10 @@ class TestLLMSettings:
         """Test LLMSettings has sensible defaults."""
         settings = LLMSettings()
 
-        assert settings.provider == "anthropic"
-        assert settings.model == "claude-opus-4-5"  # Default to Opus 4.5
+        assert settings.provider == "ollama"
+        assert settings.model == "gemma3:4b"
+        assert settings.base_url == "http://127.0.0.1:11434"
+        assert settings.compact_context is True
         assert settings.enable_fallback is False  # Disabled by default
         assert settings.max_tokens > 0
         assert 0 <= settings.temperature <= 1
@@ -78,7 +83,8 @@ class TestAnalysisSettings:
         settings = AnalysisSettings()
 
         assert settings.auto_analyze is True
-        assert settings.require_elf is True
+        assert settings.require_elf is False
+        assert settings.max_binary_size == "200MB"
         assert settings.enable_angr is True
         assert settings.enable_ghidra is True  # Defaults to True (falls back gracefully if unavailable)
         assert settings.timeout_quick > 0
@@ -113,6 +119,15 @@ class TestStorageSettings:
         assert settings.database_path == custom_path
 
 
+class TestUISettings:
+    """Tests for UI feature flags."""
+
+    def test_compiler_hidden_by_default(self):
+        settings = UISettings()
+
+        assert settings.show_compiler is False
+
+
 class TestGhidraSettings:
     """Tests for GhidraSettings."""
 
@@ -136,6 +151,36 @@ class TestGhidraSettings:
         assert settings.use_bridge is True
         assert settings.bridge_host == "192.168.1.1"
         assert settings.bridge_port == 9999
+
+
+class TestMCPSettings:
+    """Tests for MCP connection settings."""
+
+    def test_default_servers(self):
+        """Test MCP defaults cover the expected analysis backends."""
+        settings = MCPSettings()
+
+        assert isinstance(settings.ghidra_mcp, MCPServerSettings)
+        assert settings.ghidra_mcp.url == "http://127.0.0.1:8080"
+        assert "http://127.0.0.1:18080" in settings.ghidra_mcp.fallback_urls
+        assert settings.ghidra_mcp.health_path == "/methods"
+        assert settings.ghidra_gdb.url == "http://127.0.0.1:5051"
+        assert settings.ghidra_gdb.fallback_urls == []
+        assert settings.ghidra_gdb.command == "docker"
+        assert settings.ghidra_gdb.start_command == ["docker", "compose", "up", "-d", "--build"]
+        assert settings.ghidra_gdb.working_dir == "../GhidraMCP/docker"
+        assert settings.angr_mcp.transport == "streamable-http"
+        assert settings.angr_mcp.url == "http://127.0.0.1:8766/mcp"
+        assert settings.angr_mcp.command == "angr-mcp-dev-server"
+        assert settings.angr_mcp.args == ["--transport", "streamable-http", "--host", "127.0.0.1", "--port", "8766"]
+        assert settings.angr_mcp.start_command[0:3] == ["uv", "run", "angr-mcp-dev-server"]
+        assert settings.angr_mcp.working_dir == "../angr_mcp"
+
+    def test_configured_servers(self):
+        """Test MCP server registry is stable for probes and health output."""
+        settings = MCPSettings()
+
+        assert set(settings.configured_servers()) == {"ghidra_mcp", "ghidra_gdb", "angr_mcp"}
 
 
 class TestMerge:
@@ -192,12 +237,18 @@ model = "test-model"
 
 [analysis]
 timeout_quick = 10
+
+[mcp.angr_mcp]
+url = "http://127.0.0.1:9999/mcp"
+command = "custom-angr-mcp"
 """)
 
         config = load_config(config_path)
 
         assert config.llm.model == "test-model"
         assert config.analysis.timeout_quick == 10
+        assert config.mcp.angr_mcp.url == "http://127.0.0.1:9999/mcp"
+        assert config.mcp.angr_mcp.command == "custom-angr-mcp"
 
     def test_load_config_honors_env_ghidra_dir(self, tmp_path):
         """Test GHIDRA_INSTALL_DIR env var is honored."""

@@ -15,15 +15,19 @@ from ..storage.dao import TrajectoryDAO
 from ..storage.models import AnalysisTrajectory, TrajectoryAction
 from .resource_tree import BinaryResource, FunctionResource, Resource
 from .runtime_requirements import get_runtime_requirements
+from .graph import build_analysis_graph
 from ..adapters.base import AdapterRegistry, AdapterUnavailable, AnalyzerAdapter
 from ..adapters import (
     AngrAdapter,
+    AngrMCPAdapter,
     AutoProfileAdapter,
     CapstoneAdapter,
     DWARFAdapter,
+    FirmwareAdapter,
     FridaAdapter,
     GEFAdapter,
     GhidraAdapter,
+    GhidraGDBMCPAdapter,
     LibmagicAdapter,
     Radare2Adapter,
 )
@@ -52,6 +56,7 @@ class AnalysisResult:
     tool_availability: dict[str, bool] = field(default_factory=dict)  # Which tools were available
     tool_status: dict[str, dict[str, Any]] = field(default_factory=dict)
     evidence_coverage: dict[str, Any] = field(default_factory=dict)
+    analysis_graph: dict[str, Any] = field(default_factory=dict)
 
 
 class AnalysisOrchestrator:
@@ -70,6 +75,9 @@ class AnalysisOrchestrator:
         adapters: list[AnalyzerAdapter] = []
         # AutoProfile runs first for quick characterization
         adapters.append(cast(AnalyzerAdapter, AutoProfileAdapter()))
+        adapters.append(cast(AnalyzerAdapter, FirmwareAdapter(
+            artifacts_dir=config.output.artifacts_dir / "firmware",
+        )))
         adapters.append(cast(AnalyzerAdapter, LibmagicAdapter()))
         adapters.append(cast(AnalyzerAdapter, Radare2Adapter(profile=config.analysis.default_radare_profile)))
         adapters.append(cast(AnalyzerAdapter, CapstoneAdapter()))
@@ -89,6 +97,18 @@ class AnalysisOrchestrator:
             adapters.append(cast(AnalyzerAdapter, GEFAdapter(
                 timeout=config.analysis.gef_timeout,
                 max_instructions=config.analysis.gef_max_instructions,
+            )))
+        if config.mcp.ghidra_gdb.enabled:
+            adapters.append(cast(AnalyzerAdapter, GhidraGDBMCPAdapter(
+                settings=config.mcp.ghidra_gdb,
+                connection=env.mcp_connections.get("ghidra_gdb"),
+                scan_timeout=float(config.analysis.timeout_deep),
+            )))
+        if config.mcp.angr_mcp.enabled:
+            adapters.append(cast(AnalyzerAdapter, AngrMCPAdapter(
+                settings=config.mcp.angr_mcp,
+                connection=env.mcp_connections.get("angr_mcp"),
+                scan_timeout=float(config.analysis.timeout_deep),
             )))
 
         self._registry = AdapterRegistry(adapters)
@@ -121,6 +141,9 @@ class AnalysisOrchestrator:
                 result.tool_availability[adapter.name] = adapter.is_available()
             except Exception:
                 result.tool_availability[adapter.name] = False
+        for name, check in self._env.mcp_connections.items():
+            result.tool_availability.setdefault(name, check.available)
+            result.tool_status.setdefault(name, asdict(check))
 
         self._emit_progress(
             progress_callback,
@@ -138,6 +161,8 @@ class AnalysisOrchestrator:
             self._run_quick(binary, result, trajectory, progress_callback)
             if plan.deep:
                 self._run_deep(binary, result, trajectory, progress_callback, plan)
+            if not result.analysis_graph:
+                result.analysis_graph = build_analysis_graph(result)
         finally:
             if trajectory and self._trajectory_dao:
                 self._trajectory_dao.finish_trajectory(trajectory)
@@ -165,6 +190,7 @@ class AnalysisOrchestrator:
         self._emit_progress(progress_callback, "stage_started", {"stage": "quick"})
 
         autoprofile = self._registry.get("autoprofile") if self._has_adapter("autoprofile") else None
+        firmware = self._registry.get("firmware") if self._has_adapter("firmware") else None
         libmagic = self._registry.get("libmagic") if self._has_adapter("libmagic") else None
         radare = self._registry.get("radare2") if self._has_adapter("radare2") else None
 
@@ -188,6 +214,26 @@ class AnalysisOrchestrator:
                     {"stage": "quick", "adapter": "autoprofile", "error": str(exc)},
                 )
 
+        if firmware:
+            try:
+                self._emit_progress(progress_callback, "adapter_started", {"stage": "quick", "adapter": "firmware"})
+                inventory = firmware.quick_scan(binary)
+                result.quick_scan["firmware"] = inventory
+                result.tool_status["firmware"] = self._summarize_tool_payload("firmware", inventory, result.quick_scan)
+                self._record_action(trajectory, "firmware.quick", inventory)
+                self._emit_progress(
+                    progress_callback,
+                    "adapter_completed",
+                    {"stage": "quick", "adapter": "firmware", "payload": inventory},
+                )
+            except AdapterUnavailable as exc:
+                result.notes.append(str(exc))
+                self._emit_progress(
+                    progress_callback,
+                    "adapter_failed",
+                    {"stage": "quick", "adapter": "firmware", "error": str(exc)},
+                )
+
         if libmagic:
             try:
                 self._emit_progress(progress_callback, "adapter_started", {"stage": "quick", "adapter": "libmagic"})
@@ -207,27 +253,41 @@ class AnalysisOrchestrator:
                     {"stage": "quick", "adapter": "libmagic", "error": str(exc)},
                 )
 
-        try:
-            self._emit_progress(progress_callback, "adapter_started", {"stage": "quick", "adapter": "runtime"})
-            runtime_info = get_runtime_requirements(binary)
-            if "error" in runtime_info:
-                result.quick_scan["runtime"] = {"error": runtime_info["error"]}
-            else:
-                result.quick_scan["runtime"] = runtime_info.get("runtime", {})
-                result.quick_scan["readelf"] = runtime_info.get("readelf", {})
-                result.quick_scan["packer"] = runtime_info.get("packer", {})
-            self._record_action(trajectory, "runtime.quick", runtime_info)
+        if self._is_elf_subject(binary, result):
+            try:
+                self._emit_progress(progress_callback, "adapter_started", {"stage": "quick", "adapter": "runtime"})
+                runtime_info = get_runtime_requirements(binary)
+                if "error" in runtime_info:
+                    result.quick_scan["runtime"] = {"error": runtime_info["error"]}
+                else:
+                    result.quick_scan["runtime"] = runtime_info.get("runtime", {})
+                    result.quick_scan["readelf"] = runtime_info.get("readelf", {})
+                    result.quick_scan["packer"] = runtime_info.get("packer", {})
+                self._record_action(trajectory, "runtime.quick", runtime_info)
+                self._emit_progress(
+                    progress_callback,
+                    "adapter_completed",
+                    {"stage": "quick", "adapter": "runtime", "payload": runtime_info},
+                )
+            except Exception as exc:  # pragma: no cover - best effort
+                result.notes.append(f"runtime requirements failed: {exc}")
+                self._emit_progress(
+                    progress_callback,
+                    "adapter_failed",
+                    {"stage": "quick", "adapter": "runtime", "error": str(exc)},
+                )
+        else:
+            runtime_info = {
+                "skipped": True,
+                "reason": "top-level subject is not ELF; firmware inventory should identify embedded analysis targets",
+            }
+            result.quick_scan["runtime"] = runtime_info
+            result.tool_status["runtime"] = {"status": "skipped", **runtime_info}
+            self._record_action(trajectory, "runtime.skipped", runtime_info)
             self._emit_progress(
                 progress_callback,
-                "adapter_completed",
-                {"stage": "quick", "adapter": "runtime", "payload": runtime_info},
-            )
-        except Exception as exc:  # pragma: no cover - best effort
-            result.notes.append(f"runtime requirements failed: {exc}")
-            self._emit_progress(
-                progress_callback,
-                "adapter_failed",
-                {"stage": "quick", "adapter": "runtime", "error": str(exc)},
+                "adapter_skipped",
+                {"stage": "quick", "adapter": "runtime", **runtime_info},
             )
 
         if radare:
@@ -315,10 +375,38 @@ class AnalysisOrchestrator:
         # Only get angr adapter if run_angr is enabled in plan
         run_angr = plan.run_angr if plan else self._config.analysis.enable_angr
         angr = self._registry.get("angr") if self._has_adapter("angr") and run_angr else None
-        frida = self._registry.get("frida") if self._has_adapter("frida") and self._config.analysis.enable_frida else None
         gef = self._registry.get("gef") if self._has_adapter("gef") and self._config.analysis.enable_gef else None
+        ghidra_gdb = self._registry.get("ghidra_gdb") if self._has_adapter("ghidra_gdb") else None
+        angr_mcp = self._registry.get("angr_mcp") if self._has_adapter("angr_mcp") else None
+        subject_is_elf = self._is_elf_subject(binary, result)
+        non_elf_reason = "top-level subject is not ELF; select an embedded firmware artifact for code analysis"
 
-        if radare:
+        def skip_adapter(adapter_name: str, reason: str) -> None:
+            payload = {"skipped": True, "reason": reason}
+            with lock:
+                result.tool_status[adapter_name] = {"status": "skipped", **payload}
+            self._record_action(trajectory, f"{adapter_name}.skipped", payload)
+            self._emit_progress(
+                progress_callback,
+                "adapter_skipped",
+                {"stage": "deep", "adapter": adapter_name, **payload},
+            )
+
+        if not subject_is_elf:
+            self._run_firmware_child_fanout(
+                result,
+                trajectory,
+                progress_callback,
+                {
+                    "radare2": radare,
+                    "ghidra": ghidra,
+                    "angr": angr,
+                    "ghidra_gdb": ghidra_gdb,
+                    "angr_mcp": angr_mcp,
+                },
+            )
+
+        if radare and subject_is_elf:
             try:
                 self._emit_progress(progress_callback, "adapter_started", {"stage": "deep", "adapter": "radare2"})
                 deep = radare.deep_scan(binary, resource_tree=result.resource_tree)
@@ -341,10 +429,12 @@ class AnalysisOrchestrator:
                     {"stage": "deep", "adapter": "radare2", "error": str(exc)},
                 )
                 update_tool_status("radare2", None, error=str(exc))
+        elif radare:
+            skip_adapter("radare2", non_elf_reason)
 
         tasks: list[tuple[str, AnalyzerAdapter, Callable[[], dict[str, Any]], bool, bool]] = []
 
-        if ghidra:
+        if ghidra and subject_is_elf:
             tasks.append((
                 "ghidra",
                 ghidra,
@@ -352,8 +442,10 @@ class AnalysisOrchestrator:
                 True,
                 False,
             ))
+        elif ghidra:
+            skip_adapter("ghidra", non_elf_reason)
 
-        if capstone and result.resource_tree:
+        if capstone and result.resource_tree and subject_is_elf:
             def _capstone_run() -> dict[str, Any]:
                 quick = result.quick_scan.get("radare2", {})
                 info = quick.get("info", {}) if isinstance(quick, dict) else {}
@@ -362,15 +454,33 @@ class AnalysisOrchestrator:
                 return capstone.quick_scan(binary, arch=arch, entry=entry)
 
             tasks.append(("capstone", capstone, _capstone_run, False, True))
+        elif capstone and not subject_is_elf:
+            skip_adapter("capstone", non_elf_reason)
 
-        if dwarf:
+        if dwarf and subject_is_elf:
             tasks.append(("dwarf", dwarf, lambda: dwarf.deep_scan(binary), False, True))
+        elif dwarf:
+            skip_adapter("dwarf", non_elf_reason)
 
-        if angr:
+        if angr and subject_is_elf:
             tasks.append(("angr", angr, lambda: angr.deep_scan(binary), False, True))
+        elif angr:
+            skip_adapter("angr", non_elf_reason)
 
-        if gef:
+        if angr_mcp and subject_is_elf:
+            tasks.append(("angr_mcp", angr_mcp, lambda: angr_mcp.deep_scan(binary), False, True))
+        elif angr_mcp:
+            skip_adapter("angr_mcp", non_elf_reason)
+
+        if gef and subject_is_elf:
             tasks.append(("gef", gef, lambda: gef.deep_scan(binary), False, True))
+        elif gef:
+            skip_adapter("gef", non_elf_reason)
+
+        if ghidra_gdb and subject_is_elf:
+            tasks.append(("ghidra_gdb", ghidra_gdb, lambda: ghidra_gdb.deep_scan(binary), False, True))
+        elif ghidra_gdb:
+            skip_adapter("ghidra_gdb", non_elf_reason)
 
         if tasks:
             with ThreadPoolExecutor(max_workers=min(len(tasks), self._config.performance.parallel_functions)) as executor:
@@ -384,6 +494,7 @@ class AnalysisOrchestrator:
         self._emit_progress(progress_callback, "stage_completed", {"stage": "deep"})
 
         result.evidence_coverage = self._build_evidence_coverage(result)
+        result.analysis_graph = build_analysis_graph(result)
 
     def _init_resource_tree(self, binary: Path, scan: dict[str, Any]) -> Resource:
         info = scan.get("info", {}) if isinstance(scan, dict) else {}
@@ -423,6 +534,118 @@ class AnalysisOrchestrator:
                 resource_tree.add_child(function_node)
 
         return resource_tree
+
+    def _run_firmware_child_fanout(
+        self,
+        result: AnalysisResult,
+        trajectory: AnalysisTrajectory | None,
+        progress_callback: Callable[[str, dict[str, Any]], None] | None,
+        adapters: dict[str, AnalyzerAdapter | None],
+    ) -> None:
+        firmware = result.quick_scan.get("firmware") if isinstance(result.quick_scan, dict) else None
+        if not isinstance(firmware, dict):
+            return
+
+        fanout_tasks = firmware.get("fanout_tasks")
+        carved_targets = firmware.get("carved_targets")
+        if not isinstance(fanout_tasks, list) or not isinstance(carved_targets, list):
+            return
+
+        code_targets: list[dict[str, Any]] = []
+        for target in carved_targets:
+            if not isinstance(target, dict):
+                continue
+            if target.get("analysis_role") == "code" and target.get("carved_path"):
+                code_targets.append(target)
+        code_targets = code_targets[:4]
+
+        fanout_result: dict[str, Any] = {
+            "mode": "firmware_child_fanout",
+            "targets": code_targets,
+            "tasks": fanout_tasks,
+            "analyses": [],
+            "skipped": [],
+        }
+
+        if not code_targets:
+            fanout_result["skipped"].append({
+                "reason": "No carved ELF/code targets were found in the firmware inventory.",
+            })
+            result.deep_scan["firmware_children"] = fanout_result
+            self._record_action(trajectory, "firmware_children.skipped", fanout_result)
+            return
+
+        adapter_plan = {
+            name: adapter
+            for name, adapter in adapters.items()
+            if adapter is not None and name in {"radare2", "ghidra", "angr", "ghidra_gdb", "angr_mcp"}
+        }
+        if not adapter_plan:
+            fanout_result["skipped"].append({
+                "reason": "No code analyzers are available for carved firmware children.",
+                "wanted": ["radare2", "ghidra", "angr", "ghidra_gdb", "angr_mcp"],
+            })
+            result.deep_scan["firmware_children"] = fanout_result
+            self._record_action(trajectory, "firmware_children.skipped", fanout_result)
+            return
+
+        def run_child_tool(target: dict[str, Any], name: str, adapter: AnalyzerAdapter) -> dict[str, Any]:
+            target_path = Path(str(target["carved_path"]))
+            payload: dict[str, Any] = {
+                "target": str(target_path),
+                "offset": target.get("offset"),
+                "kind": target.get("kind"),
+                "tool": name,
+                "status": "completed",
+            }
+            try:
+                self._emit_progress(
+                    progress_callback,
+                    "adapter_started",
+                    {"stage": "deep", "adapter": f"firmware_child.{name}", "binary": str(target_path)},
+                )
+                if name == "radare2":
+                    quick = adapter.quick_scan(target_path)
+                    deep = adapter.deep_scan(target_path)
+                    payload["quick"] = quick
+                    payload["deep"] = deep
+                else:
+                    payload["deep"] = adapter.deep_scan(target_path)
+                self._emit_progress(
+                    progress_callback,
+                    "adapter_completed",
+                    {"stage": "deep", "adapter": f"firmware_child.{name}", "payload": payload},
+                )
+            except Exception as exc:
+                payload["status"] = "failed"
+                payload["error"] = str(exc)
+                self._emit_progress(
+                    progress_callback,
+                    "adapter_failed",
+                    {"stage": "deep", "adapter": f"firmware_child.{name}", "error": str(exc)},
+                )
+            return payload
+
+        jobs: list[tuple[dict[str, Any], str, AnalyzerAdapter]] = []
+        for target in code_targets:
+            requested_tools = target.get("fanout_tools") if isinstance(target.get("fanout_tools"), list) else []
+            for name, adapter in adapter_plan.items():
+                if name in requested_tools:
+                    jobs.append((target, name, adapter))
+
+        if not jobs:
+            fanout_result["skipped"].append({
+                "reason": "Carved code targets did not request any currently available analyzer.",
+                "available": sorted(adapter_plan),
+            })
+        else:
+            with ThreadPoolExecutor(max_workers=min(len(jobs), self._config.performance.parallel_functions)) as executor:
+                futures = [executor.submit(run_child_tool, target, name, adapter) for target, name, adapter in jobs]
+                for future in as_completed(futures):
+                    fanout_result["analyses"].append(future.result())
+
+        result.deep_scan["firmware_children"] = fanout_result
+        self._record_action(trajectory, "firmware_children.fanout", fanout_result)
 
     def _has_adapter(self, name: str) -> bool:
         try:
@@ -507,23 +730,51 @@ class AnalysisOrchestrator:
                 names = extract_symbol_names(imports)
                 summary["memory_allocations"] = sorted({n for n in names if n in alloc_symbols})
 
-        if adapter_name == "angr":
+        if adapter_name in {"angr", "angr_mcp"}:
             cfg = payload.get("cfg", {})
             if isinstance(cfg, dict):
-                summary["cfg_nodes"] = int(cfg.get("node_count") or 0)
-                summary["cfg_edges"] = int(cfg.get("edge_count") or 0)
+                summary["cfg_nodes"] = int(cfg.get("node_count") or cfg.get("nodes") or 0)
+                summary["cfg_edges"] = int(cfg.get("edge_count") or cfg.get("edges") or 0)
             names = extract_symbol_names(functions) if isinstance(functions, list) else []
             summary["memory_allocations"] = sorted({n for n in names if n in alloc_symbols})
+            if adapter_name == "angr_mcp" and payload.get("errors"):
+                summary["status"] = "partial"
+                summary["warnings"].append(f"{len(payload['errors'])} MCP tool call(s) returned errors.")
 
         if adapter_name == "ghidra":
             names = extract_symbol_names(functions) if isinstance(functions, list) else []
             summary["memory_allocations"] = sorted({n for n in names if n in alloc_symbols})
 
+        if adapter_name == "ghidra_gdb":
+            summary["status"] = "completed"
+            if payload.get("errors"):
+                summary["warnings"].append(f"{len(payload['errors'])} endpoint(s) returned errors.")
+                summary["status"] = "partial"
+            imports = payload.get("imports")
+            if isinstance(imports, list):
+                names = extract_symbol_names(imports)
+                summary["memory_allocations"] = sorted({n for n in names if n in alloc_symbols})
+            cfg = payload.get("cfg")
+            if isinstance(cfg, dict):
+                summary["cfg_nodes"] = int(cfg.get("node_count") or 0)
+                summary["cfg_edges"] = int(cfg.get("edge_count") or 0)
+            summary["strings_count"] = len(payload.get("strings") or []) if isinstance(payload.get("strings"), list) else 0
+            summary["sections_count"] = len(payload.get("sections") or []) if isinstance(payload.get("sections"), list) else 0
+
+        if adapter_name == "firmware":
+            summary["status"] = "completed"
+            artifacts = payload.get("embedded_artifacts")
+            targets = payload.get("recommended_targets")
+            summary["artifact_count"] = len(artifacts) if isinstance(artifacts, list) else 0
+            summary["recommended_target_count"] = len(targets) if isinstance(targets, list) else 0
+            summary["top_level_format"] = payload.get("top_level_format")
+            summary["container_type"] = payload.get("container_type")
+
         if adapter_name == "capstone":
             summary["warnings"].append("Instruction-only output (no functions/CFG).")
             summary["status"] = "partial"
 
-        if summary["functions_count"] == 0 and summary["cfg_nodes"] == 0 and adapter_name in {"radare2", "angr", "ghidra"}:
+        if summary["functions_count"] == 0 and summary["cfg_nodes"] == 0 and adapter_name in {"radare2", "angr", "angr_mcp", "ghidra"}:
             summary["status"] = "partial"
             summary["warnings"].append("No functions/CFG extracted.")
 
@@ -531,14 +782,13 @@ class AnalysisOrchestrator:
 
     def _build_evidence_coverage(self, result: AnalysisResult) -> dict[str, Any]:
         columns = ["functions", "cfg", "strings", "imports", "runtime", "allocs", "packer"]
-        rows = ["radare2", "ghidra", "angr", "capstone", "dwarf", "readelf", "packer"]
+        rows = ["firmware", "radare2", "ghidra", "ghidra_gdb", "angr", "angr_mcp", "capstone", "dwarf", "readelf", "packer"]
 
         r2_quick = result.quick_scan.get("radare2", {}) if isinstance(result.quick_scan, dict) else {}
         r2_strings = r2_quick.get("strings", []) if isinstance(r2_quick, dict) else []
         r2_imports = r2_quick.get("imports", []) if isinstance(r2_quick, dict) else []
 
         runtime = result.quick_scan.get("runtime", {})
-        readelf = result.quick_scan.get("readelf", {})
         packer = result.quick_scan.get("packer", {})
 
         def status_cell(value: bool | None) -> str:
@@ -548,8 +798,13 @@ class AnalysisOrchestrator:
 
         matrix: dict[str, dict[str, str]] = {row: {col: "missing" for col in columns} for row in rows}
 
+        firmware = result.quick_scan.get("firmware", {}) if isinstance(result.quick_scan, dict) else {}
+        if isinstance(firmware, dict):
+            matrix["firmware"]["strings"] = "partial" if firmware.get("embedded_artifacts") else "missing"
+            matrix["firmware"]["runtime"] = "partial" if firmware.get("recommended_targets") else "missing"
+
         tool_status = result.tool_status or {}
-        for tool in ("radare2", "ghidra", "angr", "capstone", "dwarf"):
+        for tool in ("radare2", "ghidra", "ghidra_gdb", "angr", "angr_mcp", "capstone", "dwarf"):
             summary = tool_status.get(tool, {})
             functions = (summary.get("functions_count") or 0) > 0
             cfg = (summary.get("cfg_nodes") or 0) > 0
@@ -557,6 +812,11 @@ class AnalysisOrchestrator:
             matrix[tool]["functions"] = status_cell(functions)
             matrix[tool]["cfg"] = "present" if cfg else ("partial" if summary.get("status") == "partial" else "missing")
             matrix[tool]["allocs"] = status_cell(allocs)
+
+        ghidra_gdb = result.deep_scan.get("ghidra_gdb", {}) if isinstance(result.deep_scan, dict) else {}
+        if isinstance(ghidra_gdb, dict):
+            matrix["ghidra_gdb"]["strings"] = status_cell(bool(ghidra_gdb.get("strings")))
+            matrix["ghidra_gdb"]["imports"] = status_cell(bool(ghidra_gdb.get("imports")))
 
         matrix["radare2"]["strings"] = status_cell(len(r2_strings) > 0)
         matrix["radare2"]["imports"] = status_cell(len(r2_imports) > 0)
@@ -601,3 +861,13 @@ class AnalysisOrchestrator:
             raise ValueError(
                 f"{binary} is not an ELF binary (expected 0x7f454c46 header, got {magic!r})"
             )
+
+    def _is_elf_subject(self, binary: Path, result: AnalysisResult | None = None) -> bool:
+        firmware = (result.quick_scan.get("firmware") if result and isinstance(result.quick_scan, dict) else None)
+        if isinstance(firmware, dict) and isinstance(firmware.get("is_elf"), bool):
+            return bool(firmware["is_elf"])
+        try:
+            with binary.open("rb") as handle:
+                return handle.read(4) == b"\x7fELF"
+        except OSError:
+            return False

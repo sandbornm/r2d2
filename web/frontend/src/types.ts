@@ -52,6 +52,7 @@ export interface AnalysisResultPayload {
   tool_availability?: Record<string, boolean>;  // Which tools were available during analysis
   tool_status?: Record<string, ToolStatusSummary>;
   evidence_coverage?: EvidenceCoverage;
+  analysis_graph?: AnalysisGraphPayload;
 }
 
 export interface RuntimeRequirements {
@@ -84,13 +85,32 @@ export interface EvidenceCoverage {
 
 export interface ToolStatusInfo {
   available: boolean;
+  enabled?: boolean;
   install_hint?: string;
   description?: string;
+  details?: string;
+  path?: string | null;
+  binwalk_available?: boolean;
+  python_package_available?: boolean;
   bridge_connected?: boolean;
   bridge_available?: boolean;
   headless_ready?: boolean;
+  headless_available?: boolean;
   docker_available?: boolean;
   image_built?: boolean;
+  cli_available?: boolean;
+  service_available?: boolean;
+  installed_models?: string[];
+  selected_model?: string;
+  selected_model_available?: boolean;
+  transport?: string;
+  url?: string;
+  active_url?: string;
+  command?: string;
+  command_available?: boolean;
+  status_code?: number;
+  capabilities_count?: number;
+  latency_ms?: number;
 }
 
 export interface HealthStatus {
@@ -99,8 +119,12 @@ export interface HealthStatus {
   provider?: string;
   available_models?: string[];
   model_names?: Record<string, string>;
+  features?: {
+    show_compiler?: boolean;
+  };
   ghidra_ready: boolean;
   tools?: Record<string, ToolStatusInfo>;
+  tools_meta?: ToolsStatusMeta;
 }
 
 export interface ApiAnalysisResponse {
@@ -144,6 +168,79 @@ export interface ChatPostResponse {
   assistant?: ChatMessageItem;
   provider?: string | null;
   error?: string;
+}
+
+export interface ExplorerGraphNode {
+  id: string;
+  kind: string;
+  label: string;
+  source?: string;
+  actor?: string | null;
+  timestamp?: string | null;
+  address?: string | null;
+  properties: Record<string, unknown>;
+}
+
+export interface ExplorerGraphEdge {
+  id: string;
+  kind: string;
+  source: string;
+  target: string;
+  source_tool?: string;
+  confidence?: number;
+  properties: Record<string, unknown>;
+}
+
+export interface AnalysisGraphPayload {
+  schema_version: string;
+  binary: string;
+  generated_at: string;
+  nodes: ExplorerGraphNode[];
+  edges: ExplorerGraphEdge[];
+  summary: Record<string, unknown>;
+}
+
+export interface InvestigationGraphPayload {
+  schema_version: string;
+  session_id: string;
+  binary: string;
+  generated_at: string;
+  nodes: ExplorerGraphNode[];
+  edges: ExplorerGraphEdge[];
+  summary: Record<string, unknown>;
+}
+
+export interface SessionGraphsResponse {
+  analysis_graph: AnalysisGraphPayload | null;
+  investigation_graph: InvestigationGraphPayload | null;
+}
+
+export interface AnalysisBundleResponse {
+  schema_version: 'r2d2.analysis_bundle.v1';
+  schema_url?: string;
+  generated_at: string;
+  session: ChatSessionSummary;
+  subject: Record<string, unknown>;
+  findings: {
+    issues: unknown[];
+    notes: unknown[];
+    important_nodes: ExplorerGraphNode[];
+    evidence_gaps: string[];
+  };
+  tooling: {
+    tool_availability: Record<string, boolean>;
+    tool_status: Record<string, ToolStatusSummary>;
+    evidence_coverage: EvidenceCoverage | Record<string, unknown>;
+  };
+  graphs: {
+    analysis_graph: AnalysisGraphPayload | Record<string, unknown>;
+    investigation_graph: InvestigationGraphPayload | Record<string, unknown>;
+  };
+  journey: Record<string, unknown>;
+  context: {
+    compact_markdown: string;
+  };
+  report_markdown: string;
 }
 
 // Assembly annotation for persisting notes on disassembly lines
@@ -524,15 +621,43 @@ export interface GhidraStatusResponse {
 export interface ToolExecutionStatus {
   available: boolean;
   description: string;
+  details?: string;
+  install_hint?: string;
+  path?: string | null;
   bridge_available?: boolean;
   bridge_connected?: boolean;
+  bridge_program_loaded?: string | null;
+  headless_ready?: boolean;
   headless_available?: boolean;
+  binwalk_available?: boolean;
+  python_package_available?: boolean;
+  docker_available?: boolean;
+  image_built?: boolean;
+  cli_available?: boolean;
+  service_available?: boolean;
+  transport?: string;
+  url?: string;
+  active_url?: string;
+  command?: string;
+  args?: string[];
+  command_available?: boolean;
+  start_command?: string[];
+  working_dir?: string | null;
+  capabilities_count?: number | null;
+  latency_ms?: number | null;
+}
+
+export interface ToolsStatusMeta {
+  cached?: boolean;
+  live?: boolean;
+  generated_at?: string | null;
 }
 
 export interface ToolsStatusResponse {
   tools: Record<string, ToolExecutionStatus>;
   available_count: number;
   total_count: number;
+  meta?: ToolsStatusMeta;
 }
 
 // Script execution types for chat-driven tool use
