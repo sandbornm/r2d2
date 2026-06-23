@@ -51,6 +51,7 @@ import { CacheKeys, getFromCache, setInCache } from '../utils/cache';
 
 type GraphMode = 'findings' | 'journey';
 type GraphLens = 'overview' | 'segment' | 'all';
+type MapDensity = 'calm' | 'linked' | 'dense';
 type DetailLevel = 'compact' | 'summary' | 'full';
 
 interface GraphExplorerProps {
@@ -209,6 +210,12 @@ const lensTitle = (lens: GraphLens) => {
   return 'All';
 };
 
+const densityTitle = (density: MapDensity) => {
+  if (density === 'calm') return 'Calm';
+  if (density === 'linked') return 'Linked';
+  return 'Dense';
+};
+
 const GraphExplorer: FC<GraphExplorerProps> = memo(function GraphExplorer({
   sessionId,
   analysisGraph,
@@ -221,6 +228,7 @@ const GraphExplorer: FC<GraphExplorerProps> = memo(function GraphExplorer({
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [query, setQuery] = useState('');
   const [lens, setLens] = useState<GraphLens>('overview');
+  const [density, setDensity] = useState<MapDensity>('calm');
   const [segmentKey, setSegmentKey] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -267,10 +275,10 @@ const GraphExplorer: FC<GraphExplorerProps> = memo(function GraphExplorer({
 
   const visibleGraph = useMemo(() => {
     if (!activeGraph) return null;
-    if (lens === 'overview') return buildOverviewGraph(activeGraph, segments, mode);
+    if (lens === 'overview') return buildOverviewGraph(activeGraph, segments, mode, density);
     if (lens === 'segment') return buildSegmentGraph(activeGraph, segments, segmentKey);
     return activeGraph;
-  }, [activeGraph, lens, mode, segmentKey, segments]);
+  }, [activeGraph, density, lens, mode, segmentKey, segments]);
 
   const filteredGraph = useMemo(() => {
     if (!visibleGraph) return null;
@@ -374,6 +382,32 @@ const GraphExplorer: FC<GraphExplorerProps> = memo(function GraphExplorer({
             </ToggleButton>
           </ToggleButtonGroup>
 
+          <ToggleButtonGroup
+            exclusive
+            size="small"
+            value={density}
+            onChange={(_, value: MapDensity | null) => {
+              if (value) setDensity(value);
+            }}
+            aria-label="Map density"
+          >
+            <ToggleButton value="calm" aria-label="Calm map density">
+              <Tooltip title="Calm overview">
+                <LayersIcon sx={{ fontSize: 16 }} />
+              </Tooltip>
+            </ToggleButton>
+            <ToggleButton value="linked" aria-label="Linked map density">
+              <Tooltip title="Show strongest routes">
+                <HubIcon sx={{ fontSize: 16 }} />
+              </Tooltip>
+            </ToggleButton>
+            <ToggleButton value="dense" aria-label="Dense map density">
+              <Tooltip title="Show more relationships">
+                <AccountTreeIcon sx={{ fontSize: 16 }} />
+              </Tooltip>
+            </ToggleButton>
+          </ToggleButtonGroup>
+
           <TextField
             size="small"
             value={query}
@@ -435,6 +469,7 @@ const GraphExplorer: FC<GraphExplorerProps> = memo(function GraphExplorer({
               graph={filteredGraph}
               mode={mode}
               lens={lens}
+              density={density}
               selectedId={selectedId}
               onSelect={setSelectedId}
               onSegmentSelect={handleSegmentSelect}
@@ -530,12 +565,13 @@ interface GraphCanvasProps {
   graph: AnalysisGraphPayload | InvestigationGraphPayload;
   mode: GraphMode;
   lens: GraphLens;
+  density: MapDensity;
   selectedId: string | null;
   onSelect: (id: string | null) => void;
   onSegmentSelect: (key: string) => void;
 }
 
-const GraphCanvas: FC<GraphCanvasProps> = ({ graph, mode, lens, selectedId, onSelect, onSegmentSelect }) => {
+const GraphCanvas: FC<GraphCanvasProps> = ({ graph, mode, lens, density, selectedId, onSelect, onSegmentSelect }) => {
   const theme = useTheme();
   const svgRef = useRef<SVGSVGElement | null>(null);
   const dragRef = useRef<{ x: number; y: number; view: ViewState } | null>(null);
@@ -558,14 +594,23 @@ const GraphCanvas: FC<GraphCanvasProps> = ({ graph, mode, lens, selectedId, onSe
   }, [bounds]);
 
   const fit = useCallback(() => {
-    const baseWidth = lens === 'all' ? 1600 : lens === 'segment' ? 1320 : 1360;
-    const maxScale = lens === 'overview' ? 0.9 : 0.78;
+    const horizontalPad = lens === 'overview' ? 110 : 150;
+    const verticalPad = lens === 'overview' ? 120 : 150;
+    const fitScale = Math.min(
+      1100 / Math.max(bounds.width + horizontalPad, 1),
+      720 / Math.max(bounds.height + verticalPad, 1),
+    );
+    const minScale = lens === 'all' ? 0.28 : 0.34;
+    const maxScale = lens === 'overview' ? (density === 'calm' ? 0.82 : 0.9) : lens === 'segment' ? 0.88 : 0.78;
+    const scale = Math.min(maxScale, Math.max(minScale, fitScale));
+    const viewportWidth = 1100 / scale;
+    const viewportHeight = 720 / scale;
     setView({
-      x: Math.min(-20, bounds.minX - 60),
-      y: Math.min(-20, bounds.minY - 60),
-      scale: Math.min(maxScale, Math.max(0.35, baseWidth / Math.max(bounds.width, baseWidth))),
+      x: bounds.minX - Math.max(48, (viewportWidth - bounds.width) / 2),
+      y: bounds.minY - Math.max(48, (viewportHeight - bounds.height) / 2),
+      scale,
     });
-  }, [bounds, lens]);
+  }, [bounds, density, lens]);
 
   useEffect(() => {
     fit();
@@ -876,6 +921,9 @@ const GraphCanvas: FC<GraphCanvasProps> = ({ graph, mode, lens, selectedId, onSe
         }}
       >
         <Chip size="small" label={`${nodes.length} shown`} sx={{ height: 22, bgcolor: alpha(theme.palette.background.paper, 0.86) }} />
+        {lens === 'overview' && (
+          <Chip size="small" label={`${densityTitle(density)} density`} sx={{ height: 22, bgcolor: alpha(theme.palette.background.paper, 0.86) }} />
+        )}
         {groupedNodeCount > 0 && (
           <Chip size="small" label={`${groupedNodeCount} grouped`} sx={{ height: 22, bgcolor: alpha(theme.palette.background.paper, 0.86) }} />
         )}
@@ -1457,6 +1505,7 @@ function buildOverviewGraph(
   graph: AnalysisGraphPayload | InvestigationGraphPayload,
   segments: GraphSegment[],
   mode: GraphMode,
+  density: MapDensity,
 ): AnalysisGraphPayload | InvestigationGraphPayload {
   const nodeToSegment = new Map<string, GraphSegment>();
   for (const segment of segments) {
@@ -1482,12 +1531,24 @@ function buildOverviewGraph(
     edgeCounts.set(edgeKey, current);
   }
 
+  const actualEdges = Array.from(edgeCounts.entries()).sort(([, left], [, right]) => (
+    right.count - left.count
+    || left.source.localeCompare(right.source)
+    || left.target.localeCompare(right.target)
+  ));
+  const visibleActualEdges = density === 'calm'
+    ? []
+    : density === 'linked'
+    ? actualEdges.slice(0, 8)
+    : actualEdges.slice(0, 32);
+  const visibleEdgeCounts = new Map<string, { source: string; target: string; count: number; kinds: Set<string>; guide?: boolean }>(visibleActualEdges);
+
   const segmentKeys = new Set(segments.map((segment) => segment.key));
   for (const [sourceKey, targetKey] of overviewGuidePairs(mode)) {
     if (!segmentKeys.has(sourceKey) || !segmentKeys.has(targetKey)) continue;
     const edgeKey = `${sourceKey}->${targetKey}`;
-    if (edgeCounts.has(edgeKey)) continue;
-    edgeCounts.set(edgeKey, {
+    if (visibleEdgeCounts.has(edgeKey)) continue;
+    visibleEdgeCounts.set(edgeKey, {
       source: `segment:${sourceKey}`,
       target: `segment:${targetKey}`,
       count: 0,
@@ -1509,10 +1570,11 @@ function buildOverviewGraph(
       samples: segment.sampleLabels,
       important_count: segment.importantCount,
       mode,
+      density,
     },
   }));
 
-  const edges: ExplorerGraphEdge[] = Array.from(edgeCounts.entries()).map(([key, edge]) => ({
+  const edges: ExplorerGraphEdge[] = Array.from(visibleEdgeCounts.entries()).map(([key, edge]) => ({
     id: `segment-edge:${key}`,
     kind: edge.guide ? 'route' : `${edge.count} links`,
     source: edge.source,
@@ -1522,6 +1584,7 @@ function buildOverviewGraph(
       edge_count: edge.count,
       kinds: Array.from(edge.kinds).sort(),
       guide: edge.guide === true,
+      density,
     },
   }));
 
@@ -1535,6 +1598,9 @@ function buildOverviewGraph(
       edge_count: edges.length,
       segment_count: segments.length,
       lens: 'overview',
+      map_density: density,
+      actual_cross_segment_routes: actualEdges.length,
+      visible_cross_segment_routes: visibleActualEdges.length,
     },
   };
 }
