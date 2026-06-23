@@ -48,6 +48,7 @@ The Ghidra adapter supports two modes:
 - **Purpose**: gather telemetry about installed tools before running expensive stages.
 - **Outputs**: `EnvironmentReport` consumed by CLI + orchestrator, plus dedicated Ghidra/MCP detection payloads.
 - **MCP Probes**: `r2d2 mcp` reports availability, launch commands, service URLs, capability counts, and install hints for `angr_mcp`, `ghidra_mcp`, and `ghidra_gdb`.
+- **MCP Launch**: `r2d2 mcp-start --service <name>` starts configured services with `start_command` metadata; use `--dry-run` before launching.
 - **Ghidra Setup**: `r2d2 ghidra setup --version <version>`, `--url <archive>`, or `--archive <zip>` installs a local Ghidra distribution under the r2d2 tools directory and prints `GHIDRA_INSTALL_DIR`.
 - **Extensibility**: `_COMMANDS` now includes optional `qemu`/`frida` probes and the detector inspects local/remote LLM availability.
 

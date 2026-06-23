@@ -50,6 +50,23 @@ uv run r2d2 env
 The dashboard uses the same configuration and exposes service status through
 `/api/tools/status?live=1`.
 
+## Launch From r2d2
+
+The same config can be used to start services that provide `start_command`
+metadata:
+
+```bash
+uv run r2d2 mcp-start --dry-run
+uv run r2d2 mcp-start --service angr_mcp
+uv run r2d2 mcp-start --service ghidra_gdb
+uv run r2d2 mcp-start --json --dry-run
+```
+
+`angr_mcp` starts as a background process and writes logs under
+`~/.local/state/r2d2/mcp` by default. `ghidra_gdb` runs the configured Docker
+Compose command. `ghidra_mcp` is reported as skipped because the plugin API must
+be started from inside Ghidra after loading a program.
+
 ## Reconfigure
 
 Override the defaults in `config/default_config.toml` or a custom config file

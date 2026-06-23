@@ -238,6 +238,17 @@ uv run r2d2 mcp
 uv run r2d2 mcp --json
 ```
 
+Start configured services from r2d2:
+
+```bash
+uv run r2d2 mcp-start --dry-run
+uv run r2d2 mcp-start --service angr_mcp
+uv run r2d2 mcp-start --service ghidra_gdb
+```
+
+The GhidraMCP plugin API still requires opening Ghidra, loading the target
+program, and enabling the plugin HTTP server.
+
 ### Step 7: Install Frida (Optional)
 
 ```bash

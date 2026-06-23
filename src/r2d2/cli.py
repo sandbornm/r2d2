@@ -17,6 +17,7 @@ from .config import load_config
 from .environment import MCPConnectionCheck, EnvironmentReport, detect_environment, detect_mcp_connections
 from .environment.ghidra import detect_ghidra
 from .environment.ghidra_setup import GhidraSetupError, GhidraSetupResult, setup_ghidra
+from .environment.mcp_launcher import MCPLaunchError, MCPLaunchResult, launch_mcp_services
 from .llm import ChatMessage as LLMChatMessage, LLMBridge
 from .state import AppState, build_state
 from .utils import to_json
@@ -128,6 +129,41 @@ def mcp_check(
         console.print(JSON.from_data({name: asdict(check) for name, check in checks.items()}))
         return
     _render_mcp_connections(checks)
+
+
+@app.command("mcp-start")
+def mcp_start(
+    services: Optional[list[str]] = typer.Option(
+        None,
+        "--service",
+        "-s",
+        help="Configured MCP service to start. Repeat for multiple services. Defaults to all configured services.",
+    ),
+    config_path: Optional[Path] = typer.Option(None, "--config", help="Path to config TOML"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Print launch plan without starting processes."),
+    foreground: bool = typer.Option(False, "--foreground", help="Run each command in the foreground and wait for exit."),
+    log_dir: Optional[Path] = typer.Option(None, "--log-dir", help="Directory for MCP service logs."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON instead of tables"),
+) -> None:
+    """Start configured MCP analysis services from r2d2."""
+
+    config = load_config(config_path)
+    try:
+        results = launch_mcp_services(
+            config,
+            selected=services,
+            dry_run=dry_run,
+            foreground=foreground,
+            log_dir=log_dir,
+        )
+    except MCPLaunchError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+    if json_output:
+        console.print(JSON.from_data({name: _mcp_launch_to_dict(result) for name, result in results.items()}))
+        return
+
+    _render_mcp_launch_results(results)
 
 
 @ghidra_app.command("status")
@@ -333,6 +369,34 @@ def _render_mcp_connections(connections: dict[str, MCPConnectionCheck]) -> None:
     console.print(launch_table)
 
 
+def _render_mcp_launch_results(results: dict[str, MCPLaunchResult]) -> None:
+    table = Table(title="MCP Launch")
+    table.add_column("Server")
+    table.add_column("Status")
+    table.add_column("Command")
+    table.add_column("Working Dir")
+    table.add_column("PID")
+    table.add_column("Details")
+    for name, result in results.items():
+        status = {
+            "started": "[green]Started",
+            "planned": "[cyan]Planned",
+            "completed": "[green]Completed",
+            "skipped": "[yellow]Skipped",
+            "disabled": "[yellow]Disabled",
+            "failed": "[red]Failed",
+        }.get(result.status, result.status)
+        table.add_row(
+            name,
+            status,
+            shlex.join(result.command) if result.command else "-",
+            result.working_dir or "-",
+            str(result.pid) if result.pid else "-",
+            result.details,
+        )
+    console.print(table)
+
+
 def _format_mcp_command(check: MCPConnectionCheck) -> str | None:
     if check.start_command:
         return shlex.join(check.start_command)
@@ -366,6 +430,10 @@ def _ghidra_detection_to_dict(detection: Any) -> dict[str, Any]:
         "notes": detection.notes,
         "ready": detection.is_ready,
     }
+
+
+def _mcp_launch_to_dict(result: MCPLaunchResult) -> dict[str, Any]:
+    return asdict(result)
 
 
 def run() -> None:
