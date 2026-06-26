@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -41,6 +42,7 @@ class AnalysisPlan:
     deep: bool = True
     run_angr: bool = False
     persist_trajectory: bool = True
+    profile: str = "standard"
 
 
 @dataclass(slots=True)
@@ -113,13 +115,25 @@ class AnalysisOrchestrator:
 
         self._registry = AdapterRegistry(adapters)
 
-    def create_plan(self, *, quick_only: bool = False, skip_deep: bool = False) -> AnalysisPlan:
-        plan = AnalysisPlan()
-        if quick_only:
+    def create_plan(
+        self,
+        *,
+        quick_only: bool = False,
+        skip_deep: bool = False,
+        profile: str | None = None,
+    ) -> AnalysisPlan:
+        normalized_profile = (profile or ("triage" if quick_only else "standard")).strip().lower()
+        if normalized_profile not in {"triage", "standard", "exhaustive"}:
+            normalized_profile = "standard"
+        plan = AnalysisPlan(profile=normalized_profile)
+        if quick_only or normalized_profile == "triage":
             plan.deep = False
         if skip_deep:
             plan.deep = False
-        plan.run_angr = self._config.analysis.enable_angr and not quick_only
+        plan.run_angr = self._config.analysis.enable_angr and plan.deep
+        if normalized_profile == "exhaustive":
+            plan.deep = True
+            plan.run_angr = self._config.analysis.enable_angr
         plan.persist_trajectory = self._config.analysis.enable_trajectory_recording
         return plan
 
@@ -194,12 +208,26 @@ class AnalysisOrchestrator:
         libmagic = self._registry.get("libmagic") if self._has_adapter("libmagic") else None
         radare = self._registry.get("radare2") if self._has_adapter("radare2") else None
 
+        def elapsed_ms(start: float) -> int:
+            return int((time.perf_counter() - start) * 1000)
+
+        def update_quick_status(adapter_name: str, payload: dict[str, Any] | None, start: float, error: str | None = None) -> None:
+            summary = self._summarize_tool_payload(adapter_name, payload, result.quick_scan)
+            summary["stage"] = "quick"
+            summary["duration_ms"] = elapsed_ms(start)
+            if error:
+                summary["status"] = "failed"
+                summary["error"] = error
+            result.tool_status[adapter_name] = summary
+
         # Run autoprofile first for quick characterization
         if autoprofile:
+            start = time.perf_counter()
             try:
                 self._emit_progress(progress_callback, "adapter_started", {"stage": "quick", "adapter": "autoprofile"})
                 profile = autoprofile.quick_scan(binary)
                 result.quick_scan["autoprofile"] = profile
+                update_quick_status("autoprofile", profile, start)
                 self._record_action(trajectory, "autoprofile.quick", profile)
                 self._emit_progress(
                     progress_callback,
@@ -208,6 +236,7 @@ class AnalysisOrchestrator:
                 )
             except AdapterUnavailable as exc:
                 result.notes.append(str(exc))
+                update_quick_status("autoprofile", None, start, error=str(exc))
                 self._emit_progress(
                     progress_callback,
                     "adapter_failed",
@@ -215,11 +244,12 @@ class AnalysisOrchestrator:
                 )
 
         if firmware:
+            start = time.perf_counter()
             try:
                 self._emit_progress(progress_callback, "adapter_started", {"stage": "quick", "adapter": "firmware"})
                 inventory = firmware.quick_scan(binary)
                 result.quick_scan["firmware"] = inventory
-                result.tool_status["firmware"] = self._summarize_tool_payload("firmware", inventory, result.quick_scan)
+                update_quick_status("firmware", inventory, start)
                 self._record_action(trajectory, "firmware.quick", inventory)
                 self._emit_progress(
                     progress_callback,
@@ -228,6 +258,7 @@ class AnalysisOrchestrator:
                 )
             except AdapterUnavailable as exc:
                 result.notes.append(str(exc))
+                update_quick_status("firmware", None, start, error=str(exc))
                 self._emit_progress(
                     progress_callback,
                     "adapter_failed",
@@ -235,10 +266,12 @@ class AnalysisOrchestrator:
                 )
 
         if libmagic:
+            start = time.perf_counter()
             try:
                 self._emit_progress(progress_callback, "adapter_started", {"stage": "quick", "adapter": "libmagic"})
                 info = libmagic.quick_scan(binary)
                 result.quick_scan["identification"] = info
+                update_quick_status("libmagic", info, start)
                 self._record_action(trajectory, "libmagic.quick", info)
                 self._emit_progress(
                     progress_callback,
@@ -247,6 +280,7 @@ class AnalysisOrchestrator:
                 )
             except AdapterUnavailable as exc:
                 result.issues.append(str(exc))
+                update_quick_status("libmagic", None, start, error=str(exc))
                 self._emit_progress(
                     progress_callback,
                     "adapter_failed",
@@ -254,6 +288,7 @@ class AnalysisOrchestrator:
                 )
 
         if self._is_elf_subject(binary, result):
+            start = time.perf_counter()
             try:
                 self._emit_progress(progress_callback, "adapter_started", {"stage": "quick", "adapter": "runtime"})
                 runtime_info = get_runtime_requirements(binary)
@@ -263,6 +298,12 @@ class AnalysisOrchestrator:
                     result.quick_scan["runtime"] = runtime_info.get("runtime", {})
                     result.quick_scan["readelf"] = runtime_info.get("readelf", {})
                     result.quick_scan["packer"] = runtime_info.get("packer", {})
+                result.tool_status["runtime"] = {
+                    "status": "completed" if "error" not in runtime_info else "partial",
+                    "stage": "quick",
+                    "duration_ms": elapsed_ms(start),
+                    "warnings": [str(runtime_info["error"])] if "error" in runtime_info else [],
+                }
                 self._record_action(trajectory, "runtime.quick", runtime_info)
                 self._emit_progress(
                     progress_callback,
@@ -271,6 +312,12 @@ class AnalysisOrchestrator:
                 )
             except Exception as exc:  # pragma: no cover - best effort
                 result.notes.append(f"runtime requirements failed: {exc}")
+                result.tool_status["runtime"] = {
+                    "status": "failed",
+                    "stage": "quick",
+                    "duration_ms": elapsed_ms(start),
+                    "error": str(exc),
+                }
                 self._emit_progress(
                     progress_callback,
                     "adapter_failed",
@@ -282,7 +329,7 @@ class AnalysisOrchestrator:
                 "reason": "top-level subject is not ELF; firmware inventory should identify embedded analysis targets",
             }
             result.quick_scan["runtime"] = runtime_info
-            result.tool_status["runtime"] = {"status": "skipped", **runtime_info}
+            result.tool_status["runtime"] = {"status": "skipped", "stage": "quick", "duration_ms": 0, **runtime_info}
             self._record_action(trajectory, "runtime.skipped", runtime_info)
             self._emit_progress(
                 progress_callback,
@@ -291,11 +338,13 @@ class AnalysisOrchestrator:
             )
 
         if radare:
+            start = time.perf_counter()
             try:
                 self._emit_progress(progress_callback, "adapter_started", {"stage": "quick", "adapter": "radare2"})
                 scan = radare.quick_scan(binary)
                 result.quick_scan["radare2"] = scan
                 result.resource_tree = self._init_resource_tree(binary, scan)
+                update_quick_status("radare2", scan, start)
                 self._record_action(trajectory, "radare2.quick", scan)
                 self._emit_progress(
                     progress_callback,
@@ -304,6 +353,7 @@ class AnalysisOrchestrator:
                 )
             except AdapterUnavailable as exc:
                 result.issues.append(str(exc))
+                update_quick_status("radare2", None, start, error=str(exc))
                 self._emit_progress(
                     progress_callback,
                     "adapter_failed",
@@ -311,6 +361,12 @@ class AnalysisOrchestrator:
                 )
         else:
             result.notes.append("radare2 adapter unavailable; quick scan limited")
+            result.tool_status["radare2"] = {
+                "status": "skipped",
+                "stage": "quick",
+                "duration_ms": 0,
+                "reason": "unavailable",
+            }
             self._emit_progress(
                 progress_callback,
                 "adapter_skipped",
@@ -331,8 +387,16 @@ class AnalysisOrchestrator:
         self._emit_progress(progress_callback, "stage_started", {"stage": "deep"})
         lock = threading.Lock()
 
-        def update_tool_status(adapter_name: str, payload: dict[str, Any] | None, error: str | None = None) -> None:
+        def update_tool_status(
+            adapter_name: str,
+            payload: dict[str, Any] | None,
+            error: str | None = None,
+            duration_ms: int | None = None,
+        ) -> None:
             summary = self._summarize_tool_payload(adapter_name, payload, result.quick_scan)
+            summary["stage"] = "deep"
+            if duration_ms is not None:
+                summary["duration_ms"] = duration_ms
             if error:
                 summary["status"] = "failed"
                 summary["error"] = error
@@ -347,19 +411,22 @@ class AnalysisOrchestrator:
             issue_on_fail: bool,
             note_on_fail: bool,
         ) -> None:
+            start = time.perf_counter()
             try:
                 self._emit_progress(
                     progress_callback, "adapter_started", {"stage": "deep", "adapter": adapter_name}
                 )
                 payload = runner()
+                duration_ms = int((time.perf_counter() - start) * 1000)
                 with lock:
                     result.deep_scan[adapter_name] = payload
                 self._record_action(trajectory, f"{adapter_name}.deep", payload)
                 self._emit_progress(
                     progress_callback, "adapter_completed", {"stage": "deep", "adapter": adapter_name, "payload": payload}
                 )
-                update_tool_status(adapter_name, payload)
+                update_tool_status(adapter_name, payload, duration_ms=duration_ms)
             except AdapterUnavailable as exc:
+                duration_ms = int((time.perf_counter() - start) * 1000)
                 if issue_on_fail:
                     result.issues.append(str(exc))
                 if note_on_fail:
@@ -367,7 +434,7 @@ class AnalysisOrchestrator:
                 self._emit_progress(
                     progress_callback, "adapter_failed", {"stage": "deep", "adapter": adapter_name, "error": str(exc)}
                 )
-                update_tool_status(adapter_name, None, error=str(exc))
+                update_tool_status(adapter_name, None, error=str(exc), duration_ms=duration_ms)
         radare = self._registry.get("radare2") if self._has_adapter("radare2") else None
         ghidra = self._registry.get("ghidra") if self._has_adapter("ghidra") else None
         capstone = self._registry.get("capstone") if self._has_adapter("capstone") else None
@@ -384,7 +451,7 @@ class AnalysisOrchestrator:
         def skip_adapter(adapter_name: str, reason: str) -> None:
             payload = {"skipped": True, "reason": reason}
             with lock:
-                result.tool_status[adapter_name] = {"status": "skipped", **payload}
+                result.tool_status[adapter_name] = {"status": "skipped", "stage": "deep", "duration_ms": 0, **payload}
             self._record_action(trajectory, f"{adapter_name}.skipped", payload)
             self._emit_progress(
                 progress_callback,
@@ -407,9 +474,11 @@ class AnalysisOrchestrator:
             )
 
         if radare and subject_is_elf:
+            start = time.perf_counter()
             try:
                 self._emit_progress(progress_callback, "adapter_started", {"stage": "deep", "adapter": "radare2"})
                 deep = radare.deep_scan(binary, resource_tree=result.resource_tree)
+                duration_ms = int((time.perf_counter() - start) * 1000)
                 result.deep_scan["radare2"] = deep
                 result.resource_tree = self._populate_tree_from_radare(
                     result.resource_tree, deep
@@ -420,15 +489,16 @@ class AnalysisOrchestrator:
                     "adapter_completed",
                     {"stage": "deep", "adapter": "radare2", "payload": deep},
                 )
-                update_tool_status("radare2", deep)
+                update_tool_status("radare2", deep, duration_ms=duration_ms)
             except AdapterUnavailable as exc:
+                duration_ms = int((time.perf_counter() - start) * 1000)
                 result.issues.append(str(exc))
                 self._emit_progress(
                     progress_callback,
                     "adapter_failed",
                     {"stage": "deep", "adapter": "radare2", "error": str(exc)},
                 )
-                update_tool_status("radare2", None, error=str(exc))
+                update_tool_status("radare2", None, error=str(exc), duration_ms=duration_ms)
         elif radare:
             skip_adapter("radare2", non_elf_reason)
 

@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import copy
+import hashlib
 import json
 import queue
 import threading
 import time
 import uuid
+import zipfile
 from dataclasses import asdict
 from datetime import datetime, timezone
+from io import BytesIO
 from pathlib import Path
 from typing import Any, Optional
 
@@ -105,6 +109,44 @@ def _format_size(size_bytes: int) -> str:
     return f"{size_bytes} B"
 
 
+def _analysis_result_cache_key(binary: Path, plan: Any, config: AppConfig) -> str:
+    stat = binary.stat()
+    fingerprint = {
+        "binary": {
+            "path": str(binary.resolve()),
+            "size": stat.st_size,
+            "sha256": _sha256_file(binary),
+        },
+        "plan": asdict(plan),
+        "analysis": {
+            "enable_angr": config.analysis.enable_angr,
+            "enable_ghidra": config.analysis.enable_ghidra,
+            "enable_gef": config.analysis.enable_gef,
+            "enable_frida": config.analysis.enable_frida,
+            "default_radare_profile": config.analysis.default_radare_profile,
+            "timeout_quick": config.analysis.timeout_quick,
+            "timeout_deep": config.analysis.timeout_deep,
+        },
+        "mcp": {
+            name: server.enabled
+            for name, server in config.mcp.configured_servers().items()
+        },
+    }
+    encoded = json.dumps(fingerprint, sort_keys=True, default=str).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _sha256_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        while True:
+            chunk = fh.read(chunk_size)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def create_app(config_path: Optional[Path] = None) -> Flask:
     state: AppState = build_state(config_path)
     if state.chat_dao is None:
@@ -158,6 +200,10 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
         "live": False,
     }
     tools_status_lock = threading.Lock()
+    analysis_result_cache: dict[str, AnalysisResult] = {}
+    analysis_cache_lock = threading.Lock()
+    llm_context_cache: dict[str, dict[str, Any]] = {}
+    llm_context_cache_lock = threading.Lock()
 
     def _live_status_requested() -> bool:
         value = (request.args.get("live") or request.args.get("refresh") or "").strip().lower()
@@ -176,7 +222,7 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
                     "generated_at": tools_status_cache.get("generated_at"),
                 }
 
-        tools_status = _get_tools_status(state, live=live)
+        tools_status = _attach_live_tool_scorecards(_get_tools_status(state, live=live))
         generated_at = datetime.now(timezone.utc).isoformat()
         ttl_seconds = 3.0 if live else 15.0
         with tools_status_lock:
@@ -191,6 +237,40 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
             "live": live,
             "generated_at": generated_at,
         }
+
+    def _get_llm_context_cached(
+        session: ChatSession,
+        *,
+        history: list[StoredChatMessage],
+        analysis_attachment: dict[str, Any] | None,
+        activity_context: list[dict[str, Any]] | None,
+        investigation_graph: dict[str, Any] | None,
+    ) -> tuple[str | None, dict[str, Any]]:
+        if not analysis_attachment:
+            return None, {"cached": False, "reason": "no_analysis_attachment"}
+        key = _llm_context_cache_key(
+            session,
+            analysis_attachment=analysis_attachment,
+            activity_context=activity_context,
+            investigation_graph=investigation_graph,
+            config=state.config,
+        )
+        with llm_context_cache_lock:
+            cached = llm_context_cache.get(key)
+            if cached:
+                return str(cached["context"]), {**cached["meta"], "cached": True}
+
+        built = _build_budgeted_session_context(
+            analysis_attachment,
+            investigation_graph,
+            activity_context,
+            config=state.config,
+        )
+        with llm_context_cache_lock:
+            if len(llm_context_cache) >= 32:
+                llm_context_cache.pop(next(iter(llm_context_cache)))
+            llm_context_cache[key] = built
+        return str(built["context"]), {**built["meta"], "cached": False}
 
     if dist_dir.exists():
 
@@ -552,6 +632,17 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
                 mimetype="text/markdown",
                 headers={"Content-Disposition": f'attachment; filename="{filename}"'},
             )
+        if output_format in {"manifest", "artifacts"}:
+            return jsonify(bundle["manifest"])
+        if output_format in {"zip", "archive"}:
+            include_binary = str(request.args.get("include_binary", "")).lower() in {"1", "true", "yes", "on"}
+            archive = _render_analysis_bundle_zip(bundle, state=state, include_binary=include_binary)
+            filename = f"{Path(session.binary_path).stem or session.session_id}-r2d2-session.zip"
+            return Response(
+                archive.getvalue(),
+                mimetype="application/zip",
+                headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+            )
 
         return jsonify(bundle)
 
@@ -593,12 +684,20 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
                 messages=history,
                 state=state,
             )
+            session_context, context_meta = _get_llm_context_cached(
+                session,
+                history=history,
+                analysis_attachment=analysis_attachment,
+                activity_context=activity_context,
+                investigation_graph=investigation_graph,
+            )
             llm_messages = _build_llm_messages(
                 history,
                 analysis_attachment,
                 activity_context,
                 config=state.config,
                 investigation_graph=investigation_graph,
+                prebuilt_context=session_context,
             )
             try:
                 assistant_response = llm_bridge.chat(llm_messages)
@@ -612,6 +711,7 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
             metadata_attachment = [{
                 "type": "llm_response_meta",
                 "provider": llm_bridge.last_provider,
+                "context": context_meta,
             }]
 
             assistant_message = chat_dao.append_message(
@@ -1068,13 +1168,27 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
         body = request.get_json(silent=True) or {}
         binary_path = body.get("binary")
         user_goal = body.get("user_goal", "").strip()
-        quick_only = body.get("quick_only", False)
-        enable_angr = body.get("enable_angr", True)
-        enable_ghidra = body.get("enable_ghidra", True)
-        enable_gef = body.get("enable_gef", True)
-        enable_frida = body.get("enable_frida", True)
+        quick_only = bool(body.get("quick_only", False))
+        analysis_profile = str(body.get("analysis_profile") or ("triage" if quick_only else "standard")).strip().lower()
+        if analysis_profile not in {"triage", "standard", "exhaustive"}:
+            analysis_profile = "standard"
+        if analysis_profile == "triage":
+            quick_only = True
+        elif analysis_profile == "exhaustive":
+            quick_only = False
+
+        enable_angr = bool(body.get("enable_angr", True))
+        enable_ghidra = bool(body.get("enable_ghidra", True))
+        enable_gef = bool(body.get("enable_gef", True))
+        enable_frida = bool(body.get("enable_frida", True))
+        if analysis_profile == "exhaustive":
+            enable_angr = True
+            enable_ghidra = True
+            enable_gef = True
+            enable_frida = True
 
         debug.analysis_start(binary_path or "unknown", {
+            "analysis_profile": analysis_profile,
             "quick_only": quick_only,
             "enable_angr": enable_angr,
             "enable_ghidra": enable_ghidra,
@@ -1125,9 +1239,27 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
                 
                 orchestrator = AnalysisOrchestrator(request_config, state.env, trajectory_dao=state.dao)
                 # Create custom analysis plan respecting frontend settings
-                plan = orchestrator.create_plan(quick_only=quick_only)
-                plan.run_angr = enable_angr and not quick_only
-                result = orchestrator.analyze(path, plan=plan, progress_callback=_progress)
+                plan = orchestrator.create_plan(quick_only=quick_only, profile=analysis_profile)
+                plan.run_angr = enable_angr and plan.deep
+                cache_key = _analysis_result_cache_key(path, plan, request_config)
+                result: AnalysisResult | None = None
+                if request_config.performance.cache_results:
+                    with analysis_cache_lock:
+                        cached_result = analysis_result_cache.get(cache_key)
+                    if cached_result:
+                        result = copy.deepcopy(cached_result)
+                        result.notes.append("analysis result restored from in-process cache")
+                        job.put(
+                            "analysis_cache_hit",
+                            {"binary": str(path), "session_id": job.session_id, "profile": plan.profile},
+                        )
+                if result is None:
+                    result = orchestrator.analyze(path, plan=plan, progress_callback=_progress)
+                    if request_config.performance.cache_results:
+                        with analysis_cache_lock:
+                            if len(analysis_result_cache) >= 12:
+                                analysis_result_cache.pop(next(iter(analysis_result_cache)))
+                            analysis_result_cache[cache_key] = copy.deepcopy(result)
                 job.result = result
                 job.status = "completed"
 
@@ -1140,6 +1272,11 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
 
                 # Extract snippets from analysis results for session persistence
                 snippets = _extract_snippets(result.deep_scan)
+                tool_scorecard = _build_analysis_tool_scorecard(
+                    result.tool_status,
+                    result.tool_availability,
+                    result.evidence_coverage,
+                )
                 
                 analysis_attachment = {
                     "type": "analysis_result",
@@ -1154,6 +1291,7 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
                     "snippet_count": len(snippets),
                     "tool_availability": result.tool_availability,
                     "tool_status": result.tool_status,
+                    "tool_scorecard": tool_scorecard,
                     "evidence_coverage": result.evidence_coverage,
                     "analysis_graph": result.analysis_graph,
                 }
@@ -1171,6 +1309,7 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
                     payload = {"result": payload, "session_id": updated_session.session_id}
                 payload["trajectory_id"] = result.trajectory_id
                 payload["analysis_graph"] = result.analysis_graph
+                payload["tool_scorecard"] = tool_scorecard
                 job.put("analysis_result", payload)
                 job.put(
                     "job_completed",
@@ -1884,9 +2023,16 @@ Generate ONLY the script code, no explanations before or after. The script shoul
         # Calculate summary
         available_count = sum(1 for t in tools.values() if t["available"])
         total_count = len(tools)
+        scorecard = {
+            name: tool.get("scorecard", {})
+            for name, tool in tools.items()
+            if isinstance(tool, dict)
+        }
 
         return jsonify(_serialize({
             "tools": tools,
+            "scorecard": scorecard,
+            "score_summary": _summarize_scorecard(scorecard),
             "available_count": available_count,
             "total_count": total_count,
             "meta": tools_meta,
@@ -1930,10 +2076,17 @@ Generate ONLY the script code, no explanations before or after. The script shoul
             tools_status_cache["expires_at"] = 0.0
         tools, tools_meta = _get_tools_status_cached(state, live=True)
         available_count = sum(1 for t in tools.values() if t["available"])
+        scorecard = {
+            name: tool.get("scorecard", {})
+            for name, tool in tools.items()
+            if isinstance(tool, dict)
+        }
 
         return jsonify(_serialize({
             "launch": {name: asdict(result) for name, result in launch_results.items()},
             "tools": tools,
+            "scorecard": scorecard,
+            "score_summary": _summarize_scorecard(scorecard),
             "available_count": available_count,
             "total_count": len(tools),
             "meta": tools_meta,
@@ -2175,8 +2328,15 @@ def _build_analysis_bundle(
         state=state,
     )
     trajectory_actions = _list_trajectory_actions(session, state)
+    annotations = _list_annotations(session, state)
+    function_names = _list_function_names(session, state)
     analysis_graph = analysis.get("analysis_graph") if isinstance(analysis.get("analysis_graph"), dict) else {}
     evidence = analysis.get("evidence_coverage") if isinstance(analysis.get("evidence_coverage"), dict) else {}
+    tool_scorecard = _build_analysis_tool_scorecard(
+        analysis.get("tool_status") if isinstance(analysis.get("tool_status"), dict) else {},
+        analysis.get("tool_availability") if isinstance(analysis.get("tool_availability"), dict) else {},
+        evidence,
+    )
 
     bundle: dict[str, Any] = {
         "schema_version": "r2d2.analysis_bundle.v1",
@@ -2193,6 +2353,7 @@ def _build_analysis_bundle(
         "tooling": {
             "tool_availability": analysis.get("tool_availability") or {},
             "tool_status": analysis.get("tool_status") or {},
+            "tool_scorecard": tool_scorecard,
             "evidence_coverage": evidence,
         },
         "graphs": {
@@ -2203,6 +2364,8 @@ def _build_analysis_bundle(
             "message_count": len(messages),
             "messages": _summarize_messages(messages),
             "trajectory_actions": _summarize_trajectory_actions(trajectory_actions),
+            "annotations": annotations,
+            "function_names": function_names,
             "investigation_summary": investigation_graph.get("summary", {}) if isinstance(investigation_graph, dict) else {},
         },
         "context": {
@@ -2217,6 +2380,7 @@ def _build_analysis_bundle(
         }
 
     bundle["report_markdown"] = _render_analysis_bundle_markdown(bundle)
+    bundle["manifest"] = _build_session_artifact_manifest(bundle, analysis, state=state)
     return bundle
 
 
@@ -2224,6 +2388,452 @@ def _list_trajectory_actions(session: ChatSession, state: AppState) -> list[dict
     if not state.dao or not session.trajectory_id:
         return []
     return state.dao.list_actions(session.trajectory_id)
+
+
+def _list_annotations(session: ChatSession, state: AppState) -> list[dict[str, Any]]:
+    if not state.db:
+        return []
+    try:
+        with state.db.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT address, note, created_at, updated_at
+                FROM annotations
+                WHERE session_id = ?
+                ORDER BY address
+                """,
+                (session.session_id,),
+            ).fetchall()
+        return [
+            {
+                "address": row["address"],
+                "note": row["note"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            }
+            for row in rows
+        ]
+    except Exception:
+        return []
+
+
+def _list_function_names(session: ChatSession, state: AppState) -> list[dict[str, Any]]:
+    if not state.db:
+        return []
+    try:
+        with state.db.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT address, original_name, display_name, reasoning, confidence, source, created_at, updated_at
+                FROM function_names
+                WHERE session_id = ?
+                ORDER BY address
+                """,
+                (session.session_id,),
+            ).fetchall()
+        return [
+            {
+                "address": row["address"],
+                "original_name": row["original_name"],
+                "display_name": row["display_name"],
+                "reasoning": row["reasoning"],
+                "confidence": row["confidence"],
+                "source": row["source"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            }
+            for row in rows
+        ]
+    except Exception:
+        return []
+
+
+def _attach_live_tool_scorecards(tools: dict[str, Any]) -> dict[str, Any]:
+    augmented: dict[str, Any] = {}
+    for name, status in tools.items():
+        if not isinstance(status, dict):
+            augmented[name] = status
+            continue
+        entry = dict(status)
+        entry["scorecard"] = _score_live_tool(name, status)
+        augmented[name] = entry
+    return augmented
+
+
+def _score_live_tool(name: str, status: dict[str, Any]) -> dict[str, Any]:
+    available = bool(status.get("available"))
+    enabled = status.get("enabled", True)
+    partial = any(
+        bool(status.get(key))
+        for key in (
+            "binwalk_available",
+            "python_package_available",
+            "command_available",
+            "cli_available",
+            "service_available",
+            "bridge_available",
+            "bridge_connected",
+            "docker_available",
+            "image_built",
+        )
+    )
+    if enabled is False:
+        state = "disabled"
+        quality = "unavailable"
+        score = 0
+    elif available:
+        state = "ready"
+        quality = "good"
+        score = 90
+        if name == "firmware" and not status.get("binwalk_available"):
+            quality = "usable"
+            score = 78
+        if status.get("latency_ms") and float(status.get("latency_ms") or 0) > 1500:
+            quality = "usable"
+            score = min(score, 72)
+    elif partial:
+        state = "degraded"
+        quality = "limited"
+        score = 35
+    else:
+        state = "missing"
+        quality = "unavailable"
+        score = 0
+
+    limits: list[str] = []
+    if status.get("error"):
+        limits.append(str(status["error"]))
+    if not available and status.get("install_hint"):
+        limits.append(str(status["install_hint"]))
+    if name == "firmware" and not status.get("binwalk_available"):
+        limits.append("built-in signature inventory works; binwalk improves extraction hints")
+    if name.endswith("_mcp") and not status.get("capabilities_count"):
+        limits.append("MCP capabilities not visible until the service is reachable")
+
+    return {
+        "state": state,
+        "quality": quality,
+        "score": score,
+        "speed": _tool_speed_tier(name),
+        "confidence": "high" if available else ("medium" if partial else "low"),
+        "best_for": _tool_best_for(name),
+        "limits": limits[:4],
+        "action": status.get("start_command") or status.get("install_hint"),
+    }
+
+
+def _build_analysis_tool_scorecard(
+    tool_status: dict[str, Any],
+    tool_availability: dict[str, Any],
+    evidence: dict[str, Any],
+) -> dict[str, Any]:
+    names = sorted(set(tool_status) | set(tool_availability))
+    matrix = evidence.get("matrix") if isinstance(evidence, dict) else {}
+    scorecard: dict[str, Any] = {}
+    for name in names:
+        status = tool_status.get(name) if isinstance(tool_status.get(name), dict) else {}
+        available = bool(tool_availability.get(name))
+        run_state = str(status.get("status") or ("ready" if available else "missing"))
+        if run_state == "completed":
+            score = 88
+            quality = "good"
+        elif run_state == "partial":
+            score = 68
+            quality = "usable"
+        elif run_state == "skipped":
+            score = 48 if available else 20
+            quality = "limited"
+        elif run_state == "failed":
+            score = 15
+            quality = "unavailable"
+        elif available:
+            score = 55
+            quality = "limited"
+        else:
+            score = 0
+            quality = "unavailable"
+
+        coverage = matrix.get(name) if isinstance(matrix, dict) and isinstance(matrix.get(name), dict) else {}
+        present = sum(1 for value in coverage.values() if value == "present")
+        partial = sum(1 for value in coverage.values() if value == "partial")
+        missing = sum(1 for value in coverage.values() if value == "missing")
+        if present:
+            score = min(100, score + min(10, present * 2))
+        if missing and run_state not in {"skipped", "failed"}:
+            score = max(0, score - min(20, missing * 2))
+
+        scorecard[name] = {
+            "state": run_state,
+            "quality": quality,
+            "score": score,
+            "speed": _tool_speed_tier(name),
+            "confidence": "high" if run_state == "completed" else ("medium" if available else "low"),
+            "best_for": _tool_best_for(name),
+            "duration_ms": status.get("duration_ms"),
+            "coverage": {
+                "present": present,
+                "partial": partial,
+                "missing": missing,
+            },
+            "error": status.get("error"),
+            "warnings": status.get("warnings") or [],
+        }
+    return scorecard
+
+
+def _summarize_scorecard(scorecard: dict[str, Any]) -> dict[str, Any]:
+    summary = {
+        "good": 0,
+        "usable": 0,
+        "limited": 0,
+        "unavailable": 0,
+        "ready": 0,
+        "degraded": 0,
+        "missing": 0,
+        "disabled": 0,
+    }
+    for entry in scorecard.values():
+        if not isinstance(entry, dict):
+            continue
+        quality = str(entry.get("quality") or "unavailable")
+        state = str(entry.get("state") or "missing")
+        if quality in summary:
+            summary[quality] += 1
+        if state in summary:
+            summary[state] += 1
+    return summary
+
+
+def _tool_speed_tier(name: str) -> str:
+    if name in {"firmware", "binwalk", "autoprofile", "libmagic", "capstone", "dwarf"}:
+        return "fast"
+    if name in {"radare2", "angr_mcp", "ghidra_mcp"}:
+        return "medium"
+    if name in {"angr", "ghidra", "ghidra_gdb", "gef", "frida", "gdb"}:
+        return "slow"
+    if name == "ollama":
+        return "interactive"
+    return "unknown"
+
+
+def _tool_best_for(name: str) -> list[str]:
+    return {
+        "firmware": ["firmware inventory", "embedded artifacts", "triage routing"],
+        "binwalk": ["firmware signatures", "filesystem extraction hints"],
+        "autoprofile": ["security profile", "interesting strings", "risk hints"],
+        "libmagic": ["file identification"],
+        "radare2": ["disassembly", "functions", "imports", "strings"],
+        "capstone": ["instruction decoding"],
+        "dwarf": ["debug symbols", "source mappings"],
+        "angr": ["CFG", "symbolic execution"],
+        "angr_mcp": ["CFG service", "symbolic execution service"],
+        "ghidra": ["decompilation", "types", "cross references"],
+        "ghidra_mcp": ["Ghidra static service"],
+        "ghidra_gdb": ["GDB-backed dynamic service"],
+        "gef": ["runtime traces", "register snapshots"],
+        "gdb": ["debug execution"],
+        "frida": ["runtime instrumentation"],
+        "ollama": ["local chat"],
+    }.get(name, ["analysis support"])
+
+
+def _build_session_artifact_manifest(
+    bundle: dict[str, Any],
+    analysis: dict[str, Any],
+    *,
+    state: AppState,
+) -> dict[str, Any]:
+    exports = [
+        _manifest_export("bundle.json", "application/json", "Machine-readable session bundle"),
+        _manifest_export("manifest.json", "application/json", "Deterministic artifact manifest"),
+        _manifest_export("report.md", "text/markdown", "Human-readable report"),
+        _manifest_export("context/compact.md", "text/markdown", "Compact model context"),
+        _manifest_export("graphs/analysis_graph.json", "application/json", "Analysis graph"),
+        _manifest_export("graphs/investigation_graph.json", "application/json", "Investigation graph"),
+        _manifest_export("tooling/tool_status.json", "application/json", "Per-session tool status"),
+        _manifest_export("tooling/tool_scorecard.json", "application/json", "Per-session tool scorecard"),
+        _manifest_export("tooling/evidence_coverage.json", "application/json", "Evidence coverage matrix"),
+        _manifest_export("journey/messages.json", "application/json", "Message summaries"),
+        _manifest_export("journey/trajectory_actions.json", "application/json", "Trajectory action summaries"),
+        _manifest_export("journey/annotations.json", "application/json", "Session annotations"),
+        _manifest_export("journey/function_names.json", "application/json", "Function name overrides"),
+        _manifest_export("subject.json", "application/json", "Subject summary"),
+    ]
+    files = _collect_session_artifact_files(analysis, state)
+    return {
+        "schema_version": "r2d2.session_artifact_manifest.v1",
+        "generated_at": bundle.get("generated_at"),
+        "session_id": (bundle.get("session") or {}).get("session_id") if isinstance(bundle.get("session"), dict) else None,
+        "exports": exports,
+        "files": files,
+        "summary": {
+            "export_count": len(exports),
+            "file_count": len(files),
+            "included_file_count": sum(1 for item in files if item.get("included")),
+        },
+    }
+
+
+def _manifest_export(path: str, media_type: str, description: str) -> dict[str, Any]:
+    return {
+        "path": path,
+        "media_type": media_type,
+        "description": description,
+    }
+
+
+def _collect_session_artifact_files(analysis: dict[str, Any], state: AppState) -> list[dict[str, Any]]:
+    quick = analysis.get("quick_scan") if isinstance(analysis.get("quick_scan"), dict) else {}
+    firmware = quick.get("firmware") if isinstance(quick.get("firmware"), dict) else {}
+    carved_targets = firmware.get("carved_targets") if isinstance(firmware.get("carved_targets"), list) else []
+    files: list[dict[str, Any]] = []
+    for index, target in enumerate(carved_targets):
+        if not isinstance(target, dict):
+            continue
+        raw_path = target.get("carved_path") or target.get("path")
+        entry = _artifact_file_entry(
+            raw_path,
+            state,
+            archive_prefix="artifacts/firmware",
+            index=index,
+            kind=str(target.get("kind") or "carved_target"),
+            role=str(target.get("analysis_role") or "artifact"),
+        )
+        entry["offset"] = target.get("offset")
+        entry["source"] = "firmware.carved_targets"
+        files.append(entry)
+    return files
+
+
+def _artifact_file_entry(
+    raw_path: Any,
+    state: AppState,
+    *,
+    archive_prefix: str,
+    index: int,
+    kind: str,
+    role: str,
+) -> dict[str, Any]:
+    source_path = str(raw_path or "")
+    entry: dict[str, Any] = {
+        "kind": kind,
+        "role": role,
+        "source_path": source_path,
+        "archive_path": None,
+        "included": False,
+    }
+    if not source_path:
+        entry["reason"] = "no source path recorded"
+        return entry
+
+    try:
+        path = Path(source_path).expanduser()
+        resolved = path.resolve()
+        artifacts_root = Path(state.config.output.artifacts_dir).expanduser().resolve()
+    except Exception as exc:
+        entry["reason"] = f"path resolution failed: {exc}"
+        return entry
+
+    if not _path_within(resolved, artifacts_root):
+        entry["reason"] = f"outside artifact allowlist: {artifacts_root}"
+        return entry
+    if not resolved.exists():
+        entry["reason"] = "file is missing"
+        return entry
+    if not resolved.is_file():
+        entry["reason"] = "not a regular file"
+        return entry
+
+    archive_name = _sanitize_archive_name(resolved.name)
+    entry.update({
+        "source_path": str(resolved),
+        "archive_path": f"{archive_prefix}/{index:03d}-{archive_name}",
+        "included": True,
+        "size_bytes": resolved.stat().st_size,
+    })
+    return entry
+
+
+def _path_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _sanitize_archive_name(name: str) -> str:
+    cleaned = "".join(ch if ch.isalnum() or ch in {".", "_", "-"} else "_" for ch in name)
+    return cleaned or "artifact.bin"
+
+
+def _render_analysis_bundle_zip(
+    bundle: dict[str, Any],
+    *,
+    state: AppState,
+    include_binary: bool = False,
+) -> BytesIO:
+    manifest = dict(bundle.get("manifest") or {})
+    files = list(manifest.get("files") or [])
+    if include_binary:
+        binary_entry = _artifact_file_entry(
+            (bundle.get("session") or {}).get("binary_path") if isinstance(bundle.get("session"), dict) else None,
+            state,
+            archive_prefix="artifacts/original",
+            index=0,
+            kind="original_binary",
+            role="subject",
+        )
+        binary_entry["source"] = "session.binary_path"
+        files.append(binary_entry)
+    manifest["files"] = files
+    manifest["summary"] = {
+        **(manifest.get("summary") if isinstance(manifest.get("summary"), dict) else {}),
+        "file_count": len(files),
+        "included_file_count": sum(1 for item in files if isinstance(item, dict) and item.get("included")),
+        "includes_original_binary": include_binary,
+    }
+
+    archive_bundle = dict(bundle)
+    archive_bundle["manifest"] = manifest
+
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        _zip_writestr_json(zf, "bundle.json", archive_bundle)
+        _zip_writestr_json(zf, "manifest.json", manifest)
+        zf.writestr("report.md", str(bundle.get("report_markdown") or ""))
+        context = bundle.get("context") if isinstance(bundle.get("context"), dict) else {}
+        zf.writestr("context/compact.md", str(context.get("compact_markdown") or ""))
+        graphs = bundle.get("graphs") if isinstance(bundle.get("graphs"), dict) else {}
+        tooling = bundle.get("tooling") if isinstance(bundle.get("tooling"), dict) else {}
+        journey = bundle.get("journey") if isinstance(bundle.get("journey"), dict) else {}
+        _zip_writestr_json(zf, "graphs/analysis_graph.json", graphs.get("analysis_graph") or {})
+        _zip_writestr_json(zf, "graphs/investigation_graph.json", graphs.get("investigation_graph") or {})
+        _zip_writestr_json(zf, "tooling/tool_status.json", tooling.get("tool_status") or {})
+        _zip_writestr_json(zf, "tooling/tool_scorecard.json", tooling.get("tool_scorecard") or {})
+        _zip_writestr_json(zf, "tooling/evidence_coverage.json", tooling.get("evidence_coverage") or {})
+        _zip_writestr_json(zf, "journey/messages.json", journey.get("messages") or [])
+        _zip_writestr_json(zf, "journey/trajectory_actions.json", journey.get("trajectory_actions") or [])
+        _zip_writestr_json(zf, "journey/annotations.json", journey.get("annotations") or [])
+        _zip_writestr_json(zf, "journey/function_names.json", journey.get("function_names") or [])
+        _zip_writestr_json(zf, "subject.json", bundle.get("subject") or {})
+
+        for item in files:
+            if not isinstance(item, dict) or not item.get("included") or not item.get("archive_path"):
+                continue
+            try:
+                zf.write(str(item["source_path"]), str(item["archive_path"]))
+            except Exception:
+                continue
+    buffer.seek(0)
+    return buffer
+
+
+def _zip_writestr_json(zf: zipfile.ZipFile, path: str, payload: Any) -> None:
+    zf.writestr(
+        path,
+        json.dumps(_serialize(payload), indent=2, sort_keys=True, default=str),
+    )
 
 
 def _summarize_subject(analysis: dict[str, Any]) -> dict[str, Any]:
@@ -2583,6 +3193,123 @@ def _describe_activity_event(event_type: str, data: dict[str, Any]) -> str:
         return event_type
 
 
+def _llm_context_cache_key(
+    session: ChatSession,
+    *,
+    analysis_attachment: dict[str, Any],
+    activity_context: list[dict[str, Any]] | None,
+    investigation_graph: dict[str, Any] | None,
+    config: Any | None,
+) -> str:
+    graph = analysis_attachment.get("analysis_graph") if isinstance(analysis_attachment.get("analysis_graph"), dict) else {}
+    graph_summary = graph.get("summary") if isinstance(graph.get("summary"), dict) else {}
+    investigation_summary = (
+        investigation_graph.get("summary")
+        if isinstance(investigation_graph, dict) and isinstance(investigation_graph.get("summary"), dict)
+        else {}
+    )
+    activities = activity_context or []
+    latest_activity = activities[-1].get("created_at") if activities and isinstance(activities[-1], dict) else None
+    tool_status = analysis_attachment.get("tool_status") if isinstance(analysis_attachment.get("tool_status"), dict) else {}
+    tool_fingerprint = {
+        name: {
+            "status": status.get("status"),
+            "error": bool(status.get("error")),
+            "warnings": len(status.get("warnings") or []),
+        }
+        for name, status in sorted(tool_status.items())
+        if isinstance(status, dict)
+    }
+    payload = {
+        "session_id": session.session_id,
+        "binary": analysis_attachment.get("binary"),
+        "trajectory_id": analysis_attachment.get("trajectory_id"),
+        "plan": analysis_attachment.get("plan"),
+        "issues": len(analysis_attachment.get("issues") or []),
+        "notes": len(analysis_attachment.get("notes") or []),
+        "graph_summary": graph_summary,
+        "investigation_summary": investigation_summary,
+        "activity_count": len(activities),
+        "latest_activity": latest_activity,
+        "tool_status": tool_fingerprint,
+        "compact": bool(getattr(getattr(config, "llm", None), "compact_context", True)),
+        "budget": int(getattr(getattr(config, "llm", None), "context_budget_chars", 24000)),
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+
+
+def _build_budgeted_session_context(
+    analysis: dict[str, Any],
+    investigation_graph: dict[str, Any] | None,
+    activity_context: list[dict[str, Any]] | None,
+    *,
+    config: Any | None,
+) -> dict[str, Any]:
+    budget = int(getattr(getattr(config, "llm", None), "context_budget_chars", 24000))
+    budget = max(4000, budget)
+    compact_context = bool(getattr(getattr(config, "llm", None), "compact_context", True))
+    analysis_context = (
+        _build_compact_analysis_context(analysis, investigation_graph)
+        if compact_context
+        else _build_analysis_context(analysis)
+    )
+    activity = _format_activity_context(activity_context)
+    sections = [
+        ("analysis", analysis_context, int(budget * 0.78)),
+        ("activity", activity or "", int(budget * 0.12)),
+    ]
+    context, section_meta = _fit_context_sections(sections, budget)
+    return {
+        "context": context,
+        "meta": {
+            "budget_chars": budget,
+            "used_chars": len(context),
+            "sections": section_meta,
+        },
+    }
+
+
+def _fit_context_sections(sections: list[tuple[str, str, int]], total_budget: int) -> tuple[str, list[dict[str, Any]]]:
+    rendered: list[str] = []
+    meta: list[dict[str, Any]] = []
+    remaining = total_budget
+    for name, text, preferred_budget in sections:
+        if not text:
+            meta.append({"name": name, "chars": 0, "budget": preferred_budget, "truncated": False})
+            continue
+        budget = max(0, min(preferred_budget, remaining))
+        if budget <= 0:
+            meta.append({"name": name, "chars": 0, "budget": preferred_budget, "truncated": True})
+            continue
+        fitted = _clamp_text_by_lines(text, budget)
+        rendered.append(fitted)
+        used = len(fitted)
+        remaining = max(0, remaining - used - 2)
+        meta.append({"name": name, "chars": used, "budget": budget, "truncated": len(fitted) < len(text)})
+    return "\n\n".join(rendered), meta
+
+
+def _clamp_text_by_lines(text: str, max_chars: int) -> str:
+    if max_chars <= 0:
+        return ""
+    if len(text) <= max_chars:
+        return text
+    marker = "\n\n[... section compacted to fit context budget ...]"
+    limit = max(0, max_chars - len(marker))
+    lines = text.splitlines()
+    kept: list[str] = []
+    used = 0
+    for line in lines:
+        next_used = used + len(line) + 1
+        if next_used > limit:
+            break
+        kept.append(line)
+        used = next_used
+    if not kept:
+        return text[:limit] + marker
+    return "\n".join(kept) + marker
+
+
 def _build_llm_messages(
     history: list[StoredChatMessage],
     analysis_attachment: dict[str, Any] | None,
@@ -2590,6 +3317,7 @@ def _build_llm_messages(
     *,
     config: Any | None = None,
     investigation_graph: dict[str, Any] | None = None,
+    prebuilt_context: str | None = None,
 ) -> list[LLMChatMessage]:
     """Build focused LLM messages.
 
@@ -2655,7 +3383,9 @@ This helps users follow along with your explanations in the disassembly view."""
     
     compact_context = bool(getattr(getattr(config, "llm", None), "compact_context", True))
 
-    if analysis_attachment:
+    if prebuilt_context:
+        system_parts.append(prebuilt_context)
+    elif analysis_attachment:
         ctx = (
             _build_compact_analysis_context(analysis_attachment, investigation_graph)
             if compact_context
@@ -2677,7 +3407,7 @@ This helps users follow along with your explanations in the disassembly view."""
                         break
     
     # Include activity context for better situational awareness
-    if activity_context:
+    if activity_context and not prebuilt_context:
         activity_str = _format_activity_context(activity_context)
         if activity_str:
             system_parts.append(activity_str)

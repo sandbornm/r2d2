@@ -214,9 +214,13 @@ class TestToolsStatusEndpoint:
 
         assert 'available_count' in data
         assert 'total_count' in data
+        assert 'scorecard' in data
+        assert 'score_summary' in data
         assert isinstance(data['available_count'], int)
         assert isinstance(data['total_count'], int)
         assert data['total_count'] >= data['available_count']
+        assert 'radare2' in data['scorecard']
+        assert {'state', 'quality', 'score', 'speed'} <= set(data['scorecard']['radare2'])
 
 
 class TestToolsStartEndpoint:

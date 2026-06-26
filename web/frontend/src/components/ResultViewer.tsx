@@ -28,6 +28,7 @@ import type {
   GEFData,
   GhidraData,
   RuntimeRequirements,
+  ToolScorecardEntry,
   ToolStatusSummary,
 } from '../types';
 import AutoProfilePanel from './AutoProfilePanel';
@@ -71,6 +72,30 @@ const formatHex = (value: number | string | null | undefined, fallback = '?') =>
   const num = typeof value === 'string' ? Number(value) : value;
   if (Number.isNaN(num)) return fallback;
   return `0x${num.toString(16)}`;
+};
+
+const deriveToolScorecard = (toolStatus: Record<string, ToolStatusSummary>): Record<string, ToolScorecardEntry> => {
+  const speedFor = (name: string) => {
+    if (['firmware', 'binwalk', 'autoprofile', 'libmagic', 'capstone', 'dwarf'].includes(name)) return 'fast';
+    if (['radare2', 'angr_mcp', 'ghidra_mcp'].includes(name)) return 'medium';
+    if (['angr', 'ghidra', 'ghidra_gdb', 'gef', 'frida', 'gdb'].includes(name)) return 'slow';
+    return 'unknown';
+  };
+  return Object.fromEntries(
+    Object.entries(toolStatus).map(([name, status]) => {
+      const quality = status.status === 'completed' ? 'good' : status.status === 'partial' ? 'usable' : status.status === 'skipped' ? 'limited' : 'unavailable';
+      const score = status.status === 'completed' ? 88 : status.status === 'partial' ? 68 : status.status === 'skipped' ? 45 : 15;
+      return [name, {
+        state: status.status,
+        quality,
+        score,
+        speed: speedFor(name),
+        duration_ms: status.duration_ms,
+        error: status.error,
+        warnings: status.warnings ?? [],
+      }];
+    }),
+  );
 };
 
 // Load annotations from localStorage
@@ -172,14 +197,19 @@ const ResultViewer: FC<ResultViewerProps> = memo(({ result, sessionId, toolsInfo
     });
   }, [result?.binary, sessionId]);
 
-  const handleExportBundle = useCallback(async (format: 'json' | 'markdown') => {
+  const handleExportBundle = useCallback(async (format: 'json' | 'markdown' | 'zip') => {
     if (!sessionId || !result?.binary) return;
-    const response = await fetch(`/api/chats/${sessionId}/bundle${format === 'markdown' ? '?format=markdown' : ''}`);
+    const response = await fetch(`/api/chats/${sessionId}/bundle${format === 'markdown' ? '?format=markdown' : format === 'zip' ? '?format=zip' : ''}`);
     if (!response.ok) return;
     const baseName = (result.binary.split('/').pop() || 'analysis').replace(/[^\w.-]+/g, '_');
     if (format === 'markdown') {
       const text = await response.text();
       downloadBlob(text, `${baseName}-r2d2-report.md`, 'text/markdown');
+      return;
+    }
+    if (format === 'zip') {
+      const blob = await response.blob();
+      downloadBlob(blob, `${baseName}-r2d2-session.zip`, 'application/zip');
       return;
     }
     const data = await response.json() as AnalysisBundleResponse;
@@ -202,6 +232,12 @@ const ResultViewer: FC<ResultViewerProps> = memo(({ result, sessionId, toolsInfo
   const firmwareChildren = (deepScan.firmware_children ?? null) as Record<string, unknown> | null;
   const runtimeRequirements = (quickScan.runtime ?? null) as RuntimeRequirements | null;
   const toolStatus = (result?.tool_status ?? {}) as Record<string, ToolStatusSummary>;
+  const toolScorecard = useMemo(
+    () => Object.keys(result?.tool_scorecard ?? {}).length
+      ? (result?.tool_scorecard ?? {}) as Record<string, ToolScorecardEntry>
+      : deriveToolScorecard(toolStatus),
+    [result?.tool_scorecard, toolStatus],
+  );
   const evidenceCoverage = (result?.evidence_coverage ?? null) as EvidenceCoverage | null;
 
   // Binary metadata
@@ -383,6 +419,15 @@ const ResultViewer: FC<ResultViewerProps> = memo(({ result, sessionId, toolsInfo
                 >
                   Report
                 </Button>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  startIcon={<DownloadIcon sx={{ fontSize: 14 }} />}
+                  onClick={() => handleExportBundle('zip')}
+                  sx={{ minHeight: 24, py: 0, px: 1 }}
+                >
+                  Archive
+                </Button>
               </>
             )}
           </Stack>
@@ -459,7 +504,9 @@ const ResultViewer: FC<ResultViewerProps> = memo(({ result, sessionId, toolsInfo
                   Tool Status
                 </Typography>
                 <Grid container spacing={1} sx={{ mt: 0.5 }}>
-                  {Object.entries(toolStatus).map(([name, status]) => (
+                  {Object.entries(toolStatus).map(([name, status]) => {
+                    const scorecard = toolScorecard[name];
+                    return (
                     <Grid item xs={12} md={6} key={name}>
                       <Paper variant="outlined" sx={{ p: 1, bgcolor: 'background.paper' }}>
                         <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.5 }}>
@@ -472,10 +519,30 @@ const ResultViewer: FC<ResultViewerProps> = memo(({ result, sessionId, toolsInfo
                             color={status.status === 'completed' ? 'success' : status.status === 'failed' ? 'error' : 'warning'}
                             variant="outlined"
                           />
+                          {scorecard && (
+                            <Chip
+                              size="small"
+                              label={`${scorecard.quality} ${scorecard.score}`}
+                              color={scorecard.quality === 'good' ? 'success' : scorecard.quality === 'usable' ? 'info' : scorecard.quality === 'limited' ? 'warning' : 'default'}
+                              variant="outlined"
+                            />
+                          )}
                         </Stack>
                         <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
                           functions: {status.functions_count ?? 0} · cfg: {status.cfg_nodes ?? 0} nodes / {status.cfg_edges ?? 0} edges
                         </Typography>
+                        {(status.duration_ms !== undefined || scorecard?.speed) && (
+                          <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                            {scorecard?.speed ? `speed: ${scorecard.speed}` : ''}
+                            {scorecard?.speed && status.duration_ms !== undefined ? ' · ' : ''}
+                            {status.duration_ms !== undefined ? `duration: ${status.duration_ms} ms` : ''}
+                          </Typography>
+                        )}
+                        {scorecard?.best_for?.length ? (
+                          <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                            best: {scorecard.best_for.slice(0, 3).join(', ')}
+                          </Typography>
+                        ) : null}
                         {status.memory_allocations && status.memory_allocations.length > 0 && (
                           <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
                             allocs: {status.memory_allocations.join(', ')}
@@ -493,7 +560,8 @@ const ResultViewer: FC<ResultViewerProps> = memo(({ result, sessionId, toolsInfo
                         )}
                       </Paper>
                     </Grid>
-                  ))}
+                    );
+                  })}
                 </Grid>
               </Paper>
             )}

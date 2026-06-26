@@ -69,6 +69,7 @@ import { CacheKeys, getFromCache, setInCache } from './utils/cache';
 
 const EVENT_NAMES: ProgressEventName[] = [
   'analysis_started',
+  'analysis_cache_hit',
   'job_started',
   'stage_started',
   'stage_completed',
@@ -91,6 +92,7 @@ const MAX_UPLOAD_BYTES = 200 * 1024 * 1024;
 const MAX_UPLOAD_LABEL = '200 MB';
 
 const DEFAULT_SETTINGS: AnalysisSettings = {
+  analysisProfile: 'standard',
   quickScanOnly: false,
   enableAngr: true,
   enableGhidra: true,
@@ -436,9 +438,11 @@ const AppContent = () => {
       return;
     }
 
+    const quickOnly = settings.analysisProfile === 'triage' || settings.quickScanOnly;
     const analysisOptions = {
       binary: binaryPath,
-      quick_only: settings.quickScanOnly,
+      analysis_profile: settings.analysisProfile,
+      quick_only: quickOnly,
       enable_angr: settings.enableAngr,
       enable_ghidra: settings.enableGhidra,
       enable_gef: settings.enableGef,
@@ -831,6 +835,12 @@ Explain why this node matters for behavior triage, dynamic-analysis targeting, o
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           binary: path,
+          analysis_profile: settings.analysisProfile,
+          quick_only: settings.analysisProfile === 'triage' || settings.quickScanOnly,
+          enable_angr: settings.enableAngr,
+          enable_ghidra: settings.enableGhidra,
+          enable_gef: settings.enableGef,
+          enable_frida: settings.enableFrida,
           user_goal: `I just compiled this ARM binary (${filename}). Help me understand the generated assembly and how it maps to my C code.`,
         }),
       });
@@ -897,7 +907,17 @@ Explain why this node matters for behavior triage, dynamic-analysis targeting, o
       setStatus('error');
       setStatusMessage(error instanceof Error ? error.message : 'Analysis failed');
     }
-  }, [refreshSessions, loadSessionMessages, attachEventHandlers]);
+  }, [
+    refreshSessions,
+    loadSessionMessages,
+    attachEventHandlers,
+    settings.analysisProfile,
+    settings.quickScanOnly,
+    settings.enableAngr,
+    settings.enableGhidra,
+    settings.enableGef,
+    settings.enableFrida,
+  ]);
 
   return (
     <Box
@@ -1119,8 +1139,8 @@ Explain why this node matters for behavior triage, dynamic-analysis targeting, o
                         {fileName || result?.binary.split('/').pop()}
                       </Typography>
                       <Typography variant="caption" color="text.secondary">
-                        {settings.quickScanOnly ? 'Quick scan' : 'Full analysis'}
-                        {settings.enableAngr && ' + angr'}
+                        {settings.analysisProfile === 'triage' ? 'Triage' : settings.analysisProfile === 'exhaustive' ? 'Exhaustive' : 'Standard'}
+                        {settings.enableAngr && settings.analysisProfile !== 'triage' && !settings.quickScanOnly && ' + angr'}
                       </Typography>
                     </Box>
                     <Button variant="text" size="small" onClick={clearFile} disabled={status === 'running'}>

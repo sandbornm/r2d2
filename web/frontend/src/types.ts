@@ -1,5 +1,6 @@
 export type ProgressEventName =
   | 'analysis_started'
+  | 'analysis_cache_hit'
   | 'job_started'
   | 'adapter_started'
   | 'adapter_completed'
@@ -38,6 +39,7 @@ export interface AnalysisPlanPayload {
   deep: boolean;
   run_angr: boolean;
   persist_trajectory: boolean;
+  profile?: 'triage' | 'standard' | 'exhaustive' | string;
 }
 
 export interface AnalysisResultPayload {
@@ -51,6 +53,7 @@ export interface AnalysisResultPayload {
   trajectory_id?: string;
   tool_availability?: Record<string, boolean>;  // Which tools were available during analysis
   tool_status?: Record<string, ToolStatusSummary>;
+  tool_scorecard?: Record<string, ToolScorecardEntry>;
   evidence_coverage?: EvidenceCoverage;
   analysis_graph?: AnalysisGraphPayload;
 }
@@ -75,6 +78,28 @@ export interface ToolStatusSummary {
   memory_allocations?: string[];
   warnings?: string[];
   error?: string;
+  duration_ms?: number;
+  stage?: string;
+  reason?: string;
+}
+
+export interface ToolScorecardEntry {
+  state: string;
+  quality: 'good' | 'usable' | 'limited' | 'unavailable' | string;
+  score: number;
+  speed?: string;
+  confidence?: string;
+  best_for?: string[];
+  limits?: string[];
+  action?: string | string[] | null;
+  duration_ms?: number | null;
+  coverage?: {
+    present?: number;
+    partial?: number;
+    missing?: number;
+  };
+  error?: string | null;
+  warnings?: string[];
 }
 
 export interface EvidenceCoverage {
@@ -111,6 +136,7 @@ export interface ToolStatusInfo {
   status_code?: number;
   capabilities_count?: number;
   latency_ms?: number;
+  scorecard?: ToolScorecardEntry;
 }
 
 export interface HealthStatus {
@@ -230,6 +256,7 @@ export interface AnalysisBundleResponse {
   tooling: {
     tool_availability: Record<string, boolean>;
     tool_status: Record<string, ToolStatusSummary>;
+    tool_scorecard?: Record<string, ToolScorecardEntry>;
     evidence_coverage: EvidenceCoverage | Record<string, unknown>;
   };
   graphs: {
@@ -240,7 +267,31 @@ export interface AnalysisBundleResponse {
   context: {
     compact_markdown: string;
   };
+  manifest?: SessionArtifactManifest;
   report_markdown: string;
+}
+
+export interface SessionArtifactManifest {
+  schema_version: 'r2d2.session_artifact_manifest.v1' | string;
+  generated_at?: string;
+  session_id?: string | null;
+  exports: Array<{
+    path: string;
+    media_type: string;
+    description?: string;
+  }>;
+  files: Array<{
+    kind: string;
+    role?: string;
+    source?: string;
+    source_path: string;
+    archive_path?: string | null;
+    included: boolean;
+    reason?: string;
+    size_bytes?: number;
+    offset?: number;
+  }>;
+  summary?: Record<string, unknown>;
 }
 
 // Assembly annotation for persisting notes on disassembly lines
@@ -645,6 +696,7 @@ export interface ToolExecutionStatus {
   working_dir?: string | null;
   capabilities_count?: number | null;
   latency_ms?: number | null;
+  scorecard?: ToolScorecardEntry;
 }
 
 export interface ToolsStatusMeta {
@@ -655,6 +707,8 @@ export interface ToolsStatusMeta {
 
 export interface ToolsStatusResponse {
   tools: Record<string, ToolExecutionStatus>;
+  scorecard?: Record<string, ToolScorecardEntry>;
+  score_summary?: Record<string, number>;
   available_count: number;
   total_count: number;
   meta?: ToolsStatusMeta;

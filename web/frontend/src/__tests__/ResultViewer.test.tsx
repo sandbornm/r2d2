@@ -93,6 +93,24 @@ describe('ResultViewer', () => {
     },
     notes: [],
     issues: [],
+    tool_status: {
+      radare2: {
+        status: 'completed',
+        functions_count: 2,
+        cfg_nodes: 0,
+        cfg_edges: 0,
+        duration_ms: 25,
+      },
+    },
+    tool_scorecard: {
+      radare2: {
+        state: 'completed',
+        quality: 'good',
+        score: 98,
+        speed: 'medium',
+        best_for: ['disassembly', 'functions'],
+      },
+    },
   };
 
   it('renders empty state when no result', () => {
@@ -118,6 +136,37 @@ describe('ResultViewer', () => {
     render(<ResultViewer result={mockResult} />);
     expect(screen.getByTestId('tool-attribution')).toBeInTheDocument();
     expect(screen.getByText('Binary Info')).toBeInTheDocument();
+  });
+
+  it('renders tool scorecard details', () => {
+    render(<ResultViewer result={mockResult} />);
+    expect(screen.getByText('good 98')).toBeInTheDocument();
+    expect(screen.getByText(/speed: medium.*duration: 25 ms/i)).toBeInTheDocument();
+  });
+
+  it('downloads session archive export', async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn((url: string) => {
+      if (url.includes('/annotations')) {
+        return Promise.resolve(new Response(JSON.stringify({ annotations: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }));
+      }
+      return Promise.resolve(new Response(new Blob(['zip-data'], { type: 'application/zip' }), { status: 200 }));
+    });
+    const createObjectURL = vi.fn(() => 'blob:archive');
+    const revokeObjectURL = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('URL', { createObjectURL, revokeObjectURL });
+
+    render(<ResultViewer result={mockResult} sessionId="session-1" />);
+    await user.click(screen.getByRole('button', { name: /archive/i }));
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/chats/session-1/bundle?format=zip');
+    expect(createObjectURL).toHaveBeenCalled();
+
+    vi.unstubAllGlobals();
   });
 
   it('shows functions in analysis tab', async () => {

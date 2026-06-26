@@ -96,6 +96,10 @@
           "type": "object",
           "additionalProperties": { "type": "object" }
         },
+        "tool_scorecard": {
+          "type": "object",
+          "additionalProperties": { "type": "object" }
+        },
         "evidence_coverage": {
           "type": "object"
         }
@@ -132,6 +136,23 @@
     "report_markdown": {
       "type": "string",
       "minLength": 1
+    },
+    "manifest": {
+      "type": "object",
+      "required": ["schema_version", "exports", "files", "summary"],
+      "additionalProperties": true,
+      "properties": {
+        "schema_version": { "const": "r2d2.session_artifact_manifest.v1" },
+        "exports": {
+          "type": "array",
+          "items": { "type": "object" }
+        },
+        "files": {
+          "type": "array",
+          "items": { "type": "object" }
+        },
+        "summary": { "type": "object" }
+      }
     },
     "raw": {
       "type": "object"

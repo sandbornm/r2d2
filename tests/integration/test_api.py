@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import io
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -39,9 +41,9 @@ def app_client(tmp_path: Path):
     from r2d2.web.app import create_app
 
     with patch.dict('os.environ', {'R2D2_WEB_DEBUG': 'false'}):
-        # Patch the config to use tmp_path for database
-        with patch('r2d2.config.load_config') as mock_config:
-            from r2d2.config import AppConfig, StorageSettings, AnalysisSettings
+        # Patch the config used by build_state to keep database/artifacts isolated.
+        with patch('r2d2.state.load_config') as mock_config:
+            from r2d2.config import AppConfig, StorageSettings, AnalysisSettings, OutputSettings
 
             test_config = AppConfig()
             test_config.storage = StorageSettings(
@@ -52,6 +54,9 @@ def app_client(tmp_path: Path):
                 enable_angr=False,
                 enable_ghidra=False,
                 require_elf=False,
+            )
+            test_config.output = OutputSettings(
+                artifacts_dir=tmp_path / "artifacts",
             )
             mock_config.return_value = test_config
 
@@ -156,6 +161,11 @@ class TestChatsEndpoint:
 
     def test_chat_bundle_exports_json_and_markdown(self, app_client, minimal_elf):
         """Test compact analysis bundle export for an existing chat session."""
+        carved_dir = minimal_elf.parent / "artifacts" / "firmware" / "fixture"
+        carved_dir.mkdir(parents=True)
+        carved_file = carved_dir / "rootfs.bin"
+        carved_file.write_bytes(b"carved firmware evidence")
+
         analyze_response = app_client.post(
             '/api/analyze',
             json={
@@ -182,7 +192,14 @@ class TestChatsEndpoint:
                     "scan": {"signature_count": 2},
                     "embedded_artifacts": [{"kind": "squashfs", "name": "SquashFS"}],
                     "recommended_targets": [{"kind": "squashfs"}],
-                    "carved_targets": [{"path": "/tmp/rootfs"}],
+                    "carved_targets": [
+                        {
+                            "kind": "squashfs_filesystem",
+                            "analysis_role": "filesystem",
+                            "carved_path": str(carved_file),
+                            "offset": 64,
+                        }
+                    ],
                 },
                 "radare2": {"info": {"bin": {"arch": "arm", "bits": 32, "os": "linux"}, "core": {"format": "elf"}}},
             },
@@ -223,12 +240,32 @@ class TestChatsEndpoint:
         assert bundle["schema_url"] == "schemas/analysis_bundle.schema.json"
         assert bundle["subject"]["sha256"] == "abc123"
         assert bundle["findings"]["evidence_gaps"] == ["ghidra_gdb: missing metadata"]
+        assert bundle["tooling"]["tool_scorecard"]["firmware"]["quality"] == "good"
+        assert bundle["manifest"]["schema_version"] == "r2d2.session_artifact_manifest.v1"
+        assert any(item["path"] == "tooling/tool_scorecard.json" for item in bundle["manifest"]["exports"])
+        assert bundle["manifest"]["files"][0]["included"] is True
+        assert bundle["manifest"]["files"][0]["archive_path"].startswith("artifacts/firmware/")
         assert "report_markdown" in bundle
 
         markdown_response = app_client.get(f'/api/chats/{session_id}/bundle?format=markdown')
         assert markdown_response.status_code == 200
         assert markdown_response.mimetype == "text/markdown"
         assert "# r2d2 Analysis Report" in markdown_response.get_data(as_text=True)
+
+        manifest_response = app_client.get(f'/api/chats/{session_id}/bundle?format=manifest')
+        assert manifest_response.status_code == 200
+        assert manifest_response.get_json()["summary"]["included_file_count"] == 1
+
+        zip_response = app_client.get(f'/api/chats/{session_id}/bundle?format=zip')
+        assert zip_response.status_code == 200
+        assert zip_response.mimetype == "application/zip"
+        with zipfile.ZipFile(io.BytesIO(zip_response.data)) as archive:
+            names = set(archive.namelist())
+            assert "bundle.json" in names
+            assert "manifest.json" in names
+            assert "report.md" in names
+            assert "tooling/tool_scorecard.json" in names
+            assert any(name.startswith("artifacts/firmware/") for name in names)
 
 
 class TestAnalyzeEndpoint:

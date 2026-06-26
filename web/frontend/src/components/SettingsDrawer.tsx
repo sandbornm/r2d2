@@ -49,6 +49,7 @@ export const AI_MODELS = [
 export type ModelId = string;
 
 export interface AnalysisSettings {
+  analysisProfile: 'triage' | 'standard' | 'exhaustive';
   quickScanOnly: boolean;
   enableAngr: boolean;
   enableGhidra: boolean;
@@ -90,6 +91,13 @@ interface ToolStatus {
   status_code?: number;
   capabilities_count?: number;
   latency_ms?: number;
+  scorecard?: {
+    state: string;
+    quality: string;
+    score: number;
+    speed?: string;
+    limits?: string[];
+  };
 }
 
 interface ToolsStatusMap {
@@ -231,6 +239,7 @@ const ToolStatusIndicator: FC<{
 }> = ({ name, status, launching = false, onStart }) => {
   const canLaunch = (name.endsWith('_mcp') || name === 'ghidra_gdb') && !status.available && Boolean(status.start_command?.length);
   const detail = [
+    status.scorecard ? `${status.scorecard.quality} · ${status.scorecard.score}/100 · ${status.scorecard.speed ?? 'unknown'} speed` : null,
     status.details,
     status.path ? `path: ${status.path}` : null,
     status.python_package_available !== undefined ? `python: ${status.python_package_available ? 'yes' : 'no'}` : null,
@@ -240,7 +249,9 @@ const ToolStatusIndicator: FC<{
     status.start_command?.length ? `run: ${status.start_command.join(' ')}` : null,
     status.working_dir ? `cwd: ${status.working_dir}` : null,
     status.capabilities_count !== undefined ? `${status.capabilities_count} capabilities` : null,
+    status.scorecard?.limits?.length ? `limits: ${status.scorecard.limits.join('; ')}` : null,
   ].filter(Boolean).join(' | ');
+  const qualityLabel = status.scorecard?.quality ?? (status.available ? 'good' : 'unavailable');
 
   return (
     <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ py: 0.5 }}>
@@ -262,7 +273,7 @@ const ToolStatusIndicator: FC<{
             fontWeight: 500,
           }}
         >
-          {status.available ? 'Ready' : 'Missing'}
+          {status.available ? `Ready · ${qualityLabel}` : `Missing · ${qualityLabel}`}
         </Typography>
         {canLaunch && onStart && (
           <Tooltip title={`Start ${name}`}>
@@ -579,12 +590,55 @@ export const SettingsDrawer: FC<SettingsDrawerProps> = ({
             Analysis Tools
           </Typography>
           <Stack spacing={1} sx={{ mt: 1 }}>
+            <Box
+              sx={{
+                p: 1.25,
+                borderRadius: 1,
+                bgcolor: alpha(theme.palette.background.default, 0.5),
+                border: `1px solid ${alpha(theme.palette.divider, 0.5)}`,
+              }}
+            >
+              <Stack direction="row" spacing={1.25} alignItems="center">
+                <SpeedIcon sx={{ fontSize: 20, color: 'primary.main' }} />
+                <Box sx={{ flex: 1, minWidth: 0 }}>
+                  <Typography variant="body2" fontWeight={500}>
+                    Analysis Profile
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    Controls analysis depth and default tool budget
+                  </Typography>
+                </Box>
+                <FormControl size="small" sx={{ minWidth: 130 }}>
+                  <Select
+                    value={settings.analysisProfile}
+                    onChange={(event) => {
+                      const profile = event.target.value as AnalysisSettings['analysisProfile'];
+                      onSettingsChange({
+                        ...settings,
+                        analysisProfile: profile,
+                        quickScanOnly: profile === 'triage',
+                      });
+                    }}
+                  >
+                    <MenuItem value="triage">Triage</MenuItem>
+                    <MenuItem value="standard">Standard</MenuItem>
+                    <MenuItem value="exhaustive">Exhaustive</MenuItem>
+                  </Select>
+                </FormControl>
+              </Stack>
+            </Box>
             <SettingRow
               icon={<SpeedIcon sx={{ fontSize: 20 }} />}
               label="Quick Scan Only"
               description="Skip deep analysis (faster, but no CFG or decompilation)"
               checked={settings.quickScanOnly}
-              onChange={(v) => updateSetting('quickScanOnly', v)}
+              onChange={(v) => {
+                onSettingsChange({
+                  ...settings,
+                  quickScanOnly: v,
+                  analysisProfile: v ? 'triage' : settings.analysisProfile === 'triage' ? 'standard' : settings.analysisProfile,
+                });
+              }}
             />
             <SettingRow
               icon={<AccountTreeIcon sx={{ fontSize: 20 }} />}

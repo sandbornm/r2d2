@@ -87,6 +87,7 @@ class TestAnalysisOrchestrator:
         assert isinstance(plan, AnalysisPlan)
         assert plan.quick is True
         assert plan.deep is False  # quick_only disables deep
+        assert plan.profile == "triage"
 
     def test_create_plan_full(self, minimal_config, mock_env):
         """Test creating a full analysis plan."""
@@ -101,6 +102,27 @@ class TestAnalysisOrchestrator:
         assert isinstance(plan, AnalysisPlan)
         assert plan.quick is True
         assert plan.deep is True
+        assert plan.profile == "standard"
+
+    def test_create_plan_profiles(self, minimal_config, mock_env):
+        """Analysis profiles control depth and expensive analyzers."""
+        minimal_config.analysis.enable_angr = True
+        orchestrator = AnalysisOrchestrator(
+            minimal_config,
+            mock_env,
+            trajectory_dao=None,
+        )
+
+        triage = orchestrator.create_plan(profile="triage")
+        standard = orchestrator.create_plan(profile="standard")
+        exhaustive = orchestrator.create_plan(profile="exhaustive")
+
+        assert triage.deep is False
+        assert triage.run_angr is False
+        assert standard.deep is True
+        assert standard.run_angr is True
+        assert exhaustive.deep is True
+        assert exhaustive.run_angr is True
 
     def test_ensure_elf_valid(self, minimal_config, mock_env, minimal_elf):
         """Test ELF validation passes for valid ELF."""
