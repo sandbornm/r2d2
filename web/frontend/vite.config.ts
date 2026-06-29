@@ -15,6 +15,33 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          const normalizedId = id.replace(/\\/g, '/');
+          if (
+            normalizedId.includes('/node_modules/react/') ||
+            normalizedId.includes('/node_modules/react-dom/') ||
+            normalizedId.includes('/node_modules/scheduler/')
+          ) {
+            return 'react-vendor';
+          }
+          if (
+            normalizedId.includes('/node_modules/@mui/') ||
+            normalizedId.includes('/node_modules/@emotion/') ||
+            normalizedId.includes('/node_modules/react-is/')
+          ) {
+            return 'mui-vendor';
+          }
+          if (normalizedId.includes('/node_modules/@codemirror/') || normalizedId.includes('/node_modules/@lezer/')) {
+            return 'codemirror-vendor';
+          }
+          if (normalizedId.includes('/node_modules/react-markdown/') || normalizedId.includes('/node_modules/remark-gfm/')) {
+            return 'markdown-vendor';
+          }
+        },
+      },
+    },
   },
   test: {
     globals: true,

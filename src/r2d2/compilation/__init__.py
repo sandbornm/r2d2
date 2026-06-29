@@ -9,6 +9,7 @@ from .compiler import (
     assemble_source,
     get_compile_command_preview,
 )
+from .sniffer import preview_compile_with_capabilities, sniff_compiler_capabilities
 
 __all__ = [
     "Compiler",
@@ -18,4 +19,6 @@ __all__ = [
     "compile_to_asm",
     "assemble_source",
     "get_compile_command_preview",
+    "preview_compile_with_capabilities",
+    "sniff_compiler_capabilities",
 ]

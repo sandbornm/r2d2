@@ -1,22 +1,10 @@
 import { CssBaseline, PaletteMode, ThemeProvider } from '@mui/material';
-import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
 import './styles.css';
 import { createAppTheme } from './theme';
-
-// Theme context
-interface ThemeContextType {
-  mode: PaletteMode;
-  toggleTheme: () => void;
-}
-
-export const ThemeContext = createContext<ThemeContextType>({
-  mode: 'dark',
-  toggleTheme: () => {},
-});
-
-export const useThemeMode = () => useContext(ThemeContext);
+import { ThemeContext } from './themeMode';
 
 const Root = () => {
   // Check localStorage and system preference

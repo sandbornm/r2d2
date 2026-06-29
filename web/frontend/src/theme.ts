@@ -417,15 +417,29 @@ export const createAppTheme = (mode: PaletteMode) => {
 
 // Tool colors for attribution badges
 export const toolColors = {
+  firmware: colors.green500,
+  binwalk: colors.green600,
   radare2: colors.toolRadare2,
+  rizin: colors.toolRadare2,
   angr: colors.toolAngr,
+  angr_mcp: colors.toolAngr,
   ghidra: colors.toolGhidra,
+  ghidra_mcp: colors.toolGhidra,
+  ghidra_gdb: colors.toolGef,
   capstone: colors.toolCapstone,
   frida: colors.toolFrida,
   gef: colors.toolGef,
+  gdb: colors.toolGef,
   libmagic: colors.slate500,
   autoprofile: colors.slate400,
   dwarf: colors.amber500,
+  pyelftools: colors.amber500,
+  pefile: colors.blue500,
+  lief: colors.blue700,
+  unicorn: colors.toolAngr,
+  keystone: colors.toolCapstone,
+  pwntools: colors.red500,
+  ollama: colors.green500,
 };
 
 export const theme = createAppTheme('dark');

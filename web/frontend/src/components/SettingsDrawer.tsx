@@ -33,6 +33,7 @@ import InfoIcon from '@mui/icons-material/Info';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import { FC, useCallback, useEffect, useState } from 'react';
+import { getToolCatalogEntry, getToolDisplayName, sortToolEntries } from '../toolCatalog';
 
 // Static defaults; the top bar model picker is populated from backend health.
 export const AI_MODELS = [
@@ -237,8 +238,10 @@ const ToolStatusIndicator: FC<{
   launching?: boolean;
   onStart?: (name: string) => void;
 }> = ({ name, status, launching = false, onStart }) => {
+  const catalog = getToolCatalogEntry(name);
   const canLaunch = (name.endsWith('_mcp') || name === 'ghidra_gdb') && !status.available && Boolean(status.start_command?.length);
   const detail = [
+    catalog ? `${catalog.category}: ${catalog.produces}` : null,
     status.scorecard ? `${status.scorecard.quality} · ${status.scorecard.score}/100 · ${status.scorecard.speed ?? 'unknown'} speed` : null,
     status.details,
     status.path ? `path: ${status.path}` : null,
@@ -255,7 +258,7 @@ const ToolStatusIndicator: FC<{
 
   return (
     <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ py: 0.5 }}>
-      <Typography variant="caption">{name}</Typography>
+      <Typography variant="caption">{getToolDisplayName(name)}</Typography>
       <Stack direction="row" alignItems="center" spacing={0.5}>
         {status.available ? (
           <Tooltip title={detail || status.description || 'Ready'}>
@@ -276,11 +279,11 @@ const ToolStatusIndicator: FC<{
           {status.available ? `Ready · ${qualityLabel}` : `Missing · ${qualityLabel}`}
         </Typography>
         {canLaunch && onStart && (
-          <Tooltip title={`Start ${name}`}>
+          <Tooltip title={`Start ${getToolDisplayName(name)}`}>
             <span>
               <IconButton
                 size="small"
-                aria-label={`Start ${name}`}
+                aria-label={`Start ${getToolDisplayName(name)}`}
                 disabled={launching}
                 onClick={() => onStart(name)}
                 sx={{ width: 22, height: 22 }}
@@ -348,9 +351,9 @@ export const SettingsDrawer: FC<SettingsDrawerProps> = ({
       }
       if (data.tools) setToolsStatus(data.tools);
       setToolsMeta(data.meta ?? {});
-      setLaunchMessage(`${name}: ${data.launch?.[name]?.status ?? 'started'}`);
+      setLaunchMessage(`${getToolDisplayName(name)}: ${data.launch?.[name]?.status ?? 'started'}`);
     } catch (err) {
-      setLaunchMessage(`${name}: ${err instanceof Error ? err.message : 'launch failed'}`);
+      setLaunchMessage(`${getToolDisplayName(name)}: ${err instanceof Error ? err.message : 'launch failed'}`);
     } finally {
       setLaunchingTools((prev) => ({ ...prev, [name]: false }));
     }
@@ -370,29 +373,7 @@ export const SettingsDrawer: FC<SettingsDrawerProps> = ({
         second: '2-digit',
       })
     : null;
-  const orderedToolEntries = Object.entries(toolsStatus).sort(([left], [right]) => {
-    const order = [
-      'firmware',
-      'binwalk',
-      'autoprofile',
-      'ollama',
-      'ghidra_mcp',
-      'ghidra_gdb',
-      'angr_mcp',
-      'radare2',
-      'angr',
-      'ghidra',
-      'capstone',
-      'dwarf',
-      'libmagic',
-      'gef',
-      'gdb',
-      'frida',
-    ];
-    const leftIndex = order.indexOf(left);
-    const rightIndex = order.indexOf(right);
-    return (leftIndex === -1 ? 999 : leftIndex) - (rightIndex === -1 ? 999 : rightIndex) || left.localeCompare(right);
-  });
+  const orderedToolEntries = sortToolEntries(Object.entries(toolsStatus));
 
   return (
     <Drawer

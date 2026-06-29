@@ -70,7 +70,7 @@ describe('CompilerPanel', () => {
 
   it('renders freestanding toggle', () => {
     render(<CompilerPanel />);
-    expect(screen.getByText(/freestanding/i)).toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: /freestanding/i })).toBeInTheDocument();
   });
 
   it('renders compile button', () => {

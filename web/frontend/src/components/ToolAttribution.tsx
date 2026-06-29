@@ -4,93 +4,35 @@ import RadioButtonUncheckedIcon from '@mui/icons-material/RadioButtonUnchecked';
 import { alpha, Box, Chip, Stack, Tooltip, Typography, useTheme } from '@mui/material';
 import { FC, useMemo } from 'react';
 import { toolColors } from '../theme';
+import { getToolDescription, getToolDisplayName, getToolProduces, TOOL_ORDER } from '../toolCatalog';
 import type { ToolStatusInfo } from '../types';
 
-// Tool configuration with beginner-friendly descriptions
-const TOOL_INFO = {
-  radare2: {
-    displayName: 'radare2',
-    shortName: 'r2',
-    description: 'Disassembles your binary into readable assembly code and extracts functions, imports, and strings.',
-    produces: 'Disassembly, functions, imports, strings, binary metadata',
-    icon: 'terminal',
-  },
-  angr: {
-    displayName: 'angr',
-    shortName: 'angr',
-    description: 'Symbolic execution engine that builds Control Flow Graphs (CFG) and analyzes execution paths.',
-    produces: 'CFG nodes/edges, reachability analysis, path constraints',
-    icon: 'graph',
-  },
-  ghidra: {
-    displayName: 'Ghidra',
-    shortName: 'ghidra',
-    description: 'NSA reverse engineering tool that decompiles assembly back to C-like pseudocode.',
-    produces: 'Decompiled C code, type information, cross-references',
-    icon: 'code',
-  },
-  capstone: {
-    displayName: 'Capstone',
-    shortName: 'cap',
-    description: 'Multi-architecture disassembly framework for accurate instruction decoding.',
-    produces: 'Instruction-level disassembly with operand details',
-    icon: 'cpu',
-  },
-  frida: {
-    displayName: 'Frida',
-    shortName: 'frida',
-    description: 'Dynamic instrumentation toolkit for runtime analysis and hooking.',
-    produces: 'Runtime module info, memory layout, hook points',
-    icon: 'hook',
-  },
-  gef: {
-    displayName: 'GEF/GDB',
-    shortName: 'gef',
-    description: 'GDB Enhanced Features for dynamic analysis with execution tracing in isolated Docker container.',
-    produces: 'Register snapshots, memory maps, execution traces',
-    icon: 'debug',
-  },
-  libmagic: {
-    displayName: 'libmagic',
-    shortName: 'magic',
-    description: 'File type identification using magic number signatures (same as the `file` command).',
-    produces: 'File type, MIME type, encoding detection',
-    icon: 'file',
-  },
-  autoprofile: {
-    displayName: 'AutoProfile',
-    shortName: 'profile',
-    description: 'Quick binary profiling: security features (RELRO, NX, PIE), strings, and risk analysis.',
-    produces: 'Security profile, interesting strings, risk assessment',
-    icon: 'shield',
-  },
-  dwarf: {
-    displayName: 'DWARF',
-    shortName: 'dwarf',
-    description: 'Debug information parser for extracting symbols, types, and source mappings.',
-    produces: 'Debug symbols, type definitions, source line mappings',
-    icon: 'info',
-  },
-} as const;
-
-type ToolName = keyof typeof TOOL_INFO;
-
 // Mapping from backend result keys to tool names
-const KEY_TO_TOOL: Record<string, ToolName> = {
+const KEY_TO_TOOL: Record<string, string> = {
   autoprofile: 'autoprofile',
   radare2: 'radare2',
+  r2: 'radare2',
+  rizin: 'rizin',
   angr: 'angr',
   capstone: 'capstone',
   ghidra: 'ghidra',
+  ghidra_mcp: 'ghidra_mcp',
+  angr_mcp: 'angr_mcp',
   frida: 'frida',
   gef: 'gef',
+  gdb: 'gdb',
   dwarf: 'dwarf',
+  pyelftools: 'pyelftools',
   identification: 'libmagic',
   libmagic: 'libmagic',
+  pefile: 'pefile',
+  lief: 'lief',
+  unicorn: 'unicorn',
+  keystone: 'keystone',
+  pwntools: 'pwntools',
+  firmware: 'firmware',
+  binwalk: 'binwalk',
 };
-
-// Order of tools to display (most important first)
-const TOOL_ORDER: ToolName[] = ['radare2', 'angr', 'ghidra', 'capstone', 'gef', 'frida', 'autoprofile', 'libmagic', 'dwarf'];
 
 interface ToolAttributionProps {
   quickScan?: Record<string, unknown>;
@@ -112,7 +54,7 @@ const ToolAttribution: FC<ToolAttributionProps> = ({
 
   // Detect which tools were used
   const toolsUsed = useMemo(() => {
-    const used = new Set<ToolName>();
+    const used = new Set<string>();
 
     for (const key of Object.keys(quickScan)) {
       const toolName = KEY_TO_TOOL[key.toLowerCase()];
@@ -128,7 +70,7 @@ const ToolAttribution: FC<ToolAttributionProps> = ({
   }, [quickScan, deepScan]);
 
   // Check tool availability - map from backend names to our tool names
-  const getToolAvailable = (name: ToolName): boolean | undefined => {
+  const getToolAvailable = (name: string): boolean | undefined => {
     // Try exact match from toolAvailability first (from analysis result)
     if (name in toolAvailability) {
       return toolAvailability[name];
@@ -146,7 +88,7 @@ const ToolAttribution: FC<ToolAttributionProps> = ({
   };
 
   // Get install hint for a tool
-  const getInstallHint = (name: ToolName): string | undefined => {
+  const getInstallHint = (name: string): string | undefined => {
     if (name in toolsInfo) {
       return toolsInfo[name].install_hint;
     }
@@ -160,25 +102,24 @@ const ToolAttribution: FC<ToolAttributionProps> = ({
   }
 
   // Get color for a tool
-  const getToolColor = (name: ToolName): string => {
+  const getToolColor = (name: string): string => {
     return toolColors[name as keyof typeof toolColors] || theme.palette.grey[500];
   };
 
   // Build tooltip content
-  const getTooltipContent = (name: ToolName, isUsed: boolean) => {
-    const info = TOOL_INFO[name];
+  const getTooltipContent = (name: string, isUsed: boolean) => {
     const isAvailable = getToolAvailable(name);
     const installHint = getInstallHint(name);
     
     return (
       <Box sx={{ maxWidth: 300, p: 0.5 }}>
         <Typography variant="body2" sx={{ fontWeight: 600, mb: 0.75, color: 'inherit' }}>
-          {info.displayName}
+          {getToolDisplayName(name)}
         </Typography>
         <Typography variant="caption" sx={{ display: 'block', mb: 1, lineHeight: 1.5 }}>
-          {info.description}
+          {getToolDescription(name)}
         </Typography>
-        {isUsed && info.produces && (
+        {isUsed && (
           <Box
             sx={{
               p: 1,
@@ -188,7 +129,7 @@ const ToolAttribution: FC<ToolAttributionProps> = ({
             }}
           >
             <Typography variant="caption" color="success.main" sx={{ fontWeight: 500 }}>
-              Output: {info.produces}
+              Output: {getToolProduces(name)}
             </Typography>
           </Box>
         )}
@@ -235,16 +176,15 @@ const ToolAttribution: FC<ToolAttributionProps> = ({
     return (
       <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" gap={0.5}>
         <Typography variant="caption" color="text.secondary" sx={{ mr: 0.5 }}>
-          Tools:
+          Powered by:
         </Typography>
         {TOOL_ORDER.filter((name) => toolsUsed.has(name)).map((name) => {
-          const info = TOOL_INFO[name];
           const color = getToolColor(name);
           return (
             <Tooltip key={name} title={getTooltipContent(name, true)} arrow placement="top">
               <Chip
                 size="small"
-                label={info.shortName}
+                label={getToolDisplayName(name)}
                 sx={{
                   height: 20,
                   fontSize: '0.65rem',
@@ -288,10 +228,9 @@ const ToolAttribution: FC<ToolAttributionProps> = ({
             color: 'primary.main',
           }}
         />
-      </Stack>
-      <Stack direction="row" spacing={1} flexWrap="wrap" gap={1}>
+     </Stack>
+     <Stack direction="row" spacing={1} flexWrap="wrap" gap={1}>
         {TOOL_ORDER.map((name) => {
-          const info = TOOL_INFO[name];
           const isUsed = toolsUsed.has(name);
           const isAvailable = getToolAvailable(name);
           const color = getToolColor(name);
@@ -310,7 +249,7 @@ const ToolAttribution: FC<ToolAttributionProps> = ({
             <Tooltip key={name} title={getTooltipContent(name, isUsed)} arrow placement="top">
               <Chip
                 icon={icon}
-                label={info.displayName}
+                label={getToolDisplayName(name)}
                 size="small"
                 sx={{
                   height: 26,

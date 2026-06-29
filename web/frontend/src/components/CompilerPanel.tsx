@@ -29,6 +29,14 @@ import DataObjectIcon from '@mui/icons-material/DataObject';
 import CodeEditor, { AsmViewer } from './CodeEditor';
 import ListingView from './ListingView';
 import PanelLayout, { PanelSelector, PanelConfig } from './PanelLayout';
+import type {
+  AnalysisResultPayload,
+  CommandPreview,
+  CompilerArchitectureSnapshot,
+  CompilerInfo,
+  CompilersResponse,
+  CompileResult,
+} from '../types';
 
 const API_BASE = '';
 
@@ -170,48 +178,10 @@ void _start(void) {
 }
 `;
 
-interface CompileResult {
-  success: boolean;
-  stdout: string;
-  stderr: string;
-  command: string;
-  return_code: number;
-  architecture: string;
-  compiler: string;
-  output_path?: string;
-  output_name?: string;
-  assembly?: string;
-  asm_path?: string;
-  asm_name?: string;
-}
-
-interface CompilerInfo {
-  name: string;
-  path: string;
-  version: string;
-  is_clang: boolean;
-}
-
-interface CompilersResponse {
-  compilers: Record<string, CompilerInfo[]>;
-  available_architectures: string[];
-  docker_available?: boolean;
-  docker_image_exists?: boolean;
-  error?: string;
-}
-
-interface CommandPreview {
-  command: string;
-  uses_docker: boolean;
-  compiler: string;
-  available: boolean;
-  docker_running?: boolean;
-  image_exists?: boolean;
-}
-
 interface CompilerPanelProps {
   onBinaryCompiled?: (path: string, filename: string) => void;
   onAnalyzeAndChat?: (path: string, filename: string) => void;
+  analysis?: AnalysisResultPayload | null;
 }
 
 // Tooltip descriptions for each option
@@ -234,9 +204,45 @@ Entry point must be _start (not main) with inline syscalls.`,
   outputName: 'Name of the compiled binary (without extension). Defaults to "output".',
 };
 
-export default function CompilerPanel({ onBinaryCompiled, onAnalyzeAndChat }: CompilerPanelProps) {
+const FALLBACK_ARCHITECTURES: Record<string, CompilerArchitectureSnapshot> = {
+  arm32: {
+    arch: 'arm32',
+    label: 'ARM32 (armhf)',
+    state: 'missing',
+    compilers: [],
+    checked_candidates: [],
+    operations: {},
+  },
+  arm64: {
+    arch: 'arm64',
+    label: 'ARM64 (AArch64)',
+    state: 'missing',
+    compilers: [],
+    checked_candidates: [],
+    operations: {},
+  },
+};
+
+const normalizeAnalysisArch = (analysis: AnalysisResultPayload | null): string | null => {
+  const r2Info = (analysis?.quick_scan?.radare2 as Record<string, unknown> | undefined)?.info as
+    | Record<string, unknown>
+    | undefined;
+  const bin = r2Info?.bin as Record<string, unknown> | undefined;
+  const runtime = analysis?.quick_scan?.runtime as Record<string, unknown> | undefined;
+  const arch = String(bin?.arch ?? runtime?.arch ?? '').toLowerCase();
+  const bits = Number(bin?.bits ?? runtime?.bits ?? 0);
+  if (arch.includes('arm') || arch.includes('aarch')) {
+    return bits === 64 || arch.includes('64') || arch.includes('aarch64') ? 'arm64' : 'arm32';
+  }
+  if (arch.includes('x86') || arch.includes('386')) {
+    return bits === 64 || arch.includes('64') ? 'x86_64' : 'x86';
+  }
+  return null;
+};
+
+export default function CompilerPanel({ onBinaryCompiled, onAnalyzeAndChat, analysis = null }: CompilerPanelProps) {
   const [code, setCode] = useState(HELLO_EXAMPLE);
-  const [architecture, setArchitecture] = useState<'arm32' | 'arm64'>('arm64');
+  const [architecture, setArchitecture] = useState('arm64');
   const [optimization, setOptimization] = useState('-O0');
   const [outputName, setOutputName] = useState('');
   const [freestanding, setFreestanding] = useState(true);
@@ -244,25 +250,39 @@ export default function CompilerPanel({ onBinaryCompiled, onAnalyzeAndChat }: Co
   const [result, setResult] = useState<CompileResult | null>(null);
   const [, setAvailableArchs] = useState<string[]>([]);
   const [compilerInfo, setCompilerInfo] = useState<Record<string, CompilerInfo[]>>({});
+  const [compilerSnapshot, setCompilerSnapshot] = useState<CompilersResponse | null>(null);
   const [dockerAvailable, setDockerAvailable] = useState(false);
   const [dockerImageExists, setDockerImageExists] = useState(false);
   const [commandPreview, setCommandPreview] = useState<CommandPreview | null>(null);
   const [activePanels, setActivePanels] = useState<string[]>(['source', 'asm']);
+  const [autoAppliedAnalysisArch, setAutoAppliedAnalysisArch] = useState<string | null>(null);
 
-  // Fetch available compilers on mount
-  useEffect(() => {
-    fetch(`${API_BASE}/api/compilers`)
-      .then((res) => res.json())
-      .then((data: CompilersResponse) => {
-        setAvailableArchs(data.available_architectures || []);
-        setCompilerInfo(data.compilers || {});
-        setDockerAvailable(data.docker_available ?? false);
-        setDockerImageExists(data.docker_image_exists ?? false);
-      })
-      .catch(() => {
-        setAvailableArchs([]);
-      });
+  const fetchCompilers = useCallback(async (live = false) => {
+    try {
+      const response = await fetch(`${API_BASE}/api/compilers${live ? '?live=1' : ''}`);
+      const data: CompilersResponse = await response.json();
+      setCompilerSnapshot(data);
+      setAvailableArchs(data.available_architectures || []);
+      setCompilerInfo(data.compilers || {});
+      setDockerAvailable(data.docker_available ?? data.docker?.available ?? false);
+      setDockerImageExists(data.docker_image_exists ?? data.docker?.image_exists ?? false);
+    } catch {
+      setAvailableArchs([]);
+    }
   }, []);
+
+  // Fetch available compilers on mount; the backend may refresh this in the background.
+  useEffect(() => {
+    fetchCompilers().catch(console.error);
+  }, [fetchCompilers]);
+
+  useEffect(() => {
+    if (compilerSnapshot?.state !== 'probing' && !compilerSnapshot?.meta?.probing) return undefined;
+    const timer = window.setTimeout(() => {
+      fetchCompilers(true).catch(console.error);
+    }, 600);
+    return () => window.clearTimeout(timer);
+  }, [compilerSnapshot?.state, compilerSnapshot?.meta?.probing, fetchCompilers]);
 
   // Fetch command preview when options change
   useEffect(() => {
@@ -364,10 +384,37 @@ export default function CompilerPanel({ onBinaryCompiled, onAnalyzeAndChat }: Co
     setArchitecture('arm64');
   }, []);
 
+  const architectureSnapshots = compilerSnapshot?.architectures && Object.keys(compilerSnapshot.architectures).length > 0
+    ? compilerSnapshot.architectures
+    : FALLBACK_ARCHITECTURES;
+  const architectureOptions = Object.values(architectureSnapshots);
+  const currentArchSnapshot = architectureSnapshots[architecture];
+  const analyzedArch = normalizeAnalysisArch(analysis);
+  const recommendedArch = analyzedArch && architectureSnapshots[analyzedArch] ? analyzedArch : 'arm64';
   const currentCompiler = compilerInfo[architecture]?.[0];
   const isDockerCompiler = currentCompiler?.name?.startsWith('docker:') || 
     (commandPreview?.uses_docker ?? false);
+  const compileSupport = currentArchSnapshot?.operations?.compile_c;
+  const asmSupport = currentArchSnapshot?.operations?.emit_asm;
+  const assembleSupport = currentArchSnapshot?.operations?.assemble;
+
+  useEffect(() => {
+    if (!analyzedArch || autoAppliedAnalysisArch === analyzedArch || !architectureSnapshots[analyzedArch]) return;
+    setArchitecture(analyzedArch);
+    setAutoAppliedAnalysisArch(analyzedArch);
+  }, [analyzedArch, autoAppliedAnalysisArch, architectureSnapshots]);
   
+  const supportChip = useCallback((label: string, support?: { supported: boolean; mode?: string; reason?: string; action?: string | null }) => (
+    <Tooltip describeChild title={[support?.reason, support?.action ? `Action: ${support.action}` : null].filter(Boolean).join('\n') || 'Status unknown'}>
+      <Chip
+        size="small"
+        label={`${label}: ${support?.supported ? support.mode ?? 'ready' : 'no'}`}
+        color={support?.supported ? (support.mode === 'docker' ? 'info' : 'success') : 'warning'}
+        variant="outlined"
+      />
+    </Tooltip>
+  ), []);
+
   // Docker status chip
   const dockerStatusChip = useMemo(() => {
     if (isDockerCompiler || (architecture.startsWith('arm') && !currentCompiler)) {
@@ -451,30 +498,41 @@ export default function CompilerPanel({ onBinaryCompiled, onAnalyzeAndChat }: Co
       {/* Toolbar Row 1: Settings */}
       <Paper variant="outlined" sx={{ p: 1, mb: 1, flexShrink: 0 }}>
         <Stack direction="row" spacing={1.5} alignItems="center" flexWrap="wrap" useFlexGap>
-          <Tooltip title={TOOLTIPS.architecture[architecture]} arrow placement="top">
+          <Tooltip
+            describeChild
+            title={TOOLTIPS.architecture[architecture as keyof typeof TOOLTIPS.architecture] ?? currentArchSnapshot?.label ?? architecture}
+            arrow
+            placement="top"
+          >
             <FormControl size="small" sx={{ minWidth: 160 }}>
-              <InputLabel>Architecture</InputLabel>
+              <InputLabel id="compiler-architecture-label">Architecture</InputLabel>
               <Select
+                labelId="compiler-architecture-label"
+                id="compiler-architecture"
                 value={architecture}
                 label="Architecture"
-                onChange={(e: SelectChangeEvent) =>
-                  setArchitecture(e.target.value as 'arm32' | 'arm64')
-                }
+                onChange={(e: SelectChangeEvent) => setArchitecture(e.target.value)}
               >
-                <MenuItem value="arm32">ARM32 (armhf)</MenuItem>
-                <MenuItem value="arm64">ARM64 (aarch64)</MenuItem>
+                {architectureOptions.map((option) => (
+                  <MenuItem key={option.arch} value={option.arch}>
+                    {option.label}
+                  </MenuItem>
+                ))}
               </Select>
             </FormControl>
           </Tooltip>
 
           <Tooltip 
+            describeChild
             title={TOOLTIPS.optimization[optimization as keyof typeof TOOLTIPS.optimization]} 
             arrow 
             placement="top"
           >
             <FormControl size="small" sx={{ minWidth: 130 }}>
-              <InputLabel>Optimization</InputLabel>
+              <InputLabel id="compiler-optimization-label">Optimization</InputLabel>
               <Select
+                labelId="compiler-optimization-label"
+                id="compiler-optimization"
                 value={optimization}
                 label="Optimization"
                 onChange={(e: SelectChangeEvent) => setOptimization(e.target.value)}
@@ -488,7 +546,7 @@ export default function CompilerPanel({ onBinaryCompiled, onAnalyzeAndChat }: Co
             </FormControl>
           </Tooltip>
 
-          <Tooltip title={TOOLTIPS.outputName} arrow placement="top">
+          <Tooltip describeChild title={TOOLTIPS.outputName} arrow placement="top">
             <TextField
               size="small"
               label="Output name"
@@ -499,7 +557,7 @@ export default function CompilerPanel({ onBinaryCompiled, onAnalyzeAndChat }: Co
             />
           </Tooltip>
 
-          <Tooltip title={TOOLTIPS.freestanding} arrow placement="top">
+          <Tooltip describeChild title={TOOLTIPS.freestanding} arrow placement="top">
             <FormControlLabel
               control={
                 <Switch
@@ -523,16 +581,16 @@ export default function CompilerPanel({ onBinaryCompiled, onAnalyzeAndChat }: Co
 
           {/* Example buttons */}
           <Stack direction="row" spacing={0.5}>
-            <Tooltip title="Hello World using ARM syscalls - great starting point">
+            <Tooltip describeChild title="Hello World using ARM syscalls - great starting point">
               <Chip label="Hello" size="small" onClick={() => loadExample('hello')} clickable />
             </Tooltip>
-            <Tooltip title="Recursive & iterative Fibonacci - see function calls in assembly">
+            <Tooltip describeChild title="Recursive & iterative Fibonacci - see function calls in assembly">
               <Chip label="Fib" size="small" onClick={() => loadExample('fibonacci')} clickable />
             </Tooltip>
-            <Tooltip title="Loop patterns - learn cmp, b.lt, b.ne branching">
+            <Tooltip describeChild title="Loop patterns - learn cmp, b.lt, b.ne branching">
               <Chip label="Loops" size="small" onClick={() => loadExample('loop')} clickable />
             </Tooltip>
-            <Tooltip title="Structs & pointers - see ldr/str memory operations">
+            <Tooltip describeChild title="Structs & pointers - see ldr/str memory operations">
               <Chip label="Memory" size="small" onClick={() => loadExample('memory')} clickable />
             </Tooltip>
           </Stack>
@@ -540,6 +598,26 @@ export default function CompilerPanel({ onBinaryCompiled, onAnalyzeAndChat }: Co
           {dockerStatusChip}
         </Stack>
       </Paper>
+
+      {analysis && (
+        <Alert severity={recommendedArch === architecture ? 'info' : 'warning'} sx={{ mb: 1, flexShrink: 0, py: 0.75 }}>
+          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+            <Typography variant="caption">
+              Target sniff:
+              {' '}
+              {analyzedArch ? `active analysis looks like ${architectureSnapshots[analyzedArch]?.label ?? analyzedArch}` : 'architecture was not identified'}
+            </Typography>
+            {analyzedArch && recommendedArch !== architecture && (
+              <Button size="small" variant="outlined" onClick={() => setArchitecture(recommendedArch)} sx={{ height: 24 }}>
+                Use {architectureSnapshots[recommendedArch]?.label ?? recommendedArch}
+              </Button>
+            )}
+            {supportChip('C', compileSupport)}
+            {supportChip('asm', asmSupport)}
+            {supportChip('assemble', assembleSupport)}
+          </Stack>
+        </Alert>
+      )}
 
       {/* Toolbar Row 2: Panel selector + Actions */}
       <Paper variant="outlined" sx={{ p: 1, mb: 1, flexShrink: 0 }}>
@@ -560,7 +638,7 @@ export default function CompilerPanel({ onBinaryCompiled, onAnalyzeAndChat }: Co
 
             {/* Download buttons */}
             {result?.success && result.output_name && (
-              <Tooltip title="Download compiled ELF binary">
+              <Tooltip describeChild title="Download compiled ELF binary">
                 <Button
                   size="small"
                   variant="outlined"
@@ -574,7 +652,7 @@ export default function CompilerPanel({ onBinaryCompiled, onAnalyzeAndChat }: Co
               </Tooltip>
             )}
             {result?.assembly && (
-              <Tooltip title="Download assembly source">
+              <Tooltip describeChild title="Download assembly source">
                 <Button
                   size="small"
                   variant="outlined"
@@ -588,7 +666,7 @@ export default function CompilerPanel({ onBinaryCompiled, onAnalyzeAndChat }: Co
               </Tooltip>
             )}
             {result?.success && result.output_path && onBinaryCompiled && (
-              <Tooltip title="Open in analyzer">
+              <Tooltip describeChild title="Open in analyzer">
                 <Button
                   size="small"
                   variant="outlined"
@@ -601,7 +679,7 @@ export default function CompilerPanel({ onBinaryCompiled, onAnalyzeAndChat }: Co
               </Tooltip>
             )}
             {result?.success && result.output_path && onAnalyzeAndChat && (
-              <Tooltip title="Analyze and chat with Claude">
+              <Tooltip describeChild title="Analyze and chat with Claude">
                 <Button
                   size="small"
                   variant="contained"
@@ -616,6 +694,7 @@ export default function CompilerPanel({ onBinaryCompiled, onAnalyzeAndChat }: Co
             )}
 
             <Tooltip 
+              describeChild
               title={
                 commandPreview ? (
                   <Box sx={{ maxWidth: 400 }}>

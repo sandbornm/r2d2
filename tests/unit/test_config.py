@@ -259,6 +259,33 @@ command = "custom-angr-mcp"
 
             assert config.ghidra.install_dir == Path(ghidra_dir)
 
+    def test_load_config_honors_show_compiler_env_bool(self):
+        """Test show_compiler accepts compact boolean environment values."""
+        with patch.dict(os.environ, {"R2D2_SHOW_COMPILER": "1"}, clear=True):
+            config = load_config()
+
+            assert config.ui.show_compiler is True
+
+    def test_load_config_honors_lowercase_show_compiler_env(self):
+        """Test shell-friendly lowercase show_compiler env aliases are honored."""
+        with patch.dict(os.environ, {"r2d2_show_compiler": "1"}, clear=True):
+            config = load_config()
+
+            assert config.ui.show_compiler is True
+
+    def test_load_config_env_can_disable_show_compiler(self, tmp_path):
+        """Test false-like environment values override config files."""
+        config_path = tmp_path / "show_compiler.toml"
+        config_path.write_text("""
+[ui]
+show_compiler = true
+""")
+
+        with patch.dict(os.environ, {"R2D2_SHOW_COMPILER": "0"}, clear=True):
+            config = load_config(config_path)
+
+            assert config.ui.show_compiler is False
+
     def test_load_config_without_custom_config(self):
         """Test load_config works without custom config file."""
         # When R2D2_CONFIG env var is not set and no config_path provided,

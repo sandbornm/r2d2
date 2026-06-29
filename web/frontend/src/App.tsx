@@ -30,25 +30,23 @@ import {
 import {
   DragEvent,
   FormEvent,
+  Suspense,
   SyntheticEvent,
+  lazy,
   useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
 } from 'react';
-import ChatPanel from './components/ChatPanel';
-import CompilerPanel from './components/CompilerPanel';
-import GraphExplorer from './components/GraphExplorer';
 import type { CFGContext } from './components/ResultViewer';
-import ProgressLog from './components/ProgressLog';
 import ResultViewer from './components/ResultViewer';
 import SessionList from './components/SessionList';
-import SettingsDrawer, { AnalysisSettings } from './components/SettingsDrawer';
+import type { AnalysisSettings } from './components/SettingsDrawer';
 import TrajectoryPanel from './components/TrajectoryPanel';
 import { ActivityProvider, useActivity } from './contexts/ActivityContext';
 import { TrajectoryProvider, useTrajectory, useTrajectoryActions } from './trajectory';
-import { useThemeMode } from './main';
+import { useThemeMode } from './themeMode';
 import type {
   AnalysisPlanPayload,
   AnalysisResultPayload,
@@ -66,6 +64,12 @@ import type {
   ToolStatusSummary,
 } from './types';
 import { CacheKeys, getFromCache, setInCache } from './utils/cache';
+
+const ChatPanel = lazy(() => import('./components/ChatPanel'));
+const CompilerPanel = lazy(() => import('./components/CompilerPanel'));
+const GraphExplorer = lazy(() => import('./components/GraphExplorer'));
+const ProgressLog = lazy(() => import('./components/ProgressLog'));
+const SettingsDrawer = lazy(() => import('./components/SettingsDrawer'));
 
 const EVENT_NAMES: ProgressEventName[] = [
   'analysis_started',
@@ -117,6 +121,15 @@ const formatBytes = (bytes: number): string => {
   if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${bytes} B`;
 };
+
+const PanelFallback = () => (
+  <Box sx={{ minHeight: 240, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 1 }}>
+    <CircularProgress size={18} />
+    <Typography variant="caption" color="text.secondary">
+      Loading panel...
+    </Typography>
+  </Box>
+);
 
 const AppContent = () => {
   const { mode, toggleTheme } = useThemeMode();
@@ -994,14 +1007,16 @@ Explain why this node matters for behavior triage, dynamic-analysis targeting, o
         </Tooltip>
       </Box>
 
-      <SettingsDrawer
-        open={settingsOpen}
-        onClose={() => setSettingsOpen(false)}
-        isDarkMode={isDark}
-        onToggleTheme={toggleTheme}
-        settings={settings}
-        onSettingsChange={setSettings}
-      />
+      <Suspense fallback={null}>
+        <SettingsDrawer
+          open={settingsOpen}
+          onClose={() => setSettingsOpen(false)}
+          isDarkMode={isDark}
+          onToggleTheme={toggleTheme}
+          settings={settings}
+          onSettingsChange={setSettings}
+        />
+      </Suspense>
 
       {/* Main */}
       <Box sx={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
@@ -1084,7 +1099,9 @@ Explain why this node matters for behavior triage, dynamic-analysis targeting, o
 
               <Box sx={{ flex: 1, overflow: 'auto', p: 2 }}>
                 {showCompiler && activeTab === 'compiler' ? (
-                  <CompilerPanel onBinaryCompiled={handleBinaryCompiled} onAnalyzeAndChat={handleAnalyzeAndChat} />
+                  <Suspense fallback={<PanelFallback />}>
+                    <CompilerPanel onBinaryCompiled={handleBinaryCompiled} onAnalyzeAndChat={handleAnalyzeAndChat} />
+                  </Suspense>
                 ) : (
                   /* Drop zone */
                   <Box
@@ -1284,29 +1301,43 @@ Explain why this node matters for behavior triage, dynamic-analysis targeting, o
                   </>
                 )}
                 {activeTab === 'map' && (
-                  <GraphExplorer
-                    sessionId={activeSessionId}
-                    analysisGraph={result?.analysis_graph ?? null}
-                    onAskAboutNode={handleAskAboutGraphNode}
-                    onNavigateToAddress={handleNavigateToAddress}
-                  />
+                  <Suspense fallback={<PanelFallback />}>
+                    <GraphExplorer
+                      sessionId={activeSessionId}
+                      analysisGraph={result?.analysis_graph ?? null}
+                      onAskAboutNode={handleAskAboutGraphNode}
+                      onNavigateToAddress={handleNavigateToAddress}
+                    />
+                  </Suspense>
                 )}
                 {activeTab === 'chat' && (
-                  <ChatPanel
-                    session={activeSession}
-                    messages={messages}
-                    onSend={handleSendMessage}
-                    sending={sendingMessage}
-                    error={chatError}
-                    disassembly={disassemblyContext}
-                    onNavigateToAddress={handleNavigateToAddress}
-                    trajectoryContext={trajectory.getLLMContext()}
-                  />
+                  <Suspense fallback={<PanelFallback />}>
+                    <ChatPanel
+                      session={activeSession}
+                      messages={messages}
+                      onSend={handleSendMessage}
+                      sending={sendingMessage}
+                      error={chatError}
+                      disassembly={disassemblyContext}
+                      onNavigateToAddress={handleNavigateToAddress}
+                      trajectoryContext={trajectory.getLLMContext()}
+                    />
+                  </Suspense>
                 )}
                 {showCompiler && activeTab === 'compiler' && (
-                  <CompilerPanel onBinaryCompiled={handleBinaryCompiled} onAnalyzeAndChat={handleAnalyzeAndChat} />
+                  <Suspense fallback={<PanelFallback />}>
+                    <CompilerPanel
+                      onBinaryCompiled={handleBinaryCompiled}
+                      onAnalyzeAndChat={handleAnalyzeAndChat}
+                      analysis={result}
+                    />
+                  </Suspense>
                 )}
-                {activeTab === 'logs' && <ProgressLog entries={events} />}
+                {activeTab === 'logs' && (
+                  <Suspense fallback={<PanelFallback />}>
+                    <ProgressLog entries={events} />
+                  </Suspense>
+                )}
               </Box>
             </>
           )}

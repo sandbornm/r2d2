@@ -590,4 +590,6 @@ export const ChatPanel: FC<ChatPanelProps> = memo(({
   );
 });
 
+ChatPanel.displayName = 'ChatPanel';
+
 export default ChatPanel;

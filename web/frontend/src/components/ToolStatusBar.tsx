@@ -6,25 +6,7 @@ import { alpha, Box, Chip, CircularProgress, IconButton, Stack, Tooltip, Typogra
 import { FC, useCallback, useEffect, useState } from 'react';
 import type { ToolsStartResponse, ToolsStatusResponse, ToolExecutionStatus } from '../types';
 import { toolColors } from '../theme';
-
-// Tool display configuration
-const TOOL_ORDER = ['firmware', 'binwalk', 'autoprofile', 'ollama', 'ghidra_mcp', 'ghidra_gdb', 'angr_mcp', 'radare2', 'angr', 'ghidra', 'capstone', 'dwarf', 'gdb'] as const;
-
-const TOOL_DISPLAY_NAMES: Record<string, string> = {
-  firmware: 'Firmware',
-  binwalk: 'binwalk',
-  autoprofile: 'Profile',
-  ollama: 'Ollama',
-  ghidra_mcp: 'GhidraMCP',
-  ghidra_gdb: 'GDB MCP',
-  angr_mcp: 'angr MCP',
-  ghidra: 'Ghidra',
-  radare2: 'radare2',
-  angr: 'angr',
-  capstone: 'Capstone',
-  dwarf: 'DWARF',
-  gdb: 'GDB',
-};
+import { getToolCatalogEntry, getToolDisplayName, sortToolEntries, TOOL_ORDER } from '../toolCatalog';
 
 interface ToolStatusBarProps {
   compact?: boolean;
@@ -97,7 +79,20 @@ const ToolStatusBar: FC<ToolStatusBarProps> = ({ compact = false, refreshInterva
   };
 
   const getToolTooltip = (name: string, toolStatus: ToolExecutionStatus) => {
-    const lines = [toolStatus.description];
+    const catalog = getToolCatalogEntry(name);
+    const lines = [toolStatus.description || catalog?.description];
+    if (catalog) {
+      lines.push(`Category: ${catalog.category}`);
+      lines.push(`Best for: ${catalog.produces}`);
+    }
+    if (toolStatus.scorecard) {
+      lines.push(
+        `Score: ${toolStatus.scorecard.quality} (${toolStatus.scorecard.score}/100, ${toolStatus.scorecard.speed ?? 'unknown'} speed)`,
+      );
+      if (toolStatus.scorecard.best_for?.length) {
+        lines.push(`Use for: ${toolStatus.scorecard.best_for.join(', ')}`);
+      }
+    }
     if (name === 'ghidra') {
       if (toolStatus.bridge_connected) {
         lines.push('Bridge: Connected');
@@ -121,7 +116,7 @@ const ToolStatusBar: FC<ToolStatusBarProps> = ({ compact = false, refreshInterva
     }
     if (toolStatus.install_hint) lines.push(toolStatus.install_hint);
     if (toolStatus.path) lines.push(`Path: ${toolStatus.path}`);
-    return lines.join('\n');
+    return lines.filter(Boolean).join('\n');
   };
 
   const canLaunchTool = (name: string, toolStatus: ToolExecutionStatus) => {
@@ -148,15 +143,20 @@ const ToolStatusBar: FC<ToolStatusBarProps> = ({ compact = false, refreshInterva
         available_count: data.available_count,
         total_count: data.total_count,
         meta: data.meta,
+        scorecard: data.scorecard,
+        score_summary: data.score_summary,
       });
       const result = data.launch[name];
-      setLaunchMessage(`${TOOL_DISPLAY_NAMES[name] || name}: ${result?.status ?? 'started'}`);
+      setLaunchMessage(`${getToolDisplayName(name)}: ${result?.status ?? 'started'}`);
     } catch (e) {
-      setLaunchMessage(`${TOOL_DISPLAY_NAMES[name] || name}: ${e instanceof Error ? e.message : 'launch failed'}`);
+      setLaunchMessage(`${getToolDisplayName(name)}: ${e instanceof Error ? e.message : 'launch failed'}`);
     } finally {
       setLaunching((prev) => ({ ...prev, [name]: false }));
     }
   };
+
+  const orderedToolEntries = sortToolEntries(Object.entries(status.tools));
+  const orderedToolNames = orderedToolEntries.map(([name]) => name);
 
   if (compact) {
     return (
@@ -164,14 +164,14 @@ const ToolStatusBar: FC<ToolStatusBarProps> = ({ compact = false, refreshInterva
         <Typography variant="caption" color="text.secondary">
           Tools: {status.available_count} / {status.total_count}
         </Typography>
-        {TOOL_ORDER.filter((name) => status.tools[name]?.available).map((name) => {
+        {orderedToolNames.filter((name) => TOOL_ORDER.includes(name) && status.tools[name]?.available).map((name) => {
           const toolStatus = status.tools[name];
           const color = getToolColor(name);
           return (
             <Tooltip key={name} title={getToolTooltip(name, toolStatus)} arrow>
               <Chip
                 size="small"
-                label={TOOL_DISPLAY_NAMES[name] || name}
+                label={getToolDisplayName(name)}
                 icon={<CheckCircleIcon sx={{ fontSize: 12 }} />}
                 sx={{
                   height: 20,
@@ -224,10 +224,7 @@ const ToolStatusBar: FC<ToolStatusBarProps> = ({ compact = false, refreshInterva
         </Stack>
       </Stack>
       <Stack direction="row" spacing={1} flexWrap="wrap" gap={0.75}>
-        {TOOL_ORDER.map((name) => {
-          const toolStatus = status.tools[name];
-          if (!toolStatus) return null;
-
+        {orderedToolEntries.map(([name, toolStatus]) => {
           const color = getToolColor(name);
           const isAvailable = toolStatus.available;
           const isBridgeConnected = name === 'ghidra' && toolStatus.bridge_connected;
@@ -238,7 +235,7 @@ const ToolStatusBar: FC<ToolStatusBarProps> = ({ compact = false, refreshInterva
               <Tooltip title={getToolTooltip(name, toolStatus)} arrow>
                 <Chip
                   size="small"
-                  label={TOOL_DISPLAY_NAMES[name] || name}
+                  label={getToolDisplayName(name)}
                   icon={
                     isAvailable ? (
                       isBridgeConnected ? (
@@ -265,11 +262,11 @@ const ToolStatusBar: FC<ToolStatusBarProps> = ({ compact = false, refreshInterva
                 />
               </Tooltip>
               {canLaunch && (
-                <Tooltip title={`Start ${TOOL_DISPLAY_NAMES[name] || name}`}>
+                <Tooltip title={`Start ${getToolDisplayName(name)}`}>
                   <span>
                     <IconButton
                       size="small"
-                      aria-label={`Start ${TOOL_DISPLAY_NAMES[name] || name}`}
+                      aria-label={`Start ${getToolDisplayName(name)}`}
                       disableRipple
                       disabled={launching[name]}
                       onClick={() => startTool(name)}

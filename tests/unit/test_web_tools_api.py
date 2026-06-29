@@ -186,6 +186,13 @@ class TestToolsStatusEndpoint:
         assert 'angr' in tools
         assert 'binwalk' in tools
         assert 'gdb' in tools
+        assert 'pyelftools' in tools
+        assert 'pefile' in tools
+        assert 'lief' in tools
+        assert 'unicorn' in tools
+        assert 'keystone' in tools
+        assert 'pwntools' in tools
+        assert 'rizin' in tools
 
     def test_status_tool_has_required_fields(self, client):
         """Each tool status has required fields."""
@@ -221,6 +228,81 @@ class TestToolsStatusEndpoint:
         assert data['total_count'] >= data['available_count']
         assert 'radare2' in data['scorecard']
         assert {'state', 'quality', 'score', 'speed'} <= set(data['scorecard']['radare2'])
+
+
+class TestCompilerCapabilitiesEndpoint:
+    """Test GET /api/compilers endpoint."""
+
+    def test_compilers_returns_backward_compatible_fields(self, client):
+        """Compiler capabilities preserve the existing compilers contract."""
+        snapshot = {
+            'state': 'ready',
+            'generated_at': '2026-01-01T00:00:00+00:00',
+            'compilers': {'arm32': [], 'arm64': [], 'x86': [], 'x86_64': []},
+            'available_architectures': ['arm64'],
+            'docker_available': True,
+            'docker_image_exists': True,
+            'architectures': {
+                arch: {
+                    'arch': arch,
+                    'label': arch,
+                    'state': 'ready' if arch == 'arm64' else 'missing',
+                    'compilers': [],
+                    'checked_candidates': [],
+                    'operations': {
+                        'compile_c': {'supported': arch == 'arm64', 'mode': 'docker', 'reason': 'test'},
+                        'assemble': {'supported': False, 'mode': 'unavailable', 'reason': 'test'},
+                    },
+                }
+                for arch in ('arm32', 'arm64', 'x86', 'x86_64')
+            },
+            'install_hints': [],
+            'errors': [],
+        }
+        with patch('r2d2.compilation.sniff_compiler_capabilities', return_value=snapshot):
+            response = client.get('/api/compilers?live=1')
+        assert response.status_code == 200
+        data = response.get_json()
+
+        assert 'state' in data
+        assert 'compilers' in data
+        assert 'available_architectures' in data
+        assert 'docker_available' in data
+        assert 'docker_image_exists' in data
+        assert 'architectures' in data
+        assert 'meta' in data
+        for arch in ('arm32', 'arm64', 'x86', 'x86_64'):
+            assert arch in data['compilers']
+            assert arch in data['architectures']
+            assert 'operations' in data['architectures'][arch]
+            assert 'compile_c' in data['architectures'][arch]['operations']
+            assert 'assemble' in data['architectures'][arch]['operations']
+
+    def test_compile_preview_includes_support_diagnostics(self, client):
+        """Compile preview includes command plus actionable support diagnostics."""
+        preview = {
+            'command': 'docker run r2d2-compiler:latest aarch64-linux-gnu-gcc -o sample source.c',
+            'uses_docker': True,
+            'compiler': 'docker:aarch64-linux-gnu-gcc',
+            'available': True,
+            'reason': 'test',
+            'requirements': ['r2d2-compiler:latest'],
+        }
+        with patch('r2d2.compilation.preview_compile_with_capabilities', return_value=preview):
+            response = client.post('/api/compilers/preview', json={
+                'architecture': 'arm64',
+                'optimization': '-O0',
+                'freestanding': True,
+                'output_name': 'sample',
+            })
+        assert response.status_code == 200
+        data = response.get_json()
+
+        assert 'command' in data
+        assert 'compiler' in data
+        assert 'available' in data
+        assert 'reason' in data
+        assert 'requirements' in data
 
 
 class TestToolsStartEndpoint:

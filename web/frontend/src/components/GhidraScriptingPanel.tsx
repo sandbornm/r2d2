@@ -19,7 +19,6 @@ import {
   Button,
   Chip,
   CircularProgress,
-  Divider,
   FormControl,
   IconButton,
   InputLabel,
@@ -575,5 +574,7 @@ const GhidraScriptingPanel: FC<GhidraScriptingPanelProps> = memo(({
     </Box>
   );
 });
+
+GhidraScriptingPanel.displayName = 'GhidraScriptingPanel';
 
 export default GhidraScriptingPanel;

@@ -144,4 +144,6 @@ export const SessionList: FC<SessionListProps> = memo(({
   );
 });
 
+SessionList.displayName = 'SessionList';
+
 export default SessionList;

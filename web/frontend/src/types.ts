@@ -351,9 +351,64 @@ export interface CompilerInfo {
   is_clang: boolean;
 }
 
+export interface CompilerOperationSupport {
+  supported: boolean;
+  mode: 'native' | 'docker' | 'unavailable' | string;
+  compiler?: string | null;
+  reason: string;
+  action?: string | null;
+  requirements?: string[];
+}
+
+export interface CompilerCandidate {
+  name: string;
+  path?: string | null;
+  available: boolean;
+}
+
+export interface CompilerArchitectureSnapshot {
+  arch: string;
+  label: string;
+  state: 'ready' | 'degraded' | 'missing' | 'probing' | 'error' | string;
+  compilers: CompilerInfo[];
+  checked_candidates: CompilerCandidate[];
+  operations: Record<string, CompilerOperationSupport>;
+  recommended_arch?: string;
+}
+
 export interface CompilersResponse {
+  state?: 'ready' | 'degraded' | 'missing' | 'probing' | 'error' | string;
+  generated_at?: string;
   compilers: Record<string, CompilerInfo[]>;
   available_architectures: string[];
+  docker_available?: boolean;
+  docker_image_exists?: boolean;
+  docker?: {
+    available: boolean;
+    image: string;
+    image_exists: boolean;
+    action?: string | null;
+  };
+  helpers?: Record<string, Record<string, unknown>>;
+  architectures?: Record<string, CompilerArchitectureSnapshot>;
+  install_hints?: string[];
+  errors?: string[];
+  meta?: ToolsStatusMeta;
+  error?: string;
+}
+
+export interface CommandPreview {
+  command: string;
+  uses_docker: boolean;
+  compiler: string;
+  available: boolean;
+  docker_running?: boolean;
+  image_exists?: boolean;
+  mode?: string;
+  reason?: string;
+  action?: string | null;
+  requirements?: string[];
+  capability_state?: string;
   error?: string;
 }
 
@@ -703,6 +758,7 @@ export interface ToolsStatusMeta {
   cached?: boolean;
   live?: boolean;
   generated_at?: string | null;
+  probing?: boolean;
 }
 
 export interface ToolsStatusResponse {

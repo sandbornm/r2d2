@@ -6,6 +6,7 @@ const mockFetch = vi.fn();
 global.fetch = mockFetch;
 
 const settings: AnalysisSettings = {
+  analysisProfile: 'standard',
   quickScanOnly: false,
   enableAngr: true,
   enableGhidra: true,
@@ -70,7 +71,7 @@ describe('SettingsDrawer', () => {
 
     renderDrawer();
 
-    fireEvent.click(await screen.findByRole('button', { name: /start angr_mcp/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /start angr mcp/i }));
 
     await waitFor(() => {
       expect(mockFetch).toHaveBeenCalledWith('/api/tools/start', {
@@ -78,7 +79,7 @@ describe('SettingsDrawer', () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ services: ['angr_mcp'] }),
       });
-      expect(screen.getByText(/angr_mcp: started/i)).toBeInTheDocument();
+      expect(screen.getByText(/angr MCP: started/i)).toBeInTheDocument();
     });
   });
 });

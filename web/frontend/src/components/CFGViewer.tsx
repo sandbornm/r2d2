@@ -797,7 +797,6 @@ const CFGViewer: FC<CFGViewerProps> = ({
   const [viewMode, setViewMode] = useState<'graph' | 'blocks'>('graph');
   const [selectedGraphNode, setSelectedGraphNode] = useState<string | null>(null);
   const [isMaximized, setIsMaximized] = useState(false);
-  const lastPanLog = useRef<number>(0);
 
   // Auto-name functions using LLM
   const handleAutoNameFunctions = useCallback(async () => {

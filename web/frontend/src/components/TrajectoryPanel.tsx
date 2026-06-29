@@ -311,7 +311,7 @@ const TrajectoryPanel: FC<TrajectoryPanelProps> = memo(({ snapshot, compact = fa
                     borderLeft: `2px solid ${alpha(theme.palette.primary.main, 0.3)}`,
                   }}
                 >
-                  "{q.q}"
+                  &quot;{q.q}&quot;
                 </Typography>
               ))}
             </Stack>
@@ -354,5 +354,7 @@ const TrajectoryPanel: FC<TrajectoryPanelProps> = memo(({ snapshot, compact = fa
     </Paper>
   );
 });
+
+TrajectoryPanel.displayName = 'TrajectoryPanel';
 
 export default TrajectoryPanel;

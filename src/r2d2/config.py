@@ -18,6 +18,26 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent.parent / "config" / "default_config.toml"
+TRUE_ENV_VALUES = {"1", "true", "yes", "on"}
+FALSE_ENV_VALUES = {"0", "false", "no", "off"}
+
+
+def _get_env(*names: str) -> str | None:
+    """Return the first configured environment variable from a small alias set."""
+    for name in names:
+        value = os.getenv(name)
+        if value is not None:
+            return value
+    return None
+
+
+def _parse_env_bool(value: str) -> bool | None:
+    normalized = value.strip().lower()
+    if normalized in TRUE_ENV_VALUES:
+        return True
+    if normalized in FALSE_ENV_VALUES:
+        return False
+    return None
 
 
 class LLMSettings(BaseModel):
@@ -250,8 +270,10 @@ def load_config(config_path: Path | None = None) -> AppConfig:
         config.raw.setdefault("llm", {})
         config.raw["llm"]["api_key_present"] = True
 
-    env_show_compiler = os.getenv("R2D2_SHOW_COMPILER")
+    env_show_compiler = _get_env("R2D2_SHOW_COMPILER", "r2d2_show_compiler")
     if env_show_compiler is not None:
-        config.ui.show_compiler = env_show_compiler.strip().lower() in {"1", "true", "yes", "on"}
+        parsed_show_compiler = _parse_env_bool(env_show_compiler)
+        if parsed_show_compiler is not None:
+            config.ui.show_compiler = parsed_show_compiler
 
     return config

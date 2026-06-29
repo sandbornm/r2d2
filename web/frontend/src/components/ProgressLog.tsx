@@ -250,16 +250,15 @@ const LogEntry: FC<{ entry: ProgressEventEntry; isLatest: boolean }> = memo(({ e
   );
 });
 
+LogEntry.displayName = 'LogEntry';
+
 export const ProgressLog: FC<ProgressLogProps> = memo(({ entries }) => {
   const theme = useTheme();
 
   // Memoize isRunning check
-  const { lastEntry, isRunning } = useMemo(() => {
+  const isRunning = useMemo(() => {
     const last = entries[entries.length - 1];
-    return {
-      lastEntry: last,
-      isRunning: last ? !['job_completed', 'job_failed'].includes(last.event) : false,
-    };
+    return last ? !['job_completed', 'job_failed'].includes(last.event) : false;
   }, [entries]);
 
   if (!entries.length) {
@@ -316,5 +315,7 @@ export const ProgressLog: FC<ProgressLogProps> = memo(({ entries }) => {
     </Stack>
   );
 });
+
+ProgressLog.displayName = 'ProgressLog';
 
 export default ProgressLog;

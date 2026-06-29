@@ -200,6 +200,13 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
         "live": False,
     }
     tools_status_lock = threading.Lock()
+    compiler_status_cache: dict[str, Any] = {
+        "payload": None,
+        "generated_at": None,
+        "expires_at": 0.0,
+        "probing": False,
+    }
+    compiler_status_lock = threading.Lock()
     analysis_result_cache: dict[str, AnalysisResult] = {}
     analysis_cache_lock = threading.Lock()
     llm_context_cache: dict[str, dict[str, Any]] = {}
@@ -236,6 +243,93 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
             "cached": False,
             "live": live,
             "generated_at": generated_at,
+        }
+
+    def _compiler_probing_snapshot() -> dict[str, Any]:
+        return {
+            "state": "probing",
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "compilers": {"arm32": [], "arm64": [], "x86": [], "x86_64": []},
+            "available_architectures": [],
+            "docker_available": False,
+            "docker_image_exists": False,
+            "docker": {
+                "available": False,
+                "image": "r2d2-compiler:latest",
+                "image_exists": False,
+                "action": "Checking compiler and Docker availability",
+            },
+            "helpers": {},
+            "architectures": {},
+            "install_hints": ["Checking compiler support in the background"],
+            "errors": [],
+        }
+
+    def _refresh_compiler_status() -> tuple[dict[str, Any], dict[str, Any]]:
+        try:
+            from ..compilation import sniff_compiler_capabilities
+
+            payload = sniff_compiler_capabilities()
+        except Exception as exc:  # pragma: no cover - defensive UI fallback
+            payload = _compiler_probing_snapshot()
+            payload.update({
+                "state": "error",
+                "errors": [str(exc)],
+                "install_hints": ["Compiler support probe failed; check server logs"],
+            })
+
+        generated_at = str(payload.get("generated_at") or datetime.now(timezone.utc).isoformat())
+        with compiler_status_lock:
+            compiler_status_cache.update({
+                "payload": payload,
+                "generated_at": generated_at,
+                "expires_at": time.monotonic() + 30.0,
+                "probing": False,
+            })
+        return payload, {"cached": False, "live": True, "generated_at": generated_at, "probing": False}
+
+    def _start_compiler_status_refresh() -> None:
+        with compiler_status_lock:
+            if compiler_status_cache.get("probing"):
+                return
+            compiler_status_cache["probing"] = True
+
+        def _worker() -> None:
+            _refresh_compiler_status()
+
+        thread = threading.Thread(target=_worker, name="r2d2-compiler-sniffer", daemon=True)
+        thread.start()
+
+    def _get_compiler_status_cached(*, live: bool = False) -> tuple[dict[str, Any], dict[str, Any]]:
+        if live:
+            return _refresh_compiler_status()
+
+        now = time.monotonic()
+        with compiler_status_lock:
+            cached_payload = compiler_status_cache.get("payload")
+            expires_at = float(compiler_status_cache.get("expires_at") or 0.0)
+            probing = bool(compiler_status_cache.get("probing"))
+            if cached_payload is not None and now < expires_at:
+                return cached_payload, {
+                    "cached": True,
+                    "live": False,
+                    "generated_at": compiler_status_cache.get("generated_at"),
+                    "probing": probing,
+                }
+
+        _start_compiler_status_refresh()
+        if cached_payload is not None:
+            return cached_payload, {
+                "cached": True,
+                "live": False,
+                "generated_at": compiler_status_cache.get("generated_at"),
+                "probing": True,
+            }
+        return _compiler_probing_snapshot(), {
+            "cached": False,
+            "live": False,
+            "generated_at": None,
+            "probing": True,
         }
 
     def _get_llm_context_cached(
@@ -367,6 +461,15 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
             "details": f"command={'yes' if r2_path else 'no'}; r2pipe={'yes' if r2pipe_available else 'no'}",
         }
 
+        rizin_path = which_any("rizin", "rz-bin")
+        tools["rizin"] = {
+            "available": rizin_path is not None,
+            "command_available": rizin_path is not None,
+            "path": rizin_path,
+            "install_hint": "Optional: brew install rizin",
+            "description": "radare-family disassembly alternative",
+        }
+
         # Ollama local model runtime
         ollama_cli_available = shutil.which("ollama") is not None
         ollama_service_available = False
@@ -417,6 +520,22 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
             "install_hint": "uv sync --extra analyzers",
             "description": "Instruction-level disassembly",
         }
+
+        unicorn_available = check_import("unicorn")
+        tools["unicorn"] = {
+            "available": unicorn_available,
+            "python_package_available": unicorn_available,
+            "install_hint": "uv sync --extra analyzers",
+            "description": "CPU emulation for isolated dynamic snippets",
+        }
+
+        keystone_available = check_import("keystone")
+        tools["keystone"] = {
+            "available": keystone_available,
+            "python_package_available": keystone_available,
+            "install_hint": "uv add keystone-engine",
+            "description": "Assembler engine for patches and shellcode prototypes",
+        }
         
         # python-magic
         magic_available = check_import("magic")
@@ -438,11 +557,41 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
         
         # pyelftools (for DWARF)
         dwarf_available = check_import("elftools")
+        tools["pyelftools"] = {
+            "available": dwarf_available,
+            "python_package_available": dwarf_available,
+            "install_hint": "uv sync",
+            "description": "ELF and DWARF metadata parsing",
+        }
         tools["dwarf"] = {
             "available": dwarf_available,
             "python_package_available": dwarf_available,
             "install_hint": "uv sync --extra analyzers",
             "description": "Debug symbol parsing",
+        }
+
+        pefile_available = check_import("pefile")
+        tools["pefile"] = {
+            "available": pefile_available,
+            "python_package_available": pefile_available,
+            "install_hint": "uv sync",
+            "description": "Windows PE metadata, imports, resources, and sections",
+        }
+
+        lief_available = check_import("lief")
+        tools["lief"] = {
+            "available": lief_available,
+            "python_package_available": lief_available,
+            "install_hint": "uv add lief",
+            "description": "ELF/PE/Mach-O parser and patching library",
+        }
+
+        pwntools_available = check_import("pwn")
+        tools["pwntools"] = {
+            "available": pwntools_available,
+            "python_package_available": pwntools_available,
+            "install_hint": "uv add pwntools",
+            "description": "Exploit development helpers for ELF, ROP, packing, and process I/O",
         }
         
         # GEF/GDB (requires Docker image)
@@ -1362,45 +1511,16 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
 
     @app.get("/api/compilers")
     def list_compilers() -> Any:
-        """List available cross-compilers."""
-        try:
-            from ..compilation.compiler import detect_compilers, _is_docker_available, _docker_image_exists, DOCKER_COMPILER_IMAGE
-            compilers = detect_compilers()
-            
-            docker_available = _is_docker_available()
-            docker_image_exists = docker_available and _docker_image_exists(DOCKER_COMPILER_IMAGE)
-            
-            result = {}
-            for arch, compiler_list in compilers.items():
-                result[arch] = [
-                    {
-                        "name": c.name,
-                        "path": str(c.path),
-                        "version": c.version,
-                        "is_clang": c.is_clang,
-                    }
-                    for c in compiler_list
-                ]
-            return jsonify({
-                "compilers": result,
-                "available_architectures": [a for a, c in compilers.items() if c],
-                "docker_available": docker_available,
-                "docker_image_exists": docker_image_exists,
-            })
-        except ImportError:
-            return jsonify({
-                "compilers": {},
-                "available_architectures": [],
-                "docker_available": False,
-                "docker_image_exists": False,
-                "error": "Compilation module not available",
-            })
+        """List compiler capabilities and background probe status."""
+        snapshot, meta = _get_compiler_status_cached(live=_live_status_requested())
+        return jsonify(_serialize({**snapshot, "meta": meta}))
 
     @app.post("/api/compilers/preview")
     def preview_compile_command() -> Any:
         """Preview the compilation command that would run."""
         try:
-            from ..compilation.compiler import get_compile_command_preview
+            from ..compilation import preview_compile_with_capabilities
+
             body = request.get_json(silent=True) or {}
             
             architecture = body.get("architecture", "arm64")
@@ -1408,7 +1528,7 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
             freestanding = body.get("freestanding", False)
             output_name = body.get("output_name", "output")
             
-            preview = get_compile_command_preview(
+            preview = preview_compile_with_capabilities(
                 architecture=architecture,
                 optimization=optimization,
                 freestanding=freestanding,
@@ -2605,9 +2725,21 @@ def _summarize_scorecard(scorecard: dict[str, Any]) -> dict[str, Any]:
 
 
 def _tool_speed_tier(name: str) -> str:
-    if name in {"firmware", "binwalk", "autoprofile", "libmagic", "capstone", "dwarf"}:
+    if name in {
+        "firmware",
+        "binwalk",
+        "autoprofile",
+        "libmagic",
+        "capstone",
+        "dwarf",
+        "pyelftools",
+        "pefile",
+        "lief",
+        "keystone",
+        "rizin",
+    }:
         return "fast"
-    if name in {"radare2", "angr_mcp", "ghidra_mcp"}:
+    if name in {"radare2", "angr_mcp", "ghidra_mcp", "unicorn", "pwntools"}:
         return "medium"
     if name in {"angr", "ghidra", "ghidra_gdb", "gef", "frida", "gdb"}:
         return "slow"
@@ -2623,8 +2755,15 @@ def _tool_best_for(name: str) -> list[str]:
         "autoprofile": ["security profile", "interesting strings", "risk hints"],
         "libmagic": ["file identification"],
         "radare2": ["disassembly", "functions", "imports", "strings"],
+        "rizin": ["disassembly", "metadata", "strings"],
         "capstone": ["instruction decoding"],
+        "pyelftools": ["ELF metadata", "DWARF parsing"],
         "dwarf": ["debug symbols", "source mappings"],
+        "pefile": ["PE imports", "resources", "headers"],
+        "lief": ["ELF/PE/Mach-O parsing", "binary patching"],
+        "unicorn": ["emulation", "instruction experiments"],
+        "keystone": ["assembly", "patch prototyping"],
+        "pwntools": ["ELF helpers", "ROP", "exploit prototyping"],
         "angr": ["CFG", "symbolic execution"],
         "angr_mcp": ["CFG service", "symbolic execution service"],
         "ghidra": ["decompilation", "types", "cross references"],
