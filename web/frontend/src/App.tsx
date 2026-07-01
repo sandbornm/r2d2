@@ -40,7 +40,6 @@ import {
   useState,
 } from 'react';
 import type { CFGContext } from './components/ResultViewer';
-import ResultViewer from './components/ResultViewer';
 import SessionList from './components/SessionList';
 import type { AnalysisSettings } from './components/SettingsDrawer';
 import TrajectoryPanel from './components/TrajectoryPanel';
@@ -69,7 +68,9 @@ const ChatPanel = lazy(() => import('./components/ChatPanel'));
 const CompilerPanel = lazy(() => import('./components/CompilerPanel'));
 const GraphExplorer = lazy(() => import('./components/GraphExplorer'));
 const ProgressLog = lazy(() => import('./components/ProgressLog'));
+const ResultViewer = lazy(() => import('./components/ResultViewer'));
 const SettingsDrawer = lazy(() => import('./components/SettingsDrawer'));
+const ToolStatusBar = lazy(() => import('./components/ToolStatusBar'));
 
 const EVENT_NAMES: ProgressEventName[] = [
   'analysis_started',
@@ -131,6 +132,26 @@ const PanelFallback = () => (
   </Box>
 );
 
+const ResultsEmptyState = () => (
+  <Box
+    sx={{
+      height: '100%',
+      minHeight: 320,
+      display: 'flex',
+      flexDirection: 'column',
+      alignItems: 'center',
+      justifyContent: 'center',
+      color: 'text.secondary',
+    }}
+  >
+    <CloudUploadIcon sx={{ fontSize: 40, mb: 1.5, opacity: 0.4 }} />
+    <Typography variant="body2">No analysis yet</Typography>
+    <Typography variant="caption" color="text.secondary">
+      Drop a binary to get started
+    </Typography>
+  </Box>
+);
+
 const AppContent = () => {
   const { mode, toggleTheme } = useThemeMode();
   const isDark = mode === 'dark';
@@ -155,6 +176,7 @@ const AppContent = () => {
   const [isDragging, setIsDragging] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsDrawerMounted, setSettingsDrawerMounted] = useState(false);
   const [settings, setSettings] = useState<AnalysisSettings>(loadSettings);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
@@ -181,6 +203,10 @@ const AppContent = () => {
       setActiveTab('results');
     }
   }, [activeTab, showCompiler]);
+
+  useEffect(() => {
+    if (settingsOpen) setSettingsDrawerMounted(true);
+  }, [settingsOpen]);
 
   useEffect(() => {
     localStorage.setItem('r2d2-settings', JSON.stringify(settings));
@@ -263,10 +289,11 @@ const AppContent = () => {
       if (!response.ok) throw new Error('Failed to load chat history');
       const data: ChatDetailResponse = await response.json();
       setMessages(data.messages);
-      const analysisAttachment = data.messages
+      const analysisAttachments = data.messages
         .filter((msg) => msg.role === 'system')
         .flatMap((msg) => msg.attachments || [])
-        .find((attachment) => attachment.type === 'analysis_result');
+        .filter((attachment) => attachment.type === 'analysis_result');
+      const analysisAttachment = analysisAttachments[analysisAttachments.length - 1];
       if (analysisAttachment) {
         const restoredResult: AnalysisResultPayload = {
           binary: String(analysisAttachment.binary ?? data.session.binary_path),
@@ -617,7 +644,7 @@ In 2-3 sentences: what is it and what does it do? I'm ${funcCount > 0 ? 'seeing 
     }
   };
 
-  const handleSessionSelect = (session: ChatSessionSummary) => {
+  const handleSessionSelect = useCallback((session: ChatSessionSummary) => {
     setActiveSessionId(session.session_id);
     activeSessionIdRef.current = session.session_id;
     setBinaryPath(session.binary_path);
@@ -634,9 +661,9 @@ In 2-3 sentences: what is it and what does it do? I'm ${funcCount > 0 ? 'seeing 
     if (cachedResult) {
       setResult(cachedResult);
     }
-  };
+  }, [trajectory]);
 
-  const handleDeleteSession = async (sessionId: string) => {
+  const handleDeleteSession = useCallback(async (sessionId: string) => {
     debug.api.request('DELETE', `/api/chats/${sessionId}`);
     try {
       const response = await fetch(`/api/chats/${sessionId}`, {
@@ -662,9 +689,9 @@ In 2-3 sentences: what is it and what does it do? I'm ${funcCount > 0 ? 'seeing 
       debug.api.error(`/api/chats/${sessionId}`, error);
       console.error('Delete failed:', error);
     }
-  };
+  }, [activeSessionId, sessions]);
 
-  const handleSendMessage = async (content: string, options: { callLLM: boolean }) => {
+  const handleSendMessage = useCallback(async (content: string, options: { callLLM: boolean }) => {
     if (!activeSessionId) return;
     debug.chat.send(activeSessionId, content);
     setSendingMessage(true);
@@ -738,7 +765,7 @@ In 2-3 sentences: what is it and what does it do? I'm ${funcCount > 0 ? 'seeing 
     } finally {
       setSendingMessage(false);
     }
-  };
+  }, [activeSessionId, activity, trajectoryActions]);
 
   const handleTabChange = (_: SyntheticEvent, value: TabValue) => {
     if (value === 'compiler' && !showCompiler) return;
@@ -794,6 +821,57 @@ ${JSON.stringify(node.properties ?? {}, null, 2).slice(0, 2500)}
 
 Explain why this node matters for behavior triage, dynamic-analysis targeting, or patch planning.`;
     setActiveTab('chat');
+    handleSendMessage(prompt, { callLLM: true });
+  }, [handleSendMessage]);
+
+  const handleAskAboutCode = useCallback((codeOrQuestion: string) => {
+    setActiveTab('chat');
+
+    const hasUserQuestion = codeOrQuestion.includes('```') && codeOrQuestion.indexOf('```') > 10;
+    let prompt: string;
+    if (hasUserQuestion) {
+      prompt = codeOrQuestion;
+    } else {
+      const r2Info = (result?.quick_scan?.radare2 as Record<string, unknown> | undefined)?.info as
+        | Record<string, unknown>
+        | undefined;
+      const binInfo = r2Info?.bin as Record<string, unknown> | undefined;
+      const archName = (binInfo?.arch as string | undefined) || 'assembly';
+      prompt = `Explain this ${archName} code:\n\n\`\`\`asm\n${codeOrQuestion}\n\`\`\`\n\nWhat does it do? Walk me through each instruction. Are there any security concerns or interesting patterns?`;
+    }
+
+    handleSendMessage(prompt, { callLLM: true });
+  }, [handleSendMessage, result?.quick_scan]);
+
+  const handleAskAboutCFG = useCallback((context: CFGContext) => {
+    setActiveTab('chat');
+
+    let prompt = '';
+    if (context.functionName && context.functionOffset) {
+      prompt += `I'm looking at the CFG for function \`${context.functionName}\` at ${context.functionOffset}.\n\n`;
+    }
+
+    if (context.selectedBlock && context.blockAssembly) {
+      prompt += `Selected block at \`${context.selectedBlock}\`:\n\n\`\`\`asm\n`;
+      prompt += context.blockAssembly
+        .map((instr) => `${instr.addr}  ${instr.opcode || ''}`)
+        .join('\n');
+      prompt += '\n```\n\n';
+    } else if (context.visibleBlocks.length > 0) {
+      prompt += 'Visible blocks:\n\n```asm\n';
+      for (const block of context.visibleBlocks) {
+        if (block.offset && block.disassembly) {
+          prompt += `; Block ${block.offset}\n`;
+          prompt += block.disassembly
+            .map((instr) => `${instr.addr}  ${instr.opcode || ''}`)
+            .join('\n');
+          prompt += '\n\n';
+        }
+      }
+      prompt += '```\n\n';
+    }
+
+    prompt += 'What does this code do? Explain the control flow and any interesting patterns.';
     handleSendMessage(prompt, { callLLM: true });
   }, [handleSendMessage]);
 
@@ -960,6 +1038,12 @@ Explain why this node matters for behavior triage, dynamic-analysis targeting, o
           r2d2
         </Typography>
 
+        <Box sx={{ display: { xs: 'none', lg: 'block' }, maxWidth: 760, minWidth: 0, overflow: 'hidden' }}>
+          <Suspense fallback={null}>
+            <ToolStatusBar compact refreshInterval={60000} />
+          </Suspense>
+        </Box>
+
         <Box sx={{ flex: 1 }} />
 
         {health && health.available_models && health.available_models.length > 0 && (
@@ -1007,16 +1091,18 @@ Explain why this node matters for behavior triage, dynamic-analysis targeting, o
         </Tooltip>
       </Box>
 
-      <Suspense fallback={null}>
-        <SettingsDrawer
-          open={settingsOpen}
-          onClose={() => setSettingsOpen(false)}
-          isDarkMode={isDark}
-          onToggleTheme={toggleTheme}
-          settings={settings}
-          onSettingsChange={setSettings}
-        />
-      </Suspense>
+      {(settingsOpen || settingsDrawerMounted) && (
+        <Suspense fallback={null}>
+          <SettingsDrawer
+            open={settingsOpen}
+            onClose={() => setSettingsOpen(false)}
+            isDarkMode={isDark}
+            onToggleTheme={toggleTheme}
+            settings={settings}
+            onSettingsChange={setSettings}
+          />
+        </Suspense>
+      )}
 
       {/* Main */}
       <Box sx={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
@@ -1237,67 +1323,19 @@ Explain why this node matters for behavior triage, dynamic-analysis targeting, o
                         />
                       </Box>
                     )}
-                    <ResultViewer
-                      result={result}
-                      sessionId={activeSessionId}
-                      toolsInfo={health?.tools}
-                      onAskAboutCode={(codeOrQuestion) => {
-                      // Switch to chat tab and send the code/question
-                      setActiveTab('chat');
-                      
-                      // Check if the input already contains a user question (has text before the code block)
-                      const hasUserQuestion = codeOrQuestion.includes('```') && 
-                        codeOrQuestion.indexOf('```') > 10; // User wrote something before the code block
-                      
-                      let prompt: string;
-                      if (hasUserQuestion) {
-                        // User provided their own question with the code
-                        prompt = codeOrQuestion;
-                      } else {
-                        // Just code, use boilerplate analysis
-                        const archName = ((result?.quick_scan?.radare2 as Record<string, unknown> | undefined)?.info as Record<string, unknown> | undefined)?.bin as Record<string, unknown> | undefined;
-                        const archNameStr = (archName?.arch as string | undefined) || 'assembly';
-                        prompt = `Explain this ${archNameStr} code:\n\n\`\`\`asm\n${codeOrQuestion}\n\`\`\`\n\nWhat does it do? Walk me through each instruction. Are there any security concerns or interesting patterns?`;
-                      }
-                      
-                      handleSendMessage(prompt, { callLLM: true });
-                      }}
-                      onAskAboutCFG={(context: CFGContext) => {
-                        // Switch to chat tab and ask about the CFG
-                        setActiveTab('chat');
-
-                        // Format the context into a prompt
-                        let prompt = '';
-                        if (context.functionName && context.functionOffset) {
-                          prompt += `I'm looking at the CFG for function \`${context.functionName}\` at ${context.functionOffset}.\n\n`;
-                        }
-
-                        if (context.selectedBlock && context.blockAssembly) {
-                          prompt += `Selected block at \`${context.selectedBlock}\`:\n\n\`\`\`asm\n`;
-                          prompt += context.blockAssembly
-                            .map((instr) => `${instr.addr}  ${instr.opcode || ''}`)
-                            .join('\n');
-                          prompt += '\n```\n\n';
-                        } else if (context.visibleBlocks.length > 0) {
-                          // Use visible blocks if no specific block selected
-                          prompt += 'Visible blocks:\n\n```asm\n';
-                          for (const block of context.visibleBlocks) {
-                            if (block.offset && block.disassembly) {
-                              prompt += `; Block ${block.offset}\n`;
-                              prompt += block.disassembly
-                                .map((instr) => `${instr.addr}  ${instr.opcode || ''}`)
-                                .join('\n');
-                              prompt += '\n\n';
-                            }
-                          }
-                          prompt += '```\n\n';
-                        }
-
-                        prompt += 'What does this code do? Explain the control flow and any interesting patterns.';
-
-                        handleSendMessage(prompt, { callLLM: true });
-                      }}
-                    />
+                    {result ? (
+                      <Suspense fallback={<PanelFallback />}>
+                        <ResultViewer
+                          result={result}
+                          sessionId={activeSessionId}
+                          toolsInfo={health?.tools}
+                          onAskAboutCode={handleAskAboutCode}
+                          onAskAboutCFG={handleAskAboutCFG}
+                        />
+                      </Suspense>
+                    ) : (
+                      <ResultsEmptyState />
+                    )}
                   </>
                 )}
                 {activeTab === 'map' && (

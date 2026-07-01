@@ -6,12 +6,24 @@ import { alpha, Box, Chip, CircularProgress, IconButton, Stack, Tooltip, Typogra
 import { FC, useCallback, useEffect, useState } from 'react';
 import type { ToolsStartResponse, ToolsStatusResponse, ToolExecutionStatus } from '../types';
 import { toolColors } from '../theme';
-import { getToolCatalogEntry, getToolDisplayName, sortToolEntries, TOOL_ORDER } from '../toolCatalog';
+import { getToolCatalogEntry, getToolDisplayName, sortToolEntries } from '../toolCatalog';
 
 interface ToolStatusBarProps {
   compact?: boolean;
   refreshInterval?: number;
 }
+
+const COMPACT_TOOL_ORDER = [
+  'radare2',
+  'angr',
+  'ghidra',
+  'capstone',
+  'pyelftools',
+  'pefile',
+  'pwntools',
+  'ghidra_mcp',
+  'angr_mcp',
+];
 
 const ToolStatusBar: FC<ToolStatusBarProps> = ({ compact = false, refreshInterval = 30000 }) => {
   const theme = useTheme();
@@ -156,30 +168,34 @@ const ToolStatusBar: FC<ToolStatusBarProps> = ({ compact = false, refreshInterva
   };
 
   const orderedToolEntries = sortToolEntries(Object.entries(status.tools));
-  const orderedToolNames = orderedToolEntries.map(([name]) => name);
 
   if (compact) {
+    const compactEntries = COMPACT_TOOL_ORDER
+      .filter((name) => status.tools[name])
+      .map((name) => [name, status.tools[name]] as [string, ToolExecutionStatus]);
+
     return (
-      <Stack direction="row" spacing={0.75} alignItems="center">
-        <Typography variant="caption" color="text.secondary">
+      <Stack direction="row" spacing={0.75} alignItems="center" sx={{ minWidth: 0, overflow: 'hidden' }}>
+        <Typography variant="caption" color="text.secondary" sx={{ whiteSpace: 'nowrap' }}>
           Tools: {status.available_count} / {status.total_count}
         </Typography>
-        {orderedToolNames.filter((name) => TOOL_ORDER.includes(name) && status.tools[name]?.available).map((name) => {
-          const toolStatus = status.tools[name];
+        {compactEntries.map(([name, toolStatus]) => {
           const color = getToolColor(name);
+          const available = toolStatus.available;
           return (
             <Tooltip key={name} title={getToolTooltip(name, toolStatus)} arrow>
               <Chip
                 size="small"
                 label={getToolDisplayName(name)}
-                icon={<CheckCircleIcon sx={{ fontSize: 12 }} />}
+                icon={available ? <CheckCircleIcon sx={{ fontSize: 12 }} /> : <ErrorIcon sx={{ fontSize: 12 }} />}
                 sx={{
                   height: 20,
                   fontSize: '0.65rem',
-                  bgcolor: alpha(color, isDark ? 0.2 : 0.12),
-                  color: color,
-                  border: `1px solid ${alpha(color, 0.3)}`,
-                  '& .MuiChip-icon': { color: color },
+                  flexShrink: 0,
+                  bgcolor: available ? alpha(color, isDark ? 0.2 : 0.12) : alpha(theme.palette.error.main, 0.08),
+                  color: available ? color : 'text.secondary',
+                  border: `1px solid ${available ? alpha(color, 0.3) : alpha(theme.palette.error.main, 0.25)}`,
+                  '& .MuiChip-icon': { color: available ? color : theme.palette.error.main },
                   '& .MuiChip-label': { px: 0.5 },
                 }}
               />
