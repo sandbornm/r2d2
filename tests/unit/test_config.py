@@ -170,9 +170,9 @@ class TestMCPSettings:
         assert settings.ghidra_gdb.start_command == ["docker", "compose", "up", "-d", "--build"]
         assert settings.ghidra_gdb.working_dir == "../GhidraMCP/docker"
         assert settings.angr_mcp.transport == "streamable-http"
-        assert settings.angr_mcp.url == "http://127.0.0.1:8766/mcp"
+        assert settings.angr_mcp.url == "http://127.0.0.1:8770/mcp"
         assert settings.angr_mcp.command == "angr-mcp-dev-server"
-        assert settings.angr_mcp.args == ["--transport", "streamable-http", "--host", "127.0.0.1", "--port", "8766"]
+        assert settings.angr_mcp.args == ["--transport", "streamable-http", "--host", "127.0.0.1", "--port", "8770"]
         assert settings.angr_mcp.start_command[0:3] == ["uv", "run", "angr-mcp-dev-server"]
         assert settings.angr_mcp.working_dir == "../angr_mcp"
 

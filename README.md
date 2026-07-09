@@ -228,7 +228,7 @@ running. The defaults use:
 
 - GhidraMCP plugin API: `http://127.0.0.1:8080`
 - GhidraMCP GDB API: `http://127.0.0.1:5051`
-- angr MCP streamable HTTP: `http://127.0.0.1:8766/mcp`
+- angr MCP streamable HTTP: `http://127.0.0.1:8770/mcp`
 
 See [docs/MCP_SERVICES.md](docs/MCP_SERVICES.md) for launch commands. Check
 status with:

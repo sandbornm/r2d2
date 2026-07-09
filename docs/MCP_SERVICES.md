@@ -10,7 +10,7 @@ ports intentionally avoid `5000` and `5001`.
 | --- | --- | --- |
 | GhidraMCP plugin API | `http://127.0.0.1:8080` | Static Ghidra HTTP API exposed by the Ghidra plugin |
 | GhidraMCP GDB API | `http://127.0.0.1:5051` | Docker-backed dynamic analysis, GDB, GEF, Frida, angr helpers |
-| angr MCP | `http://127.0.0.1:8766/mcp` | Streamable HTTP MCP server for angr entry/CFG analysis |
+| angr MCP | `http://127.0.0.1:8770/mcp` | Streamable HTTP MCP server for angr entry/CFG analysis |
 
 ## Start Services
 
@@ -25,7 +25,7 @@ Start the angr MCP streamable HTTP service:
 
 ```bash
 cd ../angr_mcp
-uv run angr-mcp-dev-server --transport streamable-http --host 127.0.0.1 --port 8766
+uv run angr-mcp-dev-server --transport streamable-http --host 127.0.0.1 --port 8770
 ```
 
 Start the GhidraMCP GDB/Docker API:

@@ -150,9 +150,9 @@ class MCPSettings(BaseModel):
         default_factory=lambda: MCPServerSettings(
             description="angr_mcp streamable HTTP server",
             transport="streamable-http",
-            url="http://127.0.0.1:8766/mcp",
+            url="http://127.0.0.1:8770/mcp",
             command="angr-mcp-dev-server",
-            args=["--transport", "streamable-http", "--host", "127.0.0.1", "--port", "8766"],
+            args=["--transport", "streamable-http", "--host", "127.0.0.1", "--port", "8770"],
             start_command=[
                 "uv",
                 "run",
@@ -162,7 +162,7 @@ class MCPSettings(BaseModel):
                 "--host",
                 "127.0.0.1",
                 "--port",
-                "8766",
+                "8770",
             ],
             working_dir="../angr_mcp",
             install_hint="Run the streamable HTTP dev server from the sibling angr_mcp checkout.",
