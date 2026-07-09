@@ -187,6 +187,11 @@ export interface ChatDetailResponse {
   messages: ChatMessageItem[];
 }
 
+export interface ChatAnalysisResponse {
+  session: ChatSessionSummary;
+  analysis: ChatAttachment;
+}
+
 export interface ChatPostResponse {
   session: ChatSessionSummary;
   messages: ChatMessageItem[];

@@ -153,6 +153,68 @@ class TestChatsEndpoint:
 
         assert response.status_code == 404
 
+    def test_chat_analysis_not_found(self, app_client):
+        """Test getting latest analysis for a non-existent chat session."""
+        response = app_client.get('/api/chats/nonexistent-session-id/analysis')
+
+        assert response.status_code == 404
+
+    def test_chat_analysis_without_attachment_returns_not_found(self, app_client, tmp_path):
+        """Test latest analysis endpoint returns 404 when the session has no analysis."""
+        from r2d2.storage.chat import ChatDAO
+        from r2d2.storage.db import Database
+
+        dao = ChatDAO(Database(tmp_path / "test.db"))
+        session = dao.get_or_create_session("/tmp/no-analysis.elf", title="no-analysis.elf")
+        dao.append_message(session.session_id, "user", "hello")
+
+        response = app_client.get(f'/api/chats/{session.session_id}/analysis')
+
+        assert response.status_code == 404
+
+    def test_chat_analysis_returns_latest_analysis(self, app_client, tmp_path):
+        """Test latest analysis endpoint returns the newest analysis attachment only."""
+        from r2d2.storage.chat import ChatDAO
+        from r2d2.storage.db import Database
+
+        dao = ChatDAO(Database(tmp_path / "test.db"))
+        session = dao.get_or_create_session("/tmp/sample.elf", title="sample.elf")
+        first_attachment = {
+            "type": "analysis_result",
+            "binary": "/tmp/sample.elf",
+            "plan": {"quick": True, "deep": False, "run_angr": False, "persist_trajectory": True},
+            "quick_scan": {"radare2": {"info": {"bin": {"arch": "x86"}}}},
+            "deep_scan": {},
+            "notes": ["first analysis"],
+            "issues": [],
+        }
+        latest_attachment = {
+            "type": "analysis_result",
+            "binary": "/tmp/sample.elf",
+            "plan": {"quick": False, "deep": True, "run_angr": True, "persist_trajectory": True},
+            "quick_scan": {"radare2": {"info": {"bin": {"arch": "arm"}}}},
+            "deep_scan": {"radare2": {"functions": [{"name": "main"}]}},
+            "notes": ["latest analysis"],
+            "issues": ["needs ghidra"],
+            "analysis_graph": {
+                "schema_version": "r2d2.analysis_graph.v1",
+                "nodes": [{"id": "fn:main", "kind": "function", "label": "main", "properties": {}}],
+                "edges": [],
+            },
+        }
+        dao.append_message(session.session_id, "system", "first", attachments=[first_attachment])
+        dao.append_message(session.session_id, "system", "latest", attachments=[latest_attachment])
+
+        response = app_client.get(f'/api/chats/{session.session_id}/analysis')
+
+        assert response.status_code == 200
+        data = response.get_json()
+        assert data["session"]["session_id"] == session.session_id
+        assert data["session"]["title"] == "sample.elf"
+        assert data["analysis"]["notes"] == ["latest analysis"]
+        assert data["analysis"]["issues"] == ["needs ghidra"]
+        assert data["analysis"]["deep_scan"]["radare2"]["functions"][0]["name"] == "main"
+
     def test_delete_chat_not_found(self, app_client):
         """Test deleting non-existent chat session."""
         response = app_client.delete('/api/chats/nonexistent-session-id')

@@ -51,6 +51,8 @@ import type {
   AnalysisResultPayload,
   ApiAnalysisResponse,
   ChatDetailResponse,
+  ChatAnalysisResponse,
+  ChatAttachment,
   ChatMessageItem,
   ChatPostResponse,
   ChatSessionSummary,
@@ -123,6 +125,31 @@ const formatBytes = (bytes: number): string => {
   return `${bytes} B`;
 };
 
+const buildAnalysisResultFromAttachment = (
+  analysisAttachment: ChatAttachment,
+  session: ChatSessionSummary,
+): AnalysisResultPayload => ({
+  binary: String(analysisAttachment.binary ?? session.binary_path),
+  plan: (analysisAttachment.plan ?? {}) as AnalysisPlanPayload,
+  quick_scan: (analysisAttachment.quick_scan ?? {}) as Record<string, unknown>,
+  deep_scan: (analysisAttachment.deep_scan ?? {}) as Record<string, unknown>,
+  notes: (analysisAttachment.notes ?? []) as string[],
+  issues: (analysisAttachment.issues ?? []) as string[],
+  session_id: session.session_id,
+  trajectory_id: analysisAttachment.trajectory_id as string | undefined,
+  tool_availability: analysisAttachment.tool_availability as Record<string, boolean> | undefined,
+  tool_status: analysisAttachment.tool_status as Record<string, ToolStatusSummary> | undefined,
+  evidence_coverage: analysisAttachment.evidence_coverage as EvidenceCoverage | undefined,
+  analysis_graph: analysisAttachment.analysis_graph as AnalysisResultPayload['analysis_graph'],
+});
+
+const getLatestAnalysisAttachment = (messages: ChatMessageItem[]): ChatAttachment | undefined => {
+  const analysisAttachments = messages
+    .flatMap((msg) => msg.attachments || [])
+    .filter((attachment) => attachment.type === 'analysis_result');
+  return analysisAttachments[analysisAttachments.length - 1];
+};
+
 const PanelFallback = () => (
   <Box sx={{ minHeight: 240, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 1 }}>
     <CircularProgress size={18} />
@@ -183,6 +210,8 @@ const AppContent = () => {
   const sourceRef = useRef<EventSource | null>(null);
   const activeSessionIdRef = useRef<string | null>(null);
   const lastSyncedSessionIdRef = useRef<string | null>(null);
+  const loadedMessagesSessionIdRef = useRef<string | null>(null);
+  const restoredAnalysisSessionIdRef = useRef<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const activeSession = useMemo(
@@ -271,9 +300,6 @@ const AppContent = () => {
           lastSyncedSessionIdRef.current = null;
           setActiveSessionId(data.length ? data[0].session_id : null);
         }
-      } else if (data.length) {
-        lastSyncedSessionIdRef.current = null;
-        setActiveSessionId(data[0].session_id);
       } else {
         lastSyncedSessionIdRef.current = null;
         setActiveSessionId(null);
@@ -283,36 +309,63 @@ const AppContent = () => {
     }
   }, []);
 
+  const restoreSessionAnalysis = useCallback(async (sessionId: string) => {
+    const cachedResult = getFromCache<AnalysisResultPayload>(CacheKeys.analysisResult(sessionId));
+    if (cachedResult) {
+      if (activeSessionIdRef.current === sessionId) {
+        setResult(cachedResult);
+        restoredAnalysisSessionIdRef.current = sessionId;
+      }
+      return;
+    }
+
+    if (restoredAnalysisSessionIdRef.current === sessionId) return;
+
+    try {
+      const response = await fetch(`/api/chats/${sessionId}/analysis`);
+      if (response.status === 404) {
+        if (activeSessionIdRef.current === sessionId) {
+          setResult(null);
+          restoredAnalysisSessionIdRef.current = sessionId;
+        }
+        return;
+      }
+      if (!response.ok) throw new Error('Failed to restore analysis');
+      const data: ChatAnalysisResponse = await response.json();
+      const restoredResult = buildAnalysisResultFromAttachment(data.analysis, data.session);
+      if (activeSessionIdRef.current !== sessionId) return;
+      setResult(restoredResult);
+      setInCache(CacheKeys.analysisResult(data.session.session_id), restoredResult);
+      restoredAnalysisSessionIdRef.current = data.session.session_id;
+      setSessions((prev) => {
+        const exists = prev.some((session) => session.session_id === data.session.session_id);
+        if (!exists) return prev;
+        return prev.map((session) =>
+          session.session_id === data.session.session_id ? data.session : session,
+        );
+      });
+    } catch (error) {
+      console.error(error);
+    }
+  }, []);
+
   const loadSessionMessages = useCallback(async (sessionId: string) => {
     try {
       const response = await fetch(`/api/chats/${sessionId}?limit=250`);
       if (!response.ok) throw new Error('Failed to load chat history');
       const data: ChatDetailResponse = await response.json();
+      if (activeSessionIdRef.current !== sessionId) return;
       setMessages(data.messages);
-      const analysisAttachments = data.messages
-        .filter((msg) => msg.role === 'system')
-        .flatMap((msg) => msg.attachments || [])
-        .filter((attachment) => attachment.type === 'analysis_result');
-      const analysisAttachment = analysisAttachments[analysisAttachments.length - 1];
+      loadedMessagesSessionIdRef.current = data.session.session_id;
+      const analysisAttachment = getLatestAnalysisAttachment(data.messages);
       if (analysisAttachment) {
-        const restoredResult: AnalysisResultPayload = {
-          binary: String(analysisAttachment.binary ?? data.session.binary_path),
-          plan: (analysisAttachment.plan ?? {}) as AnalysisPlanPayload,
-          quick_scan: (analysisAttachment.quick_scan ?? {}) as Record<string, unknown>,
-          deep_scan: (analysisAttachment.deep_scan ?? {}) as Record<string, unknown>,
-          notes: (analysisAttachment.notes ?? []) as string[],
-          issues: (analysisAttachment.issues ?? []) as string[],
-          session_id: data.session.session_id,
-          trajectory_id: analysisAttachment.trajectory_id as string | undefined,
-          tool_availability: analysisAttachment.tool_availability as Record<string, boolean> | undefined,
-          tool_status: analysisAttachment.tool_status as Record<string, ToolStatusSummary> | undefined,
-          evidence_coverage: analysisAttachment.evidence_coverage as EvidenceCoverage | undefined,
-          analysis_graph: analysisAttachment.analysis_graph as AnalysisResultPayload['analysis_graph'],
-        };
+        const restoredResult = buildAnalysisResultFromAttachment(analysisAttachment, data.session);
         setResult(restoredResult);
         setInCache(CacheKeys.analysisResult(data.session.session_id), restoredResult);
+        restoredAnalysisSessionIdRef.current = data.session.session_id;
       } else {
         setResult(null);
+        restoredAnalysisSessionIdRef.current = data.session.session_id;
       }
       setSessions((prev) => {
         const exists = prev.some((session) => session.session_id === data.session.session_id);
@@ -323,7 +376,10 @@ const AppContent = () => {
       });
     } catch (error) {
       console.error(error);
-      setMessages([]);
+      if (activeSessionIdRef.current === sessionId) {
+        setMessages([]);
+        loadedMessagesSessionIdRef.current = null;
+      }
     }
   }, []);
 
@@ -338,14 +394,21 @@ const AppContent = () => {
 
   useEffect(() => {
     if (activeSessionId) {
-      loadSessionMessages(activeSessionId).catch(console.error);
       const cachedEvents = getFromCache<ProgressEventEntry[]>(CacheKeys.events(activeSessionId));
       setEvents(cachedEvents ?? []);
+      loadedMessagesSessionIdRef.current = null;
+      setMessages([]);
+      const cachedResult = getFromCache<AnalysisResultPayload>(CacheKeys.analysisResult(activeSessionId));
+      setResult(cachedResult ?? null);
+      restoredAnalysisSessionIdRef.current = cachedResult ? activeSessionId : null;
     } else {
       setMessages([]);
       setEvents([]);
+      setResult(null);
+      loadedMessagesSessionIdRef.current = null;
+      restoredAnalysisSessionIdRef.current = null;
     }
-  }, [activeSessionId, loadSessionMessages]);
+  }, [activeSessionId]);
 
   useEffect(() => {
     if (activeSession && lastSyncedSessionIdRef.current !== activeSession.session_id) {
@@ -356,10 +419,18 @@ const AppContent = () => {
   }, [activeSession]);
 
   useEffect(() => {
-    if (activeTab === 'results' && activeSessionId && !result) {
-      loadSessionMessages(activeSessionId).catch(console.error);
+    if (activeTab !== 'chat' || !activeSessionId || loadedMessagesSessionIdRef.current === activeSessionId) return;
+    loadSessionMessages(activeSessionId).catch(console.error);
+  }, [activeTab, activeSessionId, loadSessionMessages]);
+
+  useEffect(() => {
+    const shouldRestore = (activeTab === 'results' || activeTab === 'map') &&
+      activeSessionId &&
+      (!result || result.session_id !== activeSessionId);
+    if (shouldRestore) {
+      restoreSessionAnalysis(activeSessionId).catch(console.error);
     }
-  }, [activeTab, activeSessionId, result, loadSessionMessages]);
+  }, [activeTab, activeSessionId, result, restoreSessionAnalysis]);
 
   const closeSource = () => {
     if (sourceRef.current) {
@@ -517,8 +588,9 @@ const AppContent = () => {
         lastSyncedSessionIdRef.current = null;
         setActiveSessionId(data.session_id);
         activeSessionIdRef.current = data.session_id;
+        loadedMessagesSessionIdRef.current = null;
+        restoredAnalysisSessionIdRef.current = null;
         refreshSessions();
-        loadSessionMessages(data.session_id).catch(console.error);
       }
 
       const source = new EventSource(`/api/jobs/${data.job_id}/stream`);
@@ -545,7 +617,6 @@ const AppContent = () => {
             setActiveSessionId(payload.session_id);
             activeSessionIdRef.current = payload.session_id;
             refreshSessions();
-            loadSessionMessages(payload.session_id).catch(console.error);
           }
           closeSource();
         },
@@ -558,11 +629,11 @@ const AppContent = () => {
           // Cache the analysis result for faster switching
           if (analysis.session_id) {
             setInCache(CacheKeys.analysisResult(analysis.session_id), analysis);
+            restoredAnalysisSessionIdRef.current = analysis.session_id;
             lastSyncedSessionIdRef.current = null;
             setActiveSessionId(analysis.session_id);
             activeSessionIdRef.current = analysis.session_id;
             refreshSessions();
-            loadSessionMessages(analysis.session_id).catch(console.error);
 
             // Auto-ask with the actual analysis data for context
             setTimeout(() => {
@@ -626,6 +697,7 @@ In 2-3 sentences: what is it and what does it do? I'm ${funcCount > 0 ? 'seeing 
       if (response.ok) {
         const data = await response.json();
         setMessages(data.messages);
+        loadedMessagesSessionIdRef.current = sessionId;
         if (data.error) {
           setChatError(data.error);
         }
@@ -660,6 +732,7 @@ In 2-3 sentences: what is it and what does it do? I'm ${funcCount > 0 ? 'seeing 
     );
     if (cachedResult) {
       setResult(cachedResult);
+      restoredAnalysisSessionIdRef.current = session.session_id;
     }
   }, [trajectory]);
 
@@ -743,6 +816,7 @@ In 2-3 sentences: what is it and what does it do? I'm ${funcCount > 0 ? 'seeing 
       setActiveSessionId(data.session.session_id);
       activeSessionIdRef.current = data.session.session_id;
       setMessages(data.messages);
+      loadedMessagesSessionIdRef.current = data.session.session_id;
       setSessions((prev) => {
         const next = prev.filter((s) => s.session_id !== data.session.session_id);
         return [data.session, ...next];
@@ -895,6 +969,8 @@ Explain why this node matters for behavior triage, dynamic-analysis targeting, o
     setResult(null);
     setMessages([]);
     setEvents([]);
+    loadedMessagesSessionIdRef.current = null;
+    restoredAnalysisSessionIdRef.current = null;
     setStatus('idle');
     setStatusMessage(null);
     setActiveTab('results');
@@ -944,10 +1020,12 @@ Explain why this node matters for behavior triage, dynamic-analysis targeting, o
       const data: ApiAnalysisResponse = await response.json();
 
       if (data.session_id) {
+        lastSyncedSessionIdRef.current = null;
         setActiveSessionId(data.session_id);
         activeSessionIdRef.current = data.session_id;
+        loadedMessagesSessionIdRef.current = null;
+        restoredAnalysisSessionIdRef.current = null;
         refreshSessions();
-        loadSessionMessages(data.session_id).catch(console.error);
       }
 
       const source = new EventSource(`/api/jobs/${data.job_id}/stream`);
@@ -960,8 +1038,10 @@ Explain why this node matters for behavior triage, dynamic-analysis targeting, o
           closeSource();
           setActiveTab('chat');
           if (payload.session_id) {
+            lastSyncedSessionIdRef.current = null;
             setActiveSessionId(payload.session_id);
             activeSessionIdRef.current = payload.session_id;
+            refreshSessions();
             // Auto-ask about the compiled binary
             const prompt = `Help me understand this compiled ARM binary (${filename}). What patterns do you see in the assembly?`;
             setSendingMessage(true);
@@ -972,7 +1052,10 @@ Explain why this node matters for behavior triage, dynamic-analysis targeting, o
             })
               .then((res) => res.ok ? res.json() : Promise.reject(res))
               .then((responseData) => {
-                if (responseData?.messages) setMessages(responseData.messages);
+                if (responseData?.messages) {
+                  setMessages(responseData.messages);
+                  if (payload.session_id) loadedMessagesSessionIdRef.current = payload.session_id;
+                }
                 if (responseData?.error) setChatError(responseData.error);
               })
               .catch(() => setChatError('Failed to get LLM response'))
@@ -980,10 +1063,18 @@ Explain why this node matters for behavior triage, dynamic-analysis targeting, o
           }
         },
         analysis_result: (payload) => {
-          const analysis = payload as unknown as AnalysisResultPayload;
+          const analysis = payload as unknown as AnalysisResponseEvent;
           setResult(analysis);
           if (analysis.analysis_graph?.nodes?.length) {
             setActiveTab('map');
+          }
+          if (analysis.session_id) {
+            setInCache(CacheKeys.analysisResult(analysis.session_id), analysis);
+            restoredAnalysisSessionIdRef.current = analysis.session_id;
+            lastSyncedSessionIdRef.current = null;
+            setActiveSessionId(analysis.session_id);
+            activeSessionIdRef.current = analysis.session_id;
+            refreshSessions();
           }
         },
         job_failed: (payload) => {
@@ -1000,7 +1091,6 @@ Explain why this node matters for behavior triage, dynamic-analysis targeting, o
     }
   }, [
     refreshSessions,
-    loadSessionMessages,
     attachEventHandlers,
     settings.analysisProfile,
     settings.quickScanOnly,

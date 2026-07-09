@@ -738,6 +738,20 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
             "messages": [_message_to_dict(message) for message in messages],
         })
 
+    @app.get("/api/chats/<session_id>/analysis")
+    def chat_analysis(session_id: str) -> Any:
+        session = chat_dao.get_session(session_id)
+        if not session:
+            return jsonify({"error": "chat session not found"}), 404
+        messages = chat_dao.list_messages(session.session_id, limit=500)
+        analysis_attachment = _extract_latest_analysis(messages)
+        if not analysis_attachment:
+            return jsonify({"error": "analysis result not found for session"}), 404
+        return jsonify({
+            "session": _session_to_dict(session),
+            "analysis": _serialize(analysis_attachment),
+        })
+
     @app.get("/api/chats/<session_id>/graphs")
     def chat_graphs(session_id: str) -> Any:
         session = chat_dao.get_session(session_id)

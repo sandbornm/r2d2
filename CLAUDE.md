@@ -165,6 +165,7 @@ When both radare2 and angr provide analysis, uncertainty is calculated:
 - `POST /api/compile` - Compile C code to ARM binary (uses Docker cross-compiler)
 - `GET /api/compile/download/<filename>` - Download compiled binary or assembly
 - `POST /api/chats/<id>/messages` - Send a message to Claude about the binary
+- `GET /api/chats/<id>/analysis` - Fetch just the latest analysis result for a session (lightweight; used to restore the Results/Map tabs without loading full chat history)
 - `GET /api/chats/<id>/annotations` - List annotations for a session
 - `GET /api/chats/<id>/function-names` - List custom function names for a session
 - `POST /api/chats/<id>/function-names` - Upsert a function name (LLM or human)
