@@ -80,17 +80,22 @@ export default function DWARFPanel({ data, onAskClaude }: DWARFPanelProps) {
   const [activeTab, setActiveTab] = useState<TabId>('overview');
   const [expandedCU, setExpandedCU] = useState<string | false>(false);
   const activity = useActivity();
+  const { trackEvent } = activity;
 
-  // Track when DWARF panel is viewed
+  // Track when DWARF panel is viewed.
+  // Depend on the stable trackEvent reference, not the whole activity object:
+  // activity changes identity on every provider render, and trackEvent itself
+  // updates provider state, so depending on `activity` here causes an infinite
+  // render loop.
   useEffect(() => {
     if (data?.has_dwarf) {
-      activity.trackEvent('dwarf_view', {
+      trackEvent('dwarf_view', {
         function_count: data.functions.length,
         type_count: data.types.length,
         dwarf_version: data.dwarf_version,
       });
     }
-  }, [data, activity]);
+  }, [data, trackEvent]);
 
   if (!data) {
     return (

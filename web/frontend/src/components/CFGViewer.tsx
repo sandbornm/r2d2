@@ -299,6 +299,7 @@ const CFGGraphBase: FC<CFGGraphProps> = ({
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
   const containerRef = useRef<HTMLDivElement>(null);
+  const lastPanLog = useRef(0);
   const [viewBox, setViewBox] = useState({ x: 0, y: 0, width: 800, height: 600 });
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });

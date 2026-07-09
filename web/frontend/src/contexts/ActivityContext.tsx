@@ -7,7 +7,7 @@
  * - Backend synchronization of events
  * - Simple event tracking for analytics
  */
-import { createContext, FC, ReactNode, useCallback, useContext, useRef, useState } from 'react';
+import { createContext, FC, ReactNode, useCallback, useContext, useMemo, useRef, useState } from 'react';
 import type { ActivityEvent, ActivityEventType } from '../types';
 
 interface ActivityContextState {
@@ -142,16 +142,31 @@ export const ActivityProvider: FC<{ children: ReactNode }> = ({ children }) => {
     }
   }, []);
 
-  const value: ActivityContextValue = {
-    ...state,
-    trackEvent,
-    setCurrentTab,
-    setViewedFunction,
-    setViewedAddress,
-    getRecentContext,
-    getContextSummary,
-    syncToBackend,
-  };
+  // Memoize so consumers only re-render when activity state actually changes,
+  // and so effects/callbacks that depend on this value keep a stable identity
+  // between state updates instead of churning on every provider render.
+  const value: ActivityContextValue = useMemo(
+    () => ({
+      ...state,
+      trackEvent,
+      setCurrentTab,
+      setViewedFunction,
+      setViewedAddress,
+      getRecentContext,
+      getContextSummary,
+      syncToBackend,
+    }),
+    [
+      state,
+      trackEvent,
+      setCurrentTab,
+      setViewedFunction,
+      setViewedAddress,
+      getRecentContext,
+      getContextSummary,
+      syncToBackend,
+    ],
+  );
 
   return (
     <ActivityContext.Provider value={value}>
