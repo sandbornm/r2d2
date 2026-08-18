@@ -7,6 +7,46 @@ Overview of autonomous components inside r2d2 and how they cooperate to deliver 
 > r2d2 is a professional triage bus. Do not add beginner tutorials. Surface
 > anomalies, sink callers, and next commands. omp (Oh My Pi) pilots Qwen by
 > calling this CLI — keep `analyze` / `brief` / `records` / `insights` stable.
+>
+> Product work lives in **this repo**. The TP-Link firmware lab
+> (`~/work/projects/tp_link_firmware`) is samples + unpack + `qwen_pilot.py`
+> only. Start new sessions here.
+
+## Ranking / thesis
+
+`build_briefing(source, user_goal=..., extra_tags=...)` ranks regions against
+a thesis. If the thesis is empty, infer `unpack` | `sinks` | `network` |
+`auth` | `crypto` from format, binary name, and tags. Persist
+`inferred_goal`, `ranking_tags` (`lens-*`), `goal_source` on the briefing
+and as record tags.
+
+Scope of “interesting” is **Linux/Unix ELF + vendor firmware wrappers**, any
+arch r2 already understands. Do not add PE / Go / Rust lens packs until
+there is a hand-read sample. Tools stay narrow: sniff + firmware inventory
++ radare2 always; Ghidra 11.2 headless after a named ELF function; angr
+only after a named hypothesis.
+
+`analyze` / `brief` **without** `--ask` run **no language model**. The
+process is the r2d2 CLI on the Pi: `file`/`strings`/`readelf`, the firmware
+adapter, radare2. Qwen is only `--ask` or web chat. Grok/GLM orchestrate
+the CLI; they are not inside the analysis process.
+
+## Next session
+
+Stacked PRs, merge **in order** after CI is green. Do not commit to `main`.
+
+1. Land `feat/rank-goal` then `feat/rank-ui` (see open PRs). Rebase the UI
+   branch onto `main` after the ranking PR merges.
+2. Headless, no Qwen: `r2d2 brief` the WR841N wrapper (`--quick`) and
+   extracted `httpd` (not `--quick` — need `aaa`/`afl`). Wrapper first
+   region must be SquashFS; httpd first region PLT with `popen` before
+   `memcpy`.
+3. One 27B region ask on the httpd PLT / `axt @ sym.imp.popen` only. Keep
+   `PocketAiHub/Qwen3.8-27B-Abliterated-MLX-4bit`. Do not switch to 9B.
+4. Name 3–5 sink callers by hand, then Ghidra 11.2 headless on those
+   functions only.
+5. Do not: PE/Go packs, qemu-user, r2d2 MCP, Ghidra upgrade, absorb
+   `qwen_pilot` into this tree.
 
 ## Analyzer Orchestrator (Python)
 - **Entry point**: `r2d2.analysis.orchestrator.AnalysisOrchestrator`
