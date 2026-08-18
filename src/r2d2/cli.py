@@ -44,6 +44,7 @@ def analyze(
     ask: Optional[str] = typer.Option(None, "--ask", help="Question to ask LLM about the briefing"),
     ask_regions: int = typer.Option(0, "--ask-regions", help="Send the first N region asks to the LLM"),
     tags: Optional[list[str]] = typer.Option(None, "--tag", help="Extra record tags. Repeatable."),
+    goal: Optional[str] = typer.Option(None, "--goal", help="Thesis to rank against. Inferred from tags if omitted."),
 ) -> None:
     """Analyze the supplied binary and optionally query the LLM."""
 
@@ -54,12 +55,13 @@ def analyze(
 
     plan = state.orchestrator.create_plan(quick_only=quick, skip_deep=skip_deep)
     result = state.orchestrator.analyze(binary, plan)
-    record = _persist_record(state, result, binary, extra_tags=tags)
-    public = analysis_result_to_public_dict(result, record=record)
+    extra_meta = {"user_goal": goal} if goal else None
+    record = _persist_record(state, result, binary, extra_tags=tags, extra_meta=extra_meta)
+    public = analysis_result_to_public_dict(result, record=record, user_goal=goal, extra_tags=tags)
     session = _publish_session(state, result, public)
     if session:
         public["session_id"] = session.session_id
-    briefing = public.get("briefing") or build_briefing(public)
+    briefing = public.get("briefing") or build_briefing(public, user_goal=goal, extra_tags=tags)
 
     if json_output:
         payload = briefing if brief else public
@@ -87,6 +89,7 @@ def brief(
     ask_regions: int = typer.Option(0, "--ask-regions", help="Send the first N region asks to the LLM"),
     max_regions: int = typer.Option(6, "--max-regions", help="Cap ranked regions"),
     tags: Optional[list[str]] = typer.Option(None, "--tag", help="Extra record tags. Repeatable."),
+    goal: Optional[str] = typer.Option(None, "--goal", help="Thesis to rank against. Inferred from tags if omitted."),
 ) -> None:
     """Break a binary into ranked regions and emit Qwen-sized snippet asks."""
 
@@ -96,10 +99,11 @@ def brief(
     state: AppState = build_state(config_path)
     plan = state.orchestrator.create_plan(quick_only=quick, skip_deep=skip_deep)
     result = state.orchestrator.analyze(binary, plan)
-    record = _persist_record(state, result, binary, extra_tags=tags)
-    public = analysis_result_to_public_dict(result, record=record)
+    extra_meta = {"user_goal": goal} if goal else None
+    record = _persist_record(state, result, binary, extra_tags=tags, extra_meta=extra_meta)
+    public = analysis_result_to_public_dict(result, record=record, user_goal=goal, extra_tags=tags)
     session = _publish_session(state, result, public)
-    briefing = build_briefing(result, max_regions=max_regions)
+    briefing = build_briefing(result, max_regions=max_regions, user_goal=goal, extra_tags=tags)
     if record:
         console.print(f"[cyan]Record[/] {record.get('record_id')}  rev {record.get('revision')}  {record.get('directory')}")
     if session:
@@ -303,10 +307,11 @@ def _persist_record(
     binary: Path,
     *,
     extra_tags: list[str] | None = None,
+    extra_meta: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     try:
         store = AnalysisRecordStore(Path(state.config.output.artifacts_dir))
-        return store.persist(result, binary=binary, extra_tags=extra_tags)
+        return store.persist(result, binary=binary, extra_tags=extra_tags, extra_meta=extra_meta)
     except Exception as exc:
         console.print(f"[yellow]Record not persisted: {exc}")
         return None

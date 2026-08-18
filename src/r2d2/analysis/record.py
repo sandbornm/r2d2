@@ -77,7 +77,14 @@ class AnalysisRecordStore:
         directory.mkdir(parents=True, exist_ok=True)
 
         existing = _read_json(directory / "record.json") or {}
-        briefing = ensure_analysis_briefing(payload)
+        goal = None
+        if extra_meta and extra_meta.get("user_goal"):
+            goal = str(extra_meta["user_goal"]).strip() or None
+        briefing = ensure_analysis_briefing(
+            payload,
+            user_goal=goal,
+            extra_tags=list(extra_tags or []),
+        )
         subject = _build_subject(path, digest, payload, extra_meta)
         tags = sorted(
             set(_derive_tags(path, payload, subject, briefing))
@@ -333,6 +340,12 @@ def _derive_tags(
             continue
         for tag in region.get("tags") or []:
             tags.add(str(tag))
+    for tag in briefing.get("ranking_tags") or []:
+        tags.add(str(tag))
+    if briefing.get("goal_source") == "user":
+        tags.add("goal-user")
+    elif briefing.get("inferred_goal"):
+        tags.add("goal-inferred")
     imports = [
         str(item.get("name") if isinstance(item, dict) else item).lower()
         for item in _list(_dict(_dict(analysis.get("quick_scan")).get("radare2")).get("imports"))

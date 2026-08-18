@@ -8,6 +8,10 @@ discovery-shaped asks for a local Qwen model. Not a teaching UI. omp (Oh My
 Pi) is a separate harness that *calls* this CLI for Qwen pilots — do not
 absorb that planner here.
 
+Start new agent sessions **in this repo**. Ranking/thesis contract and the
+current next-session list live in [AGENTS.md](AGENTS.md). The firmware lab
+is samples only.
+
 ## Quick Commands
 
 ```bash

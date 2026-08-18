@@ -213,3 +213,108 @@ def test_ensure_analysis_briefing_recomputes_when_missing(tmp_path: Path):
     assert briefing["regions"]
     analysis["briefing"] = briefing
     assert ensure_analysis_briefing(analysis) is briefing
+
+
+def test_briefing_infers_unpack_goal_for_wrapper(tmp_path: Path):
+    briefing = build_briefing(_sample_analysis(tmp_path))
+    assert briefing["goal_source"] == "inferred"
+    assert briefing["inferred_goal"]
+    assert "lens-unpack" in briefing["ranking_tags"]
+    assert "wrapper" in briefing["inferred_goal"].lower() or "carve" in briefing["inferred_goal"].lower()
+    titles = [region["title"] for region in briefing["regions"]]
+    assert any("Cloud" in title or "Squash" in title or "Firmware" in title for title in titles)
+    assert not any(title.startswith("Entry") for title in titles)
+    assert "Thesis" in briefing["summary"]
+
+
+def test_briefing_ranks_popen_before_memcpy(tmp_path: Path):
+    analysis = _sample_analysis(tmp_path)
+    analysis["binary"] = str(tmp_path / "httpd")
+    analysis["quick_scan"]["firmware"] = {
+        "top_level_format": "elf",
+        "container_type": "executable",
+        "embedded_artifacts": [],
+    }
+    analysis["quick_scan"]["radare2"]["imports"] = [
+        {"name": "memcpy"},
+        {"name": "memmove"},
+        {"name": "popen"},
+        {"name": "sprintf"},
+    ]
+    briefing = build_briefing(analysis)
+    assert briefing["subject"]["dangerous_imports"][0] == "popen"
+    assert "popen" in briefing["next_steps"][0]
+
+
+def test_briefing_infers_sinks_for_httpd_elf(tmp_path: Path):
+    analysis = _sample_analysis(tmp_path)
+    analysis["binary"] = str(tmp_path / "httpd")
+    analysis["quick_scan"]["firmware"] = {
+        "top_level_format": "elf",
+        "container_type": "executable",
+        "embedded_artifacts": [],
+    }
+    analysis["quick_scan"]["radare2"]["info"]["core"]["format"] = "elf"
+    briefing = build_briefing(analysis)
+    assert "lens-sinks" in briefing["ranking_tags"] or "lens-network" in briefing["ranking_tags"]
+    assert any("plt" in region["id"] or "import" in region["title"].lower() for region in briefing["regions"])
+    assert not any("Firmware region: ELF" in region["title"] and "0x0" in (region.get("snippet") or {}).get("text", "") for region in briefing["regions"])
+
+
+def test_user_goal_reranks_regions(tmp_path: Path):
+    analysis = _sample_analysis(tmp_path)
+    unpack = build_briefing(analysis, user_goal="carve squashfs and brief httpd")
+    auth = build_briefing(analysis, user_goal="find the login/auth credential path")
+    assert unpack["goal_source"] == "user"
+    assert auth["goal_source"] == "user"
+    assert "lens-unpack" in unpack["ranking_tags"]
+    assert "lens-auth" in auth["ranking_tags"]
+    auth_titles = " ".join(region["title"].lower() for region in auth["regions"])
+    assert "credential" in auth_titles or "auth" in auth_titles
+    assert not any("JFFS2" in region["title"] for region in unpack["regions"])
+
+
+def test_squashfs_survives_jffs2_flood(tmp_path: Path):
+    analysis = _sample_analysis(tmp_path)
+    flood = [
+        {
+            "kind": "jffs2_marker",
+            "name": f"JFFS2 {index}",
+            "offset": 0x1000 + index,
+            "offset_hex": hex(0x1000 + index),
+        }
+        for index in range(40)
+    ]
+    analysis["quick_scan"]["firmware"]["embedded_artifacts"] = flood + [
+        {
+            "kind": "squashfs_filesystem",
+            "name": "SquashFS LE",
+            "offset": 0x100200,
+            "offset_hex": "0x100200",
+            "recommended": True,
+        }
+    ]
+    analysis["quick_scan"]["firmware"]["recommended_targets"] = flood[:25]
+    briefing = build_briefing(analysis)
+    titles = [region["title"] for region in briefing["regions"]]
+    assert any("SquashFS" in title for title in titles)
+    assert not any("JFFS2" in title for title in titles)
+
+
+def test_wrapper_elf_at_zero_is_not_a_region(tmp_path: Path):
+    analysis = _sample_analysis(tmp_path)
+    analysis["quick_scan"]["firmware"]["embedded_artifacts"].append(
+        {
+            "kind": "elf_binary",
+            "name": "ELF @ 0x0",
+            "offset": 0,
+            "offset_hex": "0x0",
+            "description": "the wrapper itself",
+        }
+    )
+    briefing = build_briefing(analysis)
+    texts = " ".join(
+        (region.get("snippet") or {}).get("text", "") + region["title"]
+        for region in briefing["regions"]
+    )
+    assert "ELF @ 0x0" not in texts
