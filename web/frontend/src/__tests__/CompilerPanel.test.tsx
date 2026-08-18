@@ -239,25 +239,8 @@ describe('CompilerPanel', () => {
         });
       }
       if (url.includes('/api/compile')) {
-        return new Promise((resolve) =>
-          setTimeout(
-            () =>
-              resolve({
-                ok: true,
-                json: () =>
-                  Promise.resolve({
-                    success: true,
-                    stdout: '',
-                    stderr: '',
-                    command: '',
-                    return_code: 0,
-                    architecture: 'arm64',
-                    compiler: 'gcc',
-                  }),
-              }),
-            100
-          )
-        );
+        // Stay pending so the button remains in the Compiling state.
+        return new Promise(() => undefined);
       }
       return Promise.resolve({ ok: false, json: () => Promise.resolve({}) });
     });
