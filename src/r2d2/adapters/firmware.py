@@ -75,7 +75,7 @@ _STRING_RULES: tuple[_StringRule, ...] = (
     _StringRule(
         "credential",
         "Credential or default-login material",
-        re.compile(r"password|passwd|pwd=|credential|secret|token|admin|root|login|auth"),
+        re.compile(r"password|passwd|pwd=|credential|secret|token|admin_password|default.?login"),
         0.82,
     ),
     _StringRule(

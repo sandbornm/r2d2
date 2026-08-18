@@ -3584,6 +3584,24 @@ Find something non-obvious in the evidence: a sink caller, an unexpected trust b
     if user_goal:
         system_parts.append(f"\n## User's Goal\n{user_goal}")
 
+    analysis_for_intake = analysis_attachment
+    if analysis_for_intake is None:
+        for msg in history:
+            if msg.role != "system":
+                continue
+            for att in msg.attachments or []:
+                if isinstance(att, dict) and att.get("type") == "analysis_result":
+                    analysis_for_intake = att
+                    break
+            if analysis_for_intake is not None:
+                break
+    if analysis_for_intake:
+        from ..analysis.sniff import render_intake
+
+        intake = render_intake(analysis_for_intake)
+        if intake and intake != "## Triage intake":
+            system_parts.append("\n" + intake)
+
     compact_context = bool(getattr(getattr(config, "llm", None), "compact_context", True))
 
     if prebuilt_context:

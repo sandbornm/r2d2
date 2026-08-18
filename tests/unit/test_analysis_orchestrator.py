@@ -19,6 +19,25 @@ def build_env_report(tmp_path: Path) -> EnvironmentReport:
     )
 
 
+def test_quick_scan_includes_host_sniff(tmp_path: Path):
+    config = AppConfig()
+    config.analysis.enable_angr = False
+    config.analysis.enable_ghidra = False
+    config.analysis.require_elf = False
+    config.analysis.enable_trajectory_recording = False
+    env = build_env_report(tmp_path)
+    orchestrator = AnalysisOrchestrator(config, env, trajectory_dao=None)
+
+    blob = tmp_path / 'sample.bin'
+    blob.write_bytes(b'fw-type:Cloud\x00httpd\x00login\n' + b'\x00' * 32)
+
+    result = orchestrator.analyze(blob, AnalysisPlan(deep=False, persist_trajectory=False))
+    assert 'sniff' in result.quick_scan
+    assert result.quick_scan['sniff']['file']
+    assert result.quick_scan['sniff']['hex_head']
+    assert result.tool_status.get('sniff', {}).get('status') == 'completed'
+
+
 def test_ensure_elf_validation(tmp_path: Path):
     config = AppConfig()
     config.analysis.enable_angr = False

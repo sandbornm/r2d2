@@ -16,6 +16,7 @@ from ..storage.dao import TrajectoryDAO
 from ..storage.models import AnalysisTrajectory, TrajectoryAction
 from .resource_tree import BinaryResource, FunctionResource, Resource
 from .runtime_requirements import get_runtime_requirements
+from .sniff import sniff_binary
 from .graph import build_analysis_graph
 from ..adapters.base import AdapterRegistry, AdapterUnavailable, AnalyzerAdapter
 from ..adapters import (
@@ -175,6 +176,8 @@ class AnalysisOrchestrator:
             self._run_quick(binary, result, trajectory, progress_callback)
             if plan.deep:
                 self._run_deep(binary, result, trajectory, progress_callback, plan)
+            if not result.evidence_coverage:
+                result.evidence_coverage = self._build_evidence_coverage(result)
             if not result.analysis_graph:
                 result.analysis_graph = build_analysis_graph(result)
         finally:
@@ -219,6 +222,36 @@ class AnalysisOrchestrator:
                 summary["status"] = "failed"
                 summary["error"] = error
             result.tool_status[adapter_name] = summary
+
+        sniff_start = time.perf_counter()
+        try:
+            self._emit_progress(progress_callback, "adapter_started", {"stage": "quick", "adapter": "sniff"})
+            sniff = sniff_binary(binary)
+            result.quick_scan["sniff"] = sniff
+            result.tool_status["sniff"] = {
+                "status": "completed",
+                "stage": "quick",
+                "duration_ms": elapsed_ms(sniff_start),
+            }
+            self._record_action(trajectory, "sniff.quick", sniff)
+            self._emit_progress(
+                progress_callback,
+                "adapter_completed",
+                {"stage": "quick", "adapter": "sniff", "payload": sniff},
+            )
+        except Exception as exc:  # pragma: no cover - host tools missing
+            result.notes.append(f"sniff failed: {exc}")
+            result.tool_status["sniff"] = {
+                "status": "failed",
+                "stage": "quick",
+                "duration_ms": elapsed_ms(sniff_start),
+                "error": str(exc),
+            }
+            self._emit_progress(
+                progress_callback,
+                "adapter_failed",
+                {"stage": "quick", "adapter": "sniff", "error": str(exc)},
+            )
 
         # Run autoprofile first for quick characterization
         if autoprofile:
@@ -270,6 +303,7 @@ class AnalysisOrchestrator:
             try:
                 self._emit_progress(progress_callback, "adapter_started", {"stage": "quick", "adapter": "libmagic"})
                 info = libmagic.quick_scan(binary)
+                result.quick_scan["libmagic"] = info
                 result.quick_scan["identification"] = info
                 update_quick_status("libmagic", info, start)
                 self._record_action(trajectory, "libmagic.quick", info)
@@ -852,7 +886,7 @@ class AnalysisOrchestrator:
 
     def _build_evidence_coverage(self, result: AnalysisResult) -> dict[str, Any]:
         columns = ["functions", "cfg", "strings", "imports", "runtime", "allocs", "packer"]
-        rows = ["firmware", "radare2", "ghidra", "ghidra_gdb", "angr", "angr_mcp", "capstone", "dwarf", "readelf", "packer"]
+        rows = ["sniff", "firmware", "radare2", "ghidra", "ghidra_gdb", "angr", "angr_mcp", "capstone", "dwarf", "readelf", "packer"]
 
         r2_quick = result.quick_scan.get("radare2", {}) if isinstance(result.quick_scan, dict) else {}
         r2_strings = r2_quick.get("strings", []) if isinstance(r2_quick, dict) else []
@@ -890,6 +924,15 @@ class AnalysisOrchestrator:
 
         matrix["radare2"]["strings"] = status_cell(len(r2_strings) > 0)
         matrix["radare2"]["imports"] = status_cell(len(r2_imports) > 0)
+
+        sniff = result.quick_scan.get("sniff", {}) if isinstance(result.quick_scan, dict) else {}
+        sniff_strings = sniff.get("strings", []) if isinstance(sniff, dict) else []
+        if "sniff" not in matrix:
+            matrix["sniff"] = {col: "missing" for col in columns}
+        if isinstance(sniff, dict) and sniff.get("file"):
+            matrix["sniff"]["runtime"] = "present"
+        matrix["sniff"]["strings"] = status_cell(isinstance(sniff_strings, list) and len(sniff_strings) > 0)
+        matrix["sniff"]["imports"] = "partial" if isinstance(sniff, dict) and sniff.get("readelf") else "missing"
 
         matrix["readelf"]["runtime"] = status_cell(bool(runtime) and "error" not in runtime)
         matrix["readelf"]["imports"] = status_cell(bool(runtime) and bool(runtime.get("needed")))
