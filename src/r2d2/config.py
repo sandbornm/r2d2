@@ -5,7 +5,8 @@ Configuration is loaded from:
 2. R2D2_CONFIG env var (optional custom config path)
 3. Environment variables override specific settings:
    - GHIDRA_INSTALL_DIR: Path to Ghidra installation
-   - ANTHROPIC_API_KEY / OPENAI_API_KEY: API keys
+   - ANTHROPIC_API_KEY / OPENAI_API_KEY / ZAI_API_KEY: API keys
+     (toml names the env var; never store the secret in the file)
 """
 
 from __future__ import annotations

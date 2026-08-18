@@ -25,7 +25,7 @@ That is enough for sniff + firmware inventory + radare2. Optional later:
 | Node 20 + `web/frontend` | you want the UI |
 | Ghidra **11.2** at `GHIDRA_INSTALL_DIR` | decompile an ELF (`analyzeHeadless`) |
 | angr MCP on `:8770` | extra CFG after you have an ELF |
-| OpenAI-compat base URL | `brief --ask` / chat |
+| OpenAI-compat base URL | `brief --ask` / chat (Z.ai, exo, …) |
 
 This lab keeps Ghidra 11.2. Do not upgrade to 12 unless you need the MCP plugin.
 
@@ -48,6 +48,23 @@ uv run r2d2 insights --tag httpd
 
 `--quick` = sniff + firmware + r2 metadata. Full analyze adds listing/CFG.
 `--brief` ranks regions. `--ask` sends those asks to the configured model.
+
+### LLM keys
+
+Never put a secret in a committed toml. The overlay **names** the env var;
+the process **reads** it.
+
+```bash
+# Z.ai / GLM (recommended default for --ask)
+cp config/z.ai.example.toml config/local.toml   # gitignored
+export ZAI_API_KEY=...                          # or a repo-local .env
+export R2D2_CONFIG="$PWD/config/local.toml"
+
+# Local exo / llama.cpp / vLLM — no cloud key
+# openai_base_url = "http://<tailscale-host>:52415/v1"
+```
+
+`analyze` / `brief` without `--ask` still run no model.
 
 Start the API against the same config, then open the session list:
 

@@ -3,6 +3,7 @@ __pycache__/
 .venv/
 .env
 .env.*
+config/local.toml
 .mypy_cache/
 .pytest_cache/
 coverage/
