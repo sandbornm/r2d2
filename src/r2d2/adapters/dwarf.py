@@ -81,7 +81,6 @@ class DWARFAdapter:
             raise AdapterUnavailable("pyelftools is not installed")
 
         from elftools.elf.elffile import ELFFile
-        from elftools.dwarf.descriptions import describe_form_class
 
         result: dict[str, Any] = {
             "has_dwarf": False,
@@ -135,7 +134,6 @@ class DWARFAdapter:
 
     def _process_compilation_unit(self, cu: Any, dwarf: Any) -> dict[str, Any]:
         """Process a single compilation unit."""
-        from elftools.dwarf.die import DIE
 
         cu_info: dict[str, Any] = {
             "offset": cu.cu_offset,

@@ -5,7 +5,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from r2d2.adapters.base import AdapterUnavailable
 from r2d2.adapters.ghidra_bridge_client import (
     CrossReference,
     DecompiledFunction,

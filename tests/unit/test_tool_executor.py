@@ -1,6 +1,5 @@
 """Tests for tool executor."""
 
-import pytest
 from unittest.mock import MagicMock, patch
 
 from r2d2.tools.executor import (
