@@ -153,6 +153,15 @@ class TestChatsEndpoint:
 
         assert response.status_code == 404
 
+    def test_list_records_empty(self, app_client):
+        response = app_client.get("/api/records")
+        assert response.status_code == 200
+        assert response.get_json()["records"] == []
+
+    def test_get_record_not_found(self, app_client):
+        response = app_client.get("/api/records/" + ("ab" * 32))
+        assert response.status_code == 404
+
     def test_chat_analysis_not_found(self, app_client):
         """Test getting latest analysis for a non-existent chat session."""
         response = app_client.get('/api/chats/nonexistent-session-id/analysis')
@@ -214,6 +223,49 @@ class TestChatsEndpoint:
         assert data["analysis"]["notes"] == ["latest analysis"]
         assert data["analysis"]["issues"] == ["needs ghidra"]
         assert data["analysis"]["deep_scan"]["radare2"]["functions"][0]["name"] == "main"
+        assert data["analysis"]["briefing"]["regions"]
+
+    def test_chat_briefing_returns_ranked_regions(self, app_client, tmp_path):
+        from r2d2.storage.chat import ChatDAO
+        from r2d2.storage.db import Database
+
+        dao = ChatDAO(Database(tmp_path / "test.db"))
+        session = dao.get_or_create_session("/tmp/httpd", title="httpd")
+        dao.append_message(
+            session.session_id,
+            "system",
+            "analysis",
+            attachments=[{
+                "type": "analysis_result",
+                "binary": "/tmp/httpd",
+                "quick_scan": {
+                    "radare2": {
+                        "info": {"bin": {"arch": "arm", "bits": 32}, "core": {"format": "elf"}},
+                        "imports": [{"name": "system"}],
+                    }
+                },
+                "deep_scan": {
+                    "radare2": {
+                        "functions": [{"name": "main", "offset": 4096, "size": 32}],
+                        "entry_function": {"name": "main", "offset": 4096},
+                        "entry_disassembly": "0x1000  push {lr}\n0x1004  pop {pc}\n",
+                    }
+                },
+                "issues": [],
+                "notes": [],
+            }],
+        )
+
+        response = app_client.get(f"/api/chats/{session.session_id}/briefing")
+        assert response.status_code == 200
+        data = response.get_json()
+        assert data["briefing"]["schema_version"] == "r2d2.briefing.v1"
+        assert data["briefing"]["regions"]
+        assert "4 bullets" in data["briefing"]["regions"][0]["ask"]
+
+        markdown = app_client.get(f"/api/chats/{session.session_id}/briefing?format=markdown")
+        assert markdown.status_code == 200
+        assert "Briefing:" in markdown.get_data(as_text=True)
 
     def test_delete_chat_not_found(self, app_client):
         """Test deleting non-existent chat session."""

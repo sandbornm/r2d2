@@ -1,8 +1,9 @@
 """Unit tests for storage module."""
 
-
+import json
 
 from r2d2.storage import Database
+from r2d2.storage.dao import TrajectoryDAO
 from r2d2.storage.models import (
     ChatSession,
     ChatMessage,
@@ -192,6 +193,22 @@ class TestStorageModels:
 
         assert trajectory.trajectory_id == "traj-123"
         assert len(trajectory.actions) == 2
+
+    def test_record_action_persists_by_trajectory_id(self, tmp_db_path):
+        db = Database(tmp_db_path)
+        dao = TrajectoryDAO(db)
+        trajectory = dao.start_trajectory("/tmp/sample.elf")
+        dao.record_action(
+            trajectory_id=trajectory.trajectory_id,
+            adapter="tools.ghidra",
+            stage="script_execution",
+            payload={"success": True},
+        )
+        actions = dao.list_actions(trajectory.trajectory_id)
+        assert len(actions) == 1
+        assert actions[0]["action"] == "tools.ghidra.script_execution"
+        payload = json.loads(actions[0]["payload"]) if isinstance(actions[0]["payload"], str) else actions[0]["payload"]
+        assert payload["success"] is True
 
     def test_code_snippet_model(self):
         """Test CodeSnippet model creation."""

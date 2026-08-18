@@ -9,6 +9,8 @@ from .investigation_graph import (
 )
 from .briefing import build_briefing, extract_code_snippets, render_briefing_markdown
 from .orchestrator import AnalysisOrchestrator, AnalysisPlan, AnalysisResult
+from .insights import extract_insights
+from .record import AnalysisRecordStore
 from .result_dto import analysis_result_to_public_dict, ensure_analysis_briefing
 
 __all__ = [
@@ -20,6 +22,7 @@ __all__ = [
     "InvestigationNode",
     "AnalysisOrchestrator",
     "AnalysisPlan",
+    "AnalysisRecordStore",
     "AnalysisResult",
     "analysis_result_to_public_dict",
     "build_analysis_graph",
@@ -27,5 +30,6 @@ __all__ = [
     "build_investigation_graph",
     "ensure_analysis_briefing",
     "extract_code_snippets",
+    "extract_insights",
     "render_briefing_markdown",
 ]

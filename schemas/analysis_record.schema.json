@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/sandbornm/r2d2/schemas/analysis_record.schema.json",
+  "title": "r2d2 Analysis Record",
+  "description": "Content-addressed, mergeable per-binary analysis index. Tool blobs, CFGs, and region commentary live beside this file.",
+  "type": "object",
+  "required": ["schema_version", "record_id", "sha256", "tags", "revision"],
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": { "const": "r2d2.analysis_record.v1" },
+    "record_id": { "type": "string", "minLength": 16 },
+    "sha256": { "type": "string", "minLength": 16 },
+    "tags": { "type": "array", "items": { "type": "string" } },
+    "revision": { "type": "integer", "minimum": 1 },
+    "paths": { "type": "array", "items": { "type": "string" } },
+    "names": { "type": "array", "items": { "type": "string" } },
+    "parent_id": { "type": ["string", "null"] },
+    "children": { "type": "array" },
+    "tools": { "type": "object" },
+    "regions": { "type": "array" },
+    "graphs": { "type": "object" }
+  }
+}
