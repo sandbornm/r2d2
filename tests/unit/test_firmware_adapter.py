@@ -47,6 +47,25 @@ def test_firmware_adapter_detects_embedded_components(tmp_path: Path):
     assert carved_path.read_bytes().startswith(b"\x7fELF")
 
 
+def test_firmware_adapter_detects_tplink_cloud_and_img0(tmp_path: Path):
+    blob = bytearray(b"\x00" * 64)
+    blob[0x14:0x21] = b"fw-type:Cloud"
+    path = tmp_path / "cloud.bin"
+    path.write_bytes(blob)
+
+    cloud = FirmwareAdapter(run_binwalk=False).quick_scan(path)
+    kinds = {artifact["kind"] for artifact in cloud["embedded_artifacts"]}
+    assert "vendor_wrapper" in kinds
+    assert any(item["name"] == "TP-Link Cloud" for item in cloud["embedded_artifacts"])
+
+    img = bytearray(b"\x00" * 32)
+    img[0x14:0x18] = b"IMG0"
+    img_path = tmp_path / "img0.bin"
+    img_path.write_bytes(img)
+    img_result = FirmwareAdapter(run_binwalk=False).quick_scan(img_path)
+    assert any(item["name"] == "TP-Link IMG0" for item in img_result["embedded_artifacts"])
+
+
 def test_firmware_adapter_classifies_top_level_elf(tmp_path: Path):
     path = tmp_path / "sample.elf"
     path.write_bytes(b"\x7fELF" + b"\x00" * 64)

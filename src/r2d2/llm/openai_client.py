@@ -19,6 +19,23 @@ except ModuleNotFoundError:  # pragma: no cover
     RateLimitError = Exception  # type: ignore
 
 _LOGGER = logging.getLogger(__name__)
+_DEFAULT_OLLAMA_HOST = "11434"
+
+
+def _openai_base_url(config: AppConfig) -> str | None:
+    """Return an OpenAI-compatible base URL, or None for the official API."""
+    explicit = getattr(config.llm, "openai_base_url", None)
+    if explicit:
+        return explicit.rstrip("/")
+    base = (config.llm.base_url or "").rstrip("/")
+    if (
+        config.llm.provider
+        and config.llm.provider.lower() == "openai"
+        and base
+        and _DEFAULT_OLLAMA_HOST not in base
+    ):
+        return base
+    return None
 
 
 class ChatMessage(BaseModel):
@@ -47,12 +64,20 @@ class OpenAIClient:
 
         api_env = config.llm.fallback_api_key_env or "OPENAI_API_KEY"
         api_key = os.getenv(api_env)
+        base_url = _openai_base_url(config)
         if not api_key:
-            raise OpenAIError(
-                f"OpenAI API key not found. Set the {api_env} environment variable."
-            )
+            if base_url:
+                api_key = "local"
+            else:
+                raise OpenAIError(
+                    f"OpenAI API key not found. Set the {api_env} environment variable."
+                )
 
-        self._client = OpenAI(api_key=api_key)
+        client_kwargs: dict[str, Any] = {"api_key": api_key}
+        if base_url:
+            client_kwargs["base_url"] = base_url
+        self._client = OpenAI(**client_kwargs)
+        self._base_url = base_url
         self._config = config
         if config.llm.provider and config.llm.provider.lower() == "openai":
             self._model = config.llm.model

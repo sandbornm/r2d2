@@ -16,6 +16,8 @@ model = "gemma3:4b"
 api_key_env = "ANTHROPIC_API_KEY"
 # Available models include local Ollama Gemma plus Claude/OpenAI options.
 base_url = "http://127.0.0.1:11434"
+# OpenAI-compatible gateways (exo / vLLM / llama.cpp). Leave unset for api.openai.com.
+# openai_base_url = "http://100.77.31.55:52415/v1"
 fallback_provider = "openai"
 fallback_model = "gpt-4o"
 fallback_api_key_env = "OPENAI_API_KEY"
@@ -80,6 +82,7 @@ bridge_host = "127.0.0.1"
 bridge_port = 13100
 bridge_timeout = 30
 
+# install_dir is machine-local; set GHIDRA_INSTALL_DIR or override in a local config.
 project_dir = "~/.local/share/r2d2/ghidra-projects"
 max_decompile_functions = 20
 max_types = 100

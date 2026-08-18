@@ -64,6 +64,10 @@ _SIGNATURES: tuple[_Signature, ...] = (
     _Signature("PEM private key", "credential_material", b"-----BEGIN", "PEM key/certificate material", 0.7),
     _Signature("OpenWrt", "firmware_marker", b"OpenWrt", "OpenWrt marker string", 0.8),
     _Signature("TP-Link", "vendor_marker", b"TP-LINK", "TP-Link vendor marker", 0.8),
+    _Signature("TP-Link Cloud", "vendor_wrapper", b"fw-type:Cloud", "TP-Link Cloud/safeloader upgrade wrapper", 0.9, True),
+    _Signature("TP-Link ver. 2.0", "vendor_wrapper", b"ver. 2.0", "Classic TP-Link ver. 2.0 header", 0.85, True),
+    _Signature("TP-Link IMG0", "vendor_wrapper", b"IMG0", "TP-Link IMG0 (often _up-noboot) header", 0.8, True),
+    _Signature("TP-Link fwup-ptn", "vendor_wrapper", b"fwup-ptn", "TP-Link safeloader partition table", 0.85, True),
 )
 
 

@@ -51,6 +51,7 @@ class LLMSettings(BaseModel):
     max_tokens: int = 8192
     temperature: float = 0.1
     base_url: str = "http://127.0.0.1:11434"
+    openai_base_url: str | None = None
     compact_context: bool = True
     context_budget_chars: int = 24000
 
@@ -275,5 +276,20 @@ def load_config(config_path: Path | None = None) -> AppConfig:
         parsed_show_compiler = _parse_env_bool(env_show_compiler)
         if parsed_show_compiler is not None:
             config.ui.show_compiler = parsed_show_compiler
+
+    env_llm_provider = _get_env("R2D2_LLM_PROVIDER")
+    if env_llm_provider:
+        config.llm.provider = env_llm_provider
+    env_llm_model = _get_env("R2D2_LLM_MODEL")
+    if env_llm_model:
+        config.llm.model = env_llm_model
+    env_openai_base = _get_env("R2D2_OPENAI_BASE_URL")
+    if env_openai_base:
+        config.llm.openai_base_url = env_openai_base
+    env_llm_base = _get_env("R2D2_LLM_BASE_URL")
+    if env_llm_base:
+        config.llm.base_url = env_llm_base
+        if config.llm.provider.lower() == "openai" and not config.llm.openai_base_url:
+            config.llm.openai_base_url = env_llm_base
 
     return config
