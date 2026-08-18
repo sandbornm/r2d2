@@ -1,5 +1,7 @@
 # R2D2 Analysis Setup Review - 2026-01-22
 
+> Historical review. Current setup and interfaces: [README.md](README.md).
+
 ## Executive Summary
 
 This document provides a comprehensive review of the r2d2 binary analysis platform's current setup, focusing on:

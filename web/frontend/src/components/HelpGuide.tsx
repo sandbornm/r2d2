@@ -56,6 +56,10 @@ const HelpGuide: FC<HelpGuideProps> = ({ open, onClose }) => (
         Unpack, open httpd, list imports and CGI/nvram strings, xref system/sprintf/recv, rename
         five functions, stop. QEMU and angr come after a named hypothesis.
       </Block>
+      <Block title="omp is a different layer">
+        Oh My Pi plans multi-step Qwen pilots and shells out to r2d2. This UI is
+        the store and the ask surface, not a second planner.
+      </Block>
       <Block title="Intake is host-side">
         file, strings, readelf, and a hex peek run on the host and never execute the guest.
         A container is unnecessary for sniff. qemu-user is only for later running httpd.

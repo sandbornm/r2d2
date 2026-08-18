@@ -1,7 +1,9 @@
 # Reporting
 
-r2d2 exports a portable analysis bundle for handoff, release artifacts, and
-agent-to-agent context transfer.
+Optional export of a completed **session**. Day-to-day source of truth is the
+on-disk record — see [README](../README.md#on-disk).
+
+r2d2 can also export a portable analysis bundle for handoff.
 
 ## Endpoints
 

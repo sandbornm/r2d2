@@ -1,481 +1,166 @@
 # r2d2
 
-**Professional binary / firmware triage bus.** r2d2 ranks interesting regions, persists tagged records, and feeds a local (often abliterated) model short, concrete asks — not lectures. It assumes you already reverse. The goal is to surface something you would have spent an afternoon finding.
+Professional firmware/binary triage bus. Headless first: CLI writes a tagged
+record; the web UI is a viewer of the same store. The LLM (local Qwen via
+OpenAI-compat, or anything else you point at) gets a sniff card + a region
+ask — not an adapter dump.
 
-## Why r2d2?
-
-1. **Adapter orchestration** — radare2, Ghidra headless, firmware inventory, optional angr MCP — one plan, one record.
-
-2. **Discovery-shaped LLM context** — Qwen sees a snippet, a thesis, and four questions aimed at an anomaly. It does not get the adapter dump or a beginner prompt.
-
-3. **Records, not sessions-as-truth** — SHA-256 folders, mergeable tool blobs, sibling insights across firmware families.
-
-4. **Trajectory** — every adapter step is logged so you can audit what the model was shown.
-
-## System Architecture
-
-```mermaid
-flowchart TB
-    subgraph Frontend["Frontend (React + Vite)"]
-        UI["Web UI :5173"]
-        Tabs["Summary / Profile / Functions / Disasm / CFG / Decompiler / Dynamic"]
-        Chat["Chat Panel"]
-        Compiler["ARM Compiler"]
-    end
-
-    subgraph Backend["Backend (Flask :5050)"]
-        API["REST API"]
-        SSE["SSE Progress Stream"]
-        Orchestrator["Analysis Orchestrator"]
-        LLM["LLM Bridge"]
-    end
-
-    subgraph Adapters["Analysis Adapters"]
-        AutoProfile["AutoProfile<br/>Security features, strings, risk"]
-        R2["radare2<br/>Disassembly, functions, imports"]
-        Angr["angr<br/>CFG, symbolic execution"]
-        Capstone["Capstone<br/>Instruction decoding"]
-        GhidraAdapter["Ghidra<br/>Decompilation, types"]
-        DWARF["DWARF<br/>Debug symbols"]
-        Frida["Frida<br/>Dynamic instrumentation"]
-        GEF["GEF/GDB<br/>Execution tracing"]
-        Libmagic["libmagic<br/>File identification"]
-    end
-
-    subgraph External["External Services"]
-        Claude["Claude API"]
-        OpenAI["OpenAI API fallback"]
-        GhidraBridge["Ghidra Bridge RPC :13100"]
-        Docker["Docker GEF container"]
-    end
-
-    subgraph Storage["Persistence"]
-        SQLite[("SQLite DB")]
-        Trajectories["Trajectories"]
-        Sessions["Chat Sessions"]
-        Annotations["Annotations"]
-    end
-
-    UI --> API
-    Chat --> API
-    Compiler --> API
-
-    API --> Orchestrator
-    API --> LLM
-    API --> SSE
-
-    Orchestrator --> AutoProfile
-    Orchestrator --> R2
-    Orchestrator --> Angr
-    Orchestrator --> Capstone
-    Orchestrator --> GhidraAdapter
-    Orchestrator --> DWARF
-    Orchestrator --> Frida
-    Orchestrator --> GEF
-    Orchestrator --> Libmagic
-
-    GhidraAdapter -.-> GhidraBridge
-    GEF -.-> Docker
-    LLM --> Claude
-    LLM -.-> OpenAI
-
-    Orchestrator --> SQLite
-    API --> SQLite
-    SQLite --> Trajectories
-    SQLite --> Sessions
-    SQLite --> Annotations
-```
-
-## Key Features
-
-### Multi-Tool Analysis Pipeline
-| Tool | Purpose | Output |
-|------|---------|--------|
-| **AutoProfile** | Quick binary characterization | Security features (NX, PIE, RELRO), interesting strings, risk assessment |
-| **radare2** | Primary disassembler | Functions, imports, strings, disassembly, binary metadata |
-| **angr** | Symbolic execution | Control Flow Graphs (CFG), reachability analysis, path constraints |
-| **Capstone** | Instruction decoding | Detailed operand information for each instruction |
-| **Ghidra** | Decompilation | C-like pseudocode, type recovery, cross-references |
-| **DWARF** | Debug info parsing | Source symbols, type definitions, line mappings |
-| **Frida** | Dynamic instrumentation | Runtime module info, memory layout, hook points |
-| **GEF/GDB** | Execution tracing | Register snapshots, memory maps, instruction traces |
-| **libmagic** | File identification | File type, MIME type, encoding |
-
-### Interactive Web UI
-- **Disassembly View**: Syntax highlighting, instruction hover docs, drag-to-select, annotations
-- **CFG Explorer**: Visual control flow graphs with function navigation
-- **Decompiler Panel**: Ghidra-powered C pseudocode with "Ask Claude" integration
-- **Dynamic Analysis**: GEF execution traces with register timeline
-- **ARM Compiler**: Write C, compile to ARM, see assembly (Godbolt-style)
-- **Chat Panel**: Claude conversation with full analysis context
-
-### AI Integration
-- **Claude-powered analysis** with automatic fallback to OpenAI
-- **Context-aware responses**: LLM sees functions, strings, security features, disassembly
-- **Activity tracking**: LLM knows what you've been exploring for relevant answers
-- **Trajectory recording**: Every analysis step is logged for reproducibility
-- **Region briefing**: `r2d2 brief BIN` ranks important regions and emits small dis/asm asks for a local model. Do not dump the full analysis JSON into the prompt.
+## Setup
 
 ```bash
-uv run r2d2 brief path/to/httpd
+# Python 3.11+, uv, radare2, file(1)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+sudo apt-get install -y radare2 file libmagic-dev   # or: brew install radare2 libmagic
+
+git clone git@github.com:sandbornm/r2d2.git
+cd r2d2
+uv sync --extra analyzers
+uv run r2d2 env
+```
+
+That is enough for sniff + firmware inventory + radare2. Optional later:
+
+| Piece | When |
+|---|---|
+| Node 20 + `web/frontend` | you want the UI |
+| Ghidra **11.2** at `GHIDRA_INSTALL_DIR` | decompile an ELF (`analyzeHeadless`) |
+| angr MCP on `:8770` | extra CFG after you have an ELF |
+| OpenAI-compat base URL | `brief --ask` / chat |
+
+This lab keeps Ghidra 11.2. Do not upgrade to 12 unless you need the MCP plugin.
+
+## Headless
+
+Same config for CLI and API. Analysis publishes a **record** (SHA-256 folder)
+and a **session** (`analysis_result` attachment). Do not re-upload the blob
+to see it in the UI.
+
+```bash
+export R2D2_CONFIG=/path/to/config.toml   # optional overlay
+
+uv run r2d2 analyze path/to/httpd --quick --json
+uv run r2d2 analyze path/to/httpd --brief --tag httpd
 uv run r2d2 brief path/to/httpd --ask --ask-regions 3
 uv run r2d2 records list
 uv run r2d2 records show HASH
 uv run r2d2 insights --tag httpd
 ```
 
-Each binary gets a tagged, mergeable record under `artifacts_dir/records/<aa>/<sha256>/` (tools, region commentary, serialized CFGs). Re-runs extend the same record instead of replacing it.
+`--quick` = sniff + firmware + r2 metadata. Full analyze adds listing/CFG.
+`--brief` ranks regions. `--ask` sends those asks to the configured model.
 
-## Full Setup Guide
-
-### Prerequisites
-
-```bash
-# System dependencies
-sudo apt-get update
-sudo apt-get install -y radare2 libmagic-dev python3.11 python3.11-venv docker.io
-
-# Install uv (Python package manager)
-curl -LsSf https://astral.sh/uv/install.sh | sh
-source ~/.bashrc
-
-# Install Node.js 18+ (for frontend)
-curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
-sudo apt-get install -y nodejs
-```
-
-### Step 1: Clone and Configure
+Start the API against the same config, then open the session list:
 
 ```bash
-git clone https://github.com/your-org/r2d2.git
-cd r2d2
-
-# Set up environment variables
-cp .env.example .env
-# Edit .env and add your API key:
-#   ANTHROPIC_API_KEY=sk-ant-...
+uv run r2d2-web          # :5050
+# optional:
+cd web/frontend && npm install && npm run dev   # :5173, proxies /api → :5050
 ```
 
-### Step 2: Install Python Dependencies
+Firmware lab wrapper (prefers `work/<id>/rootfs`, else inventories the blob):
 
 ```bash
-# Install all dependencies including analyzers
-uv sync --extra analyzers
-
-# Verify installation
-uv run r2d2 env
+python3 /path/to/tp_link_firmware/scripts/analyze_with_r2d2.py TL-WR841N_US_V14_250328 --quick --brief
 ```
 
-### Step 3: Install Frontend
+## Interfaces
 
-```bash
-cd web/frontend
-npm install
-cd ../..
+Keep these names stable. The omp Qwen pilot (`scripts/qwen_pilot.py` in the
+firmware lab) shells out to the CLI verbs below and degrades a step if they
+move.
+
+### CLI
+
+| Command | Role |
+|---|---|
+| `analyze BIN` | run plan, persist record, publish session |
+| `brief BIN` | same, print ranked regions |
+| `records list` / `records show ID` | revisit a SHA-256 record |
+| `insights [--tag T]` | sibling patterns across records |
+| `env` | tool detection |
+| `mcp` / `mcp-start` | probe / launch optional MCP |
+| `ghidra status` / `ghidra setup` | headless Ghidra install |
+
+Flags that matter: `--config`, `--quick`, `--json`, `--ask`, `--ask-regions`, `--tag`.
+
+### HTTP
+
+Flask `:5050`. Public analysis DTO is `r2d2.analysis_result.v1` (briefing +
+record + sniff). Same object on SSE and `GET` attachments.
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/api/health` | model + tool flags |
+| `POST` | `/api/analyze` | `{binary, user_goal?, analysis_profile?}` → `{job_id, session_id}` |
+| `GET` | `/api/jobs/<id>/stream` | SSE (`analysis_result`, `job_completed`) |
+| `GET` | `/api/chats` | sessions |
+| `GET` | `/api/chats/<id>/analysis` | latest DTO (UI Results/Map) |
+| `GET` | `/api/chats/<id>/briefing` | ranked regions (`?format=markdown`) |
+| `GET` | `/api/records` | record index |
+| `GET` | `/api/records/<sha256>` | one record |
+| `GET` | `/api/insights` | sibling notes |
+| `GET` | `/api/tools/status` | do **not** use `?live=1` on the single-thread server |
+| `GET` | `/api/chats/<id>/bundle` | export; see [docs/REPORTING.md](docs/REPORTING.md) |
+
+### On disk
+
+```
+<artifacts_dir>/records/<aa>/<sha256>/
+  record.json   briefing.json   commentary.md   tools/*.json   graphs/cfg/
 ```
 
-### Step 4: Configure Ghidra (Optional but Recommended)
+Re-runs merge. Records are the source of truth; chat sessions are a view.
 
-Ghidra provides decompilation, type recovery, and cross-references. r2d2 supports two modes:
+### LLM
 
-**Headless Mode (Default)** - Runs `analyzeHeadless` subprocess:
-```bash
-# Option A: install from an official release version
-uv run r2d2 ghidra setup --version 11.4.2
-
-# Option B: install from an explicit archive URL
-uv run r2d2 ghidra setup --url https://example.test/ghidra_PUBLIC.zip
-
-# Option C: install from a local archive
-uv run r2d2 ghidra setup --archive ~/Downloads/ghidra_PUBLIC.zip
-
-# Set environment variable in your .env or shell:
-export GHIDRA_INSTALL_DIR=~/.local/share/r2d2/tools/<ghidra_dir>
-export JAVA_HOME=/path/to/jdk-21  # Ghidra 12 requires Java 21
-
-# Verify Ghidra readiness
-uv run r2d2 ghidra status
-
-# The R2D2Headless.java script outputs JSON with functions, strings, 
-# and decompiled code. It's automatically copied to ~/ghidra_scripts/
-```
-
-The `--version` path resolves release metadata from the official
-`NationalSecurityAgency/ghidra` repository because Ghidra archive names include
-build dates. If version resolution fails, pass `--url` with the exact archive
-URL you want to use.
-
-**Bridge Mode (Richer Data)** - Connects to running Ghidra GUI:
-```bash
-# 1. Install ghidra_bridge: pip install ghidra_bridge
-# 2. Copy server script to ~/ghidra_scripts/:
-cp .venv/lib/python*/site-packages/ghidra_bridge/server/*.py ~/ghidra_scripts/
-
-# 3. Start Ghidra GUI and load your binary
-# 4. In Ghidra: Window → Script Manager → Add ~/ghidra_scripts
-# 5. Run: ghidra_bridge_server_background.py
-# 6. Bridge listens on port 13100
-```
-
-> ⚠️ **PyGhidra Note**: PyGhidra 3.0.2 has a recursion bug with Python 3.11 when calling `pyghidra.start()` directly. The bug is in `_GhidraBundleFinder.find_spec()` which triggers infinite recursion during import. r2d2 uses `analyzeHeadless` subprocess instead, which works correctly. See [PyGhidra README](https://github.com/NationalSecurityAgency/ghidra/blob/master/Ghidra/Features/PyGhidra/src/main/py/README.md) for the official launcher approach.
-
-### Step 5: Build GEF Docker Image (Optional)
-
-```bash
-# For dynamic analysis with execution tracing
-docker build -t r2d2-gef -f Dockerfile.gef .
-```
-
-### Step 6: Start MCP Analysis Services (Optional)
-
-r2d2 can fan out to sibling GhidraMCP and angr_mcp services when they are
-running. The defaults use:
-
-- GhidraMCP plugin API: `http://127.0.0.1:8080`
-- GhidraMCP GDB API: `http://127.0.0.1:5051`
-- angr MCP streamable HTTP: `http://127.0.0.1:8770/mcp`
-
-See [docs/MCP_SERVICES.md](docs/MCP_SERVICES.md) for launch commands. Check
-status with:
-
-```bash
-uv run r2d2 mcp
-uv run r2d2 mcp --json
-```
-
-Start configured services from r2d2:
-
-```bash
-uv run r2d2 mcp-start --dry-run
-uv run r2d2 mcp-start --service angr_mcp
-uv run r2d2 mcp-start --service ghidra_gdb
-```
-
-The GhidraMCP plugin API still requires opening Ghidra, loading the target
-program, and enabling the plugin HTTP server.
-
-The dashboard tool status bar uses the same launcher for unavailable MCP
-services that have a configured start command.
-
-### Step 7: Install Frida (Optional)
-
-```bash
-# For dynamic instrumentation
-pip install frida frida-tools
-```
-
-### Step 7: Run the Application
-
-**Terminal 1 - Backend:**
-```bash
-uv run r2d2-web
-# Flask API running on http://127.0.0.1:5050
-```
-
-**Terminal 2 - Frontend:**
-```bash
-cd web/frontend
-npm run dev
-# Vite dev server on http://localhost:5173
-```
-
-Open http://localhost:5173 in your browser.
-
-### Verification
-
-```bash
-# Check all tools are detected
-uv run r2d2 env
-
-# Test Ghidra bridge (if configured)
-python scripts/test_ghidra_bridge.py
-
-# Run quick analysis on a sample
-uv run r2d2 analyze samples/bin/arm64/hello --quick
-```
-
-## Usage Examples
-
-### CLI Analysis
-
-```bash
-# Quick scan (fast, basic info)
-uv run r2d2 analyze binary.elf --quick
-
-# Full analysis (includes CFG, deeper disassembly)
-uv run r2d2 analyze binary.elf
-
-# JSON output for scripting
-uv run r2d2 analyze binary.elf --json
-
-# Ask Claude about the binary
-uv run r2d2 analyze binary.elf --ask "What does this binary do?"
-
-# Check environment
-uv run r2d2 env
-
-# Check MCP service reachability and launch commands
-uv run r2d2 mcp
-```
-
-### Report Exports
-
-Every completed analysis session can export a compact JSON bundle and Markdown
-report from the results header. The bundle joins the findings graph,
-investigation journey, tool coverage, and compact local-model context. See
-[docs/REPORTING.md](docs/REPORTING.md) for the API and schema.
-
-### Web UI Workflow
-
-1. **Upload binary**: Drag and drop or click to browse
-2. **Click Analyze**: Watch progress in the Logs tab
-3. **Explore Results**:
-   - Summary: Overview with tool attribution
-   - Profile: Security features, risk assessment
-   - Disasm: Interactive disassembly with annotations
-   - CFG: Control flow graph visualization
-   - Decompiler: C pseudocode (requires Ghidra)
-4. **Ask Claude**: Select code → "Ask Claude" or use the Chat tab
-5. **Annotate**: Click any instruction to add notes
-
-### Compile and Analyze C Code
-
-1. Go to the **Compiler** tab
-2. Write or paste C code
-3. Select architecture (ARM32/ARM64)
-4. Click **Compile** to see assembly output
-5. Click **Analyze & Chat** to analyze the compiled binary
-
-## Configuration
-
-Configuration is loaded from `config/default_config.toml`. Machine-specific paths should be set via environment variables (in `.env` or shell).
-
-### Key Settings
+OpenAI-compat `POST {base}/v1/chat/completions`. Overlay:
 
 ```toml
-[analysis]
-enable_angr = true      # Symbolic execution and CFG
-enable_ghidra = true    # Decompilation (requires Ghidra)
-enable_frida = true     # Dynamic instrumentation
-enable_gef = true       # GDB execution tracing (requires Docker)
-timeout_deep = 120      # Seconds for deep analysis stage
-
-[ghidra]
-use_bridge = true       # Use Ghidra bridge for richer data (if available)
-bridge_host = "127.0.0.1"
-bridge_port = 13100
-# install_dir set via GHIDRA_INSTALL_DIR env var
-
 [llm]
-provider = "anthropic"
-model = "claude-sonnet-4-5"
+provider = "openai"
+model = "PocketAiHub/Qwen3.8-27B-Abliterated-MLX-4bit"
+openai_base_url = "http://100.77.31.55:52415/v1"
 ```
 
-### Environment Variables
+Or `R2D2_LLM_PROVIDER`, `R2D2_LLM_MODEL`, `R2D2_OPENAI_BASE_URL`.
+
+Every turn gets `## User's Goal` (if set) and `## Triage intake` from sniff
+(`file`, strings, container, sinks). Ask a region, not the JSON.
+
+### MCP (optional)
+
+[docs/MCP_SERVICES.md](docs/MCP_SERVICES.md). angr on `127.0.0.1:8770/mcp` is
+the only one we actually run. GhidraMCP plugin wants 11.3.2+; we stay on 11.2
+headless. r2d2 itself is not an MCP — do not Funnel `/api/tools/execute`.
+
+### Who calls whom
+
+| Harness | Job |
+|---|---|
+| r2d2 | store, sniff, briefing, UI |
+| omp | coding agent; Qwen *pilot* plans then execs this CLI |
+| Grok | product work on r2d2 / the lab |
+
+## Config
+
+`R2D2_CONFIG=/path/to.toml` overlays `config/default_config.toml`.
 
 ```bash
-# Required
-ANTHROPIC_API_KEY=sk-ant-...        # Required for Claude
-
-# Optional
-OPENAI_API_KEY=sk-...               # Fallback LLM provider
-GHIDRA_INSTALL_DIR=/path/to/ghidra  # Path to Ghidra installation
-JAVA_HOME=/path/to/jdk-21           # Required for Ghidra 12+
-R2D2_DEBUG=true                     # Enable debug logging
-R2D2_CONFIG=/path/to/config.toml    # Custom config file path
+export GHIDRA_INSTALL_DIR=/home/kali/ghidra_11.2_PUBLIC
+export R2D2_CONFIG=./config/your.toml
 ```
 
-## Project Structure
+Firmware lab overlay: `tp_link_firmware/config/r2d2.exo.toml` (artifacts +
+SQLite under that lab's `work/r2d2-artifacts/`).
 
-```
-r2d2/
-├── src/r2d2/
-│   ├── adapters/           # Tool adapters (radare2, angr, ghidra, etc.)
-│   ├── analysis/           # Orchestrator and resource tree
-│   ├── llm/                # Claude/OpenAI integration
-│   ├── storage/            # SQLite persistence
-│   ├── web/                # Flask API
-│   └── cli.py              # Typer CLI
-├── web/frontend/           # React + Vite + MUI
-├── config/                 # Default configuration
-├── samples/                # Sample binaries and C source
-├── scripts/                # Setup and utility scripts
-└── tests/                  # pytest test suite
-```
+## Tests
 
-## Troubleshooting
-
-### "radare2 not found"
 ```bash
-sudo apt-get install radare2
-# or on macOS: brew install radare2
+uv run ruff check src tests
+uv run pytest tests/unit tests/integration/test_api.py::TestChatsEndpoint::test_chat_bundle_exports_json_and_markdown
+cd web/frontend && npm test && npm run build
 ```
-
-### "angr import errors"
-```bash
-uv sync --extra analyzers
-```
-
-### "Ghidra not ready" / "analyzeHeadless not found"
-```bash
-# Install or plan an install
-uv run r2d2 ghidra setup --version 11.4.2 --dry-run
-uv run r2d2 ghidra setup --archive ~/Downloads/ghidra_PUBLIC.zip
-
-# Ensure GHIDRA_INSTALL_DIR is set to the extracted directory
-export GHIDRA_INSTALL_DIR=~/.local/share/r2d2/tools/<ghidra_dir>
-
-# Verify the script exists
-ls $GHIDRA_INSTALL_DIR/support/analyzeHeadless
-uv run r2d2 ghidra status
-
-# For Ghidra 12+, ensure Java 21 is available
-export JAVA_HOME=/path/to/jdk-21
-```
-
-### "Ghidra bridge not connected"
-1. Start Ghidra GUI with your binary loaded
-2. Add `~/ghidra_scripts` to Script Manager directories
-3. Run `ghidra_bridge_server_background.py` in Script Manager
-4. Test: `python scripts/test_ghidra_bridge.py`
-
-### "PyGhidra RecursionError"
-This is a known bug in PyGhidra 3.0.2 with Python 3.11. The `_GhidraBundleFinder.find_spec()` method causes infinite recursion when calling `pyghidra.start()` directly. **Workaround**: r2d2 uses `analyzeHeadless` subprocess instead, which works correctly. If you need PyGhidra directly, use the launcher module:
-```bash
-python -m pyghidra.ghidra_launch --install-dir $GHIDRA_INSTALL_DIR \
-  ghidra.app.util.headless.AnalyzeHeadless /tmp/project proj -import binary.elf
-```
-
-### "Frontend proxy errors"
-Ensure backend is running on :5050 before starting frontend.
-
-### "GEF/Docker errors"
-```bash
-# Build the GEF image
-docker build -t r2d2-gef -f Dockerfile.gef .
-
-# Verify Docker is running
-docker ps
-```
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Run tests: `uv run pytest`
-4. Run linting: `uv run ruff check src/`
-5. Submit a pull request
 
 ## License
 
-MIT License - see LICENSE file for details.
-
-## Acknowledgments
-
-r2d2 builds on excellent open-source tools:
-- [radare2](https://rada.re/) - Reverse engineering framework
-- [angr](https://angr.io/) - Binary analysis platform
-- [Ghidra](https://ghidra-sre.org/) - NSA's software reverse engineering suite
-- [Capstone](https://www.capstone-engine.org/) - Disassembly framework
-- [Frida](https://frida.re/) - Dynamic instrumentation toolkit
-- [GEF](https://gef.readthedocs.io/) - GDB Enhanced Features
+MIT.

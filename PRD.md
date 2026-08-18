@@ -1,5 +1,6 @@
 # Product Requirements Document: r2d2
-**Reverse, Replay, Decompile, Disassemble - Your Binary Analysis Copilot**
+
+> Historical. Current product voice and setup: [README.md](README.md).
 
 ## Vision
 *"Jarvis for binary analysis"* - Drop in a binary, get automated deep analysis, conversational exploration, and AI-guided insights. Zero ceremony, maximum clarity.
