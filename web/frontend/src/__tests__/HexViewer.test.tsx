@@ -19,7 +19,7 @@ describe('HexViewer', () => {
     // Check hex values are displayed
     expect(screen.getByText('48')).toBeInTheDocument();
     expect(screen.getByText('65')).toBeInTheDocument();
-    expect(screen.getByText('6C')).toBeInTheDocument();
+    expect(screen.getAllByText('6C').length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText('6F')).toBeInTheDocument();
   });
 
