@@ -1525,6 +1525,7 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
                         result,
                         binary=path,
                         session_id=updated_session.session_id,
+                        extra_meta={"user_goal": user_goal} if user_goal else None,
                     )
                 except Exception as exc:
                     result.notes.append(f"analysis record not persisted: {exc}")
@@ -1533,6 +1534,7 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
                     session_id=updated_session.session_id,
                     tool_scorecard=tool_scorecard,
                     record=record_summary,
+                    user_goal=user_goal or None,
                 )
                 chat_dao.append_message(
                     updated_session.session_id,
@@ -3581,9 +3583,6 @@ Find something non-obvious in the evidence: a sink caller, an unexpected trust b
 - End with one exact next command (r2, Ghidra headless, unsquashfs, or brief an ELF).""",
     ]
     
-    if user_goal:
-        system_parts.append(f"\n## User's Goal\n{user_goal}")
-
     analysis_for_intake = analysis_attachment
     if analysis_for_intake is None:
         for msg in history:
@@ -3595,6 +3594,15 @@ Find something non-obvious in the evidence: a sink caller, an unexpected trust b
                     break
             if analysis_for_intake is not None:
                 break
+
+    if user_goal:
+        system_parts.append(f"\n## User's Goal\n{user_goal}")
+    else:
+        briefing = analysis_for_intake.get("briefing") if isinstance(analysis_for_intake, dict) else None
+        inferred = briefing.get("inferred_goal") if isinstance(briefing, dict) else None
+        if inferred:
+            system_parts.append(f"\n## User's Goal\n{inferred} (inferred from ranking/tags)")
+
     if analysis_for_intake:
         from ..analysis.sniff import render_intake
 

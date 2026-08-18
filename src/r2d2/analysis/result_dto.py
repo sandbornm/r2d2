@@ -25,6 +25,8 @@ def analysis_result_to_public_dict(
     briefing: dict[str, Any] | None = None,
     include_briefing: bool = True,
     record: dict[str, Any] | None = None,
+    user_goal: str | None = None,
+    extra_tags: list[str] | None = None,
 ) -> dict[str, Any]:
     """Stable analysis payload shared by SSE, attachments, GET, and CLI JSON."""
     payload = analysis_result_core_dict(result)
@@ -36,7 +38,11 @@ def analysis_result_to_public_dict(
     if tool_scorecard is not None:
         payload["tool_scorecard"] = tool_scorecard
     if include_briefing:
-        payload["briefing"] = briefing if briefing is not None else build_briefing(payload)
+        payload["briefing"] = (
+            briefing
+            if briefing is not None
+            else build_briefing(payload, user_goal=user_goal, extra_tags=extra_tags)
+        )
     if record is not None:
         payload["record"] = record
     return payload
@@ -62,12 +68,22 @@ def analysis_result_core_dict(result: AnalysisResult) -> dict[str, Any]:
     }
 
 
-def ensure_analysis_briefing(analysis: dict[str, Any]) -> dict[str, Any]:
+def ensure_analysis_briefing(
+    analysis: dict[str, Any],
+    *,
+    user_goal: str | None = None,
+    extra_tags: list[str] | None = None,
+) -> dict[str, Any]:
     """Return a briefing, computing one if an older attachment omitted it."""
     existing = analysis.get("briefing")
+    goal = (user_goal or "").strip()
     if isinstance(existing, dict) and existing.get("regions") is not None:
-        return existing
-    return build_briefing(analysis)
+        if not goal:
+            return existing
+        if existing.get("goal_source") == "user" and existing.get("inferred_goal") == goal:
+            return existing
+        return build_briefing(analysis, user_goal=goal, extra_tags=extra_tags)
+    return build_briefing(analysis, user_goal=goal or None, extra_tags=extra_tags)
 
 
 __all__ = [

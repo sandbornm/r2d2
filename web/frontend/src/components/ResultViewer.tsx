@@ -9,7 +9,6 @@ import {
   Button,
   Chip,
   CircularProgress,
-  Grid,
   Paper,
   Stack,
   Tab,
@@ -22,7 +21,6 @@ import type {
   AnalysisBundleResponse,
   AnalysisResultPayload,
   AssemblyAnnotation,
-  AutoProfileData,
   DWARFData,
   EvidenceCoverage,
   GEFData,
@@ -31,12 +29,12 @@ import type {
   ToolScorecardEntry,
   ToolStatusSummary,
 } from '../types';
+import { rankFunctions, resolveGoal } from '../utils/rank';
+import AnalysisSteer from './AnalysisSteer';
 import ArtifactSheet from './ArtifactSheet';
-import AutoProfilePanel from './AutoProfilePanel';
 import BriefingPanel from './BriefingPanel';
 import InsightsPanel from './InsightsPanel';
 import DisassemblyViewer from './DisassemblyViewer';
-import FirmwareTriagePanel from './FirmwareTriagePanel';
 
 // Lazy load heavy components for better initial load performance
 const CFGViewer = lazy(() => import('./CFGViewer'));
@@ -65,6 +63,7 @@ interface ResultViewerProps {
   toolsInfo?: Record<string, { available: boolean; install_hint?: string }>;
   onAskAboutCode?: (code: string) => void;
   onAskAboutCFG?: (context: CFGContext) => void;
+  userGoal?: string;
 }
 
 type ViewTab = 'overview' | 'code' | 'analysis' | 'tools';
@@ -136,7 +135,7 @@ const downloadBlob = (body: BlobPart, filename: string, type: string) => {
   URL.revokeObjectURL(url);
 };
 
-const ResultViewer: FC<ResultViewerProps> = memo(({ result, sessionId, onAskAboutCode, onAskAboutCFG }) => {
+const ResultViewer: FC<ResultViewerProps> = memo(({ result, sessionId, onAskAboutCode, onAskAboutCFG, userGoal }) => {
   const theme = useTheme();
   const [view, setView] = useState<ViewTab>('overview');
   const [annotations, setAnnotations] = useState<AssemblyAnnotation[]>([]);
@@ -229,10 +228,8 @@ const ResultViewer: FC<ResultViewerProps> = memo(({ result, sessionId, onAskAbou
   const dwarfDeep = (deepScan.dwarf ?? null) as DWARFData | null;
   const ghidraDeep = (deepScan.ghidra ?? null) as GhidraData | null;
   const gefDeep = (deepScan.gef ?? null) as GEFData | null;
-  const autoprofileQuick = (quickScan.autoprofile ?? null) as AutoProfileData | null;
   const firmwareQuick = (quickScan.firmware ?? null) as Record<string, unknown> | null;
   const sniffQuick = (quickScan.sniff ?? null) as Record<string, unknown> | null;
-  const firmwareChildren = (deepScan.firmware_children ?? null) as Record<string, unknown> | null;
   const runtimeRequirements = (quickScan.runtime ?? null) as RuntimeRequirements | null;
   const toolStatus = (result?.tool_status ?? {}) as Record<string, ToolStatusSummary>;
   const toolScorecard = useMemo(
@@ -327,18 +324,31 @@ const ResultViewer: FC<ResultViewerProps> = memo(({ result, sessionId, onAskAbou
   const generalDisasm = typeof r2Deep.disassembly === 'string' ? r2Deep.disassembly : null;
   const disasmText = entryDisasm || generalDisasm || 'No disassembly available';
 
-  // Top functions sorted by size
+  const rankedGoal = useMemo(
+    () => resolveGoal(
+      userGoal,
+      result?.briefing?.inferred_goal,
+      result?.briefing?.ranking_tags || [],
+      result?.record?.tags || [],
+      {
+        ...(result?.briefing?.subject || {}),
+        name: result?.binary ? (result.binary.split('/').pop() || result.binary) : '',
+      },
+    ),
+    [userGoal, result?.briefing, result?.record?.tags, result?.binary],
+  );
+
+  // Functions matching the thesis — size rank is fool's gold
   const topFunctions = useMemo(() => {
-    return functions
+    const mapped = functions
       .filter((fn: Record<string, unknown>) => typeof fn.offset === 'number')
-      .sort((a: Record<string, unknown>, b: Record<string, unknown>) => ((b.size as number) || 0) - ((a.size as number) || 0))
-      .slice(0, 15)
       .map((fn: Record<string, unknown>) => ({
         name: (fn.name as string) || `sub_${(fn.offset as number).toString(16)}`,
         offset: fn.offset as number,
         size: (fn.size as number) || 0,
       }));
-  }, [functions]);
+    return rankFunctions(mapped, rankedGoal.lenses, rankedGoal.goal);
+  }, [functions, rankedGoal]);
 
   // Interesting strings
   const interestingStrings = useMemo(() => {
@@ -462,18 +472,13 @@ const ResultViewer: FC<ResultViewerProps> = memo(({ result, sessionId, onAskAbou
         {view === 'overview' && (
           <Stack spacing={1.5}>
             {result?.briefing && (
-              <BriefingPanel briefing={result.briefing} onAsk={onAskAboutCode} />
-            )}
-            <InsightsPanel recordId={result?.record?.record_id} />
-            {firmwareQuick && (
-              <FirmwareTriagePanel
-                firmware={firmwareQuick}
-                profile={autoprofileQuick}
-                childrenAnalysis={firmwareChildren}
+              <BriefingPanel
+                briefing={result.briefing}
                 compact
+                userGoal={userGoal}
+                recordTags={result.record?.tags}
               />
             )}
-
             <ArtifactSheet
               fileName={fileName}
               format={formatDisplay}
@@ -493,34 +498,6 @@ const ResultViewer: FC<ResultViewerProps> = memo(({ result, sessionId, onAskAbou
               stringCount={strings.length}
               sha256={result?.record?.sha256 ?? null}
             />
-
-            <Grid container spacing={1.5}>
-              <Grid item xs={12} md={topImports.length ? 6 : 12}>
-                <Paper variant="outlined" sx={{ p: 1.5, height: '100%' }}>
-                  <AutoProfilePanel data={autoprofileQuick} compact />
-                </Paper>
-              </Grid>
-              {topImports.length > 0 && (
-                <Grid item xs={12} md={6}>
-                  <Paper variant="outlined" sx={{ p: 1.5, height: '100%' }}>
-                    <Typography variant="caption" color="text.secondary" fontWeight={600}>
-                      Imports ({topImports.length})
-                    </Typography>
-                    <Box sx={{ mt: 1, display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
-                      {topImports.slice(0, 15).map((name, i) => (
-                        <Chip
-                          key={i}
-                          label={name}
-                          size="small"
-                          variant="outlined"
-                          sx={{ fontFamily: 'monospace', fontSize: '0.65rem' }}
-                        />
-                      ))}
-                    </Box>
-                  </Paper>
-                </Grid>
-              )}
-            </Grid>
           </Stack>
         )}
 
@@ -553,94 +530,85 @@ const ResultViewer: FC<ResultViewerProps> = memo(({ result, sessionId, onAskAbou
               </Paper>
             )}
 
-            {/* DWARF Debug Info */}
-            <Paper variant="outlined" sx={{ height: 300, overflow: 'hidden' }}>
-              <Suspense fallback={<ComponentLoader />}>
-                <DWARFPanel
-                  data={dwarfDeep}
-                  onAskClaude={(question) => onAskAboutCode?.(question)}
-                />
-              </Suspense>
-            </Paper>
+            {dwarfDeep && (
+              <Paper variant="outlined" sx={{ height: 300, overflow: 'hidden' }}>
+                <Suspense fallback={<ComponentLoader />}>
+                  <DWARFPanel
+                    data={dwarfDeep}
+                    onAskClaude={(question) => onAskAboutCode?.(question)}
+                  />
+                </Suspense>
+              </Paper>
+            )}
           </Stack>
         )}
 
         {/* ANALYSIS TAB - Functions, Strings, CFG */}
         {view === 'analysis' && (
           <Stack spacing={1.5}>
-            {firmwareQuick && (
-              <FirmwareTriagePanel
-                firmware={firmwareQuick}
-                profile={autoprofileQuick}
-                childrenAnalysis={firmwareChildren}
+            {result?.briefing && (
+              <BriefingPanel
+                briefing={result.briefing}
+                onAsk={onAskAboutCode}
+                userGoal={userGoal}
+                recordTags={result.record?.tags}
               />
             )}
-
-            {/* Functions and Strings side by side */}
-            <Grid container spacing={1.5}>
-              <Grid item xs={12} md={6}>
-                <Paper variant="outlined" sx={{ p: 1.5, maxHeight: 300, overflow: 'auto' }}>
-                  <Typography variant="caption" color="text.secondary" fontWeight={600}>
-                    Functions ({topFunctions.length})
-                  </Typography>
-                  {topFunctions.length > 0 ? (
-                    <Box component="table" sx={{ width: '100%', borderCollapse: 'collapse', fontFamily: 'monospace', fontSize: '0.75rem', mt: 1 }}>
-                      <thead>
-                        <tr>
-                          <th style={{ textAlign: 'left', padding: '4px 8px', borderBottom: `1px solid ${theme.palette.divider}` }}>Name</th>
-                          <th style={{ textAlign: 'left', padding: '4px 8px', borderBottom: `1px solid ${theme.palette.divider}` }}>Address</th>
-                          <th style={{ textAlign: 'right', padding: '4px 8px', borderBottom: `1px solid ${theme.palette.divider}` }}>Size</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {topFunctions.map((fn, i) => (
-                          <tr key={i}>
-                            <td style={{ padding: '4px 8px' }}>{fn.name}</td>
-                            <td style={{ padding: '4px 8px', color: theme.palette.text.secondary }}>{formatHex(fn.offset)}</td>
-                            <td style={{ padding: '4px 8px', textAlign: 'right' }}>{fn.size}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </Box>
-                  ) : (
-                    <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>No functions discovered</Typography>
-                  )}
-                </Paper>
-              </Grid>
-              <Grid item xs={12} md={6}>
-                <Paper variant="outlined" sx={{ p: 1.5, maxHeight: 300, overflow: 'auto' }}>
-                  <Typography variant="caption" color="text.secondary" fontWeight={600}>
-                    Strings ({interestingStrings.length})
-                  </Typography>
-                  {interestingStrings.length > 0 ? (
-                    <Box sx={{ fontFamily: 'monospace', fontSize: '0.75rem', mt: 1 }}>
-                      {interestingStrings.map((s, i) => (
-                        <Box key={i} sx={{ py: 0.25, borderBottom: `1px solid ${theme.palette.divider}` }}>
-                          {s}
-                        </Box>
-                      ))}
-                    </Box>
-                  ) : (
-                    <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>No interesting strings found</Typography>
-                  )}
-                </Paper>
-              </Grid>
-            </Grid>
-
-            {/* CFG Viewer */}
-            <Paper variant="outlined" sx={{ height: 500 }}>
-              <Suspense fallback={<ComponentLoader />}>
-                <CFGViewer
-                  nodes={angrNodes}
-                  edges={angrEdges}
-                  functions={functionCfgs}
-                  angrActive={angrActive}
-                  angrFound={angrFound}
-                  onAskAboutCFG={onAskAboutCFG}
-                  sessionId={sessionId}
-                />
-              </Suspense>
-            </Paper>
+            <AnalysisSteer
+              binary={result?.binary || fileName}
+              firmware={firmwareQuick}
+              imports={topImports}
+              lenses={rankedGoal.lenses}
+              goal={rankedGoal.goal}
+              sniffStrings={
+                Array.isArray(sniffQuick?.strings)
+                  ? sniffQuick.strings
+                    .map((item) => (typeof item === 'string' ? item : String((item as { value?: string }).value || '')))
+                    .filter(Boolean)
+                  : interestingStrings
+              }
+            />
+            <InsightsPanel recordId={result?.record?.record_id} />
+            {topFunctions.length > 0 && (
+              <Paper variant="outlined" sx={{ p: 1.5, maxHeight: 280, overflow: 'auto' }}>
+                <Typography variant="caption" color="text.secondary" fontWeight={600}>
+                  Functions ({topFunctions.length})
+                </Typography>
+                <Box component="table" sx={{ width: '100%', borderCollapse: 'collapse', fontFamily: 'monospace', fontSize: '0.75rem', mt: 1 }}>
+                  <thead>
+                    <tr>
+                      <th style={{ textAlign: 'left', padding: '4px 8px', borderBottom: `1px solid ${theme.palette.divider}` }}>Name</th>
+                      <th style={{ textAlign: 'left', padding: '4px 8px', borderBottom: `1px solid ${theme.palette.divider}` }}>Address</th>
+                      <th style={{ textAlign: 'right', padding: '4px 8px', borderBottom: `1px solid ${theme.palette.divider}` }}>Size</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {topFunctions.map((fn, i) => (
+                      <tr key={i}>
+                        <td style={{ padding: '4px 8px' }}>{fn.name}</td>
+                        <td style={{ padding: '4px 8px', color: theme.palette.text.secondary }}>{formatHex(fn.offset)}</td>
+                        <td style={{ padding: '4px 8px', textAlign: 'right' }}>{fn.size}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </Box>
+              </Paper>
+            )}
+            {(angrNodes.length > 0 || functionCfgs.length > 0) && (
+              <Paper variant="outlined" sx={{ height: 420 }}>
+                <Suspense fallback={<ComponentLoader />}>
+                  <CFGViewer
+                    nodes={angrNodes}
+                    edges={angrEdges}
+                    functions={functionCfgs}
+                    angrActive={angrActive}
+                    angrFound={angrFound}
+                    onAskAboutCFG={onAskAboutCFG}
+                    sessionId={sessionId}
+                  />
+                </Suspense>
+              </Paper>
+            )}
           </Stack>
         )}
 

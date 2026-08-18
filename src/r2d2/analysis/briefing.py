@@ -41,6 +41,26 @@ _DANGEROUS_IMPORTS = {
     "realpath",
     "tmpnam",
 }
+_SINK_RANK = {
+    "popen": 0,
+    "system": 1,
+    "execve": 2,
+    "execl": 3,
+    "execlp": 3,
+    "execvp": 3,
+    "execv": 3,
+    "strcpy": 4,
+    "sprintf": 5,
+    "vsprintf": 5,
+    "strcat": 6,
+    "gets": 6,
+    "scanf": 7,
+    "sscanf": 7,
+    "recv": 8,
+    "recvfrom": 8,
+    "memcpy": 12,
+    "memmove": 12,
+}
 _INTERESTING_IMPORTS = {
     "socket",
     "bind",
@@ -110,6 +130,90 @@ _WEAK_STRINGS = {
     "tftp",
     "bootcmd=tftp",
 }
+_GOAL_LENSES: dict[str, dict[str, tuple[str, ...]]] = {
+    "unpack": {
+        "keywords": (
+            "unpack",
+            "carve",
+            "extract",
+            "squash",
+            "rootfs",
+            "wrapper",
+            "unsquash",
+            "firmware image",
+            "upgrade image",
+        ),
+        "boost": (
+            "squashfs_filesystem",
+            "vendor_wrapper",
+            "uimage",
+            "firmware-child",
+            "elf_binary",
+        ),
+        "mute": ("entry", "function", "disasm", "issue", "network"),
+    },
+    "sinks": {
+        "keywords": (
+            "sink",
+            "strcpy",
+            "sprintf",
+            "popen",
+            "system",
+            "overflow",
+            "command inj",
+            "dangerous",
+            "cgi",
+            "exec",
+        ),
+        "boost": ("imports", "plt", "dangerous", "function", "disasm"),
+        "mute": ("firmware", "vendor_wrapper", "uimage", "jffs2_marker"),
+    },
+    "network": {
+        "keywords": (
+            "http",
+            "httpd",
+            "cgi",
+            "listen",
+            "accept",
+            "socket",
+            "web",
+            "tdp",
+            "bind",
+            "recv",
+        ),
+        "boost": ("imports", "network", "function", "firmware-child"),
+        "mute": ("vendor_wrapper", "uimage"),
+    },
+    "auth": {
+        "keywords": (
+            "auth",
+            "login",
+            "password",
+            "passwd",
+            "credential",
+            "nvram",
+            "admin",
+        ),
+        "boost": ("credential", "string", "function", "auth"),
+        "mute": ("uimage", "vendor_wrapper"),
+    },
+    "crypto": {
+        "keywords": ("crypto", "encrypt", "decrypt", "aes", "md5", "sha", "rsa"),
+        "boost": ("crypto", "string", "function"),
+        "mute": ("vendor_wrapper", "uimage"),
+    },
+}
+_USERSPACE_NAMES = (
+    "httpd",
+    "uhttpd",
+    "tdpserver",
+    "tmpserver",
+    "busybox",
+    "dropbear",
+)
+_MIN_GOAL_SCORE = 70.0
+_GOAL_BOOST = 18.0
+_GOAL_MUTE = 28.0
 
 
 @dataclass(slots=True)
@@ -162,6 +266,9 @@ class AnalysisBriefing:
     regions: list[RegionAsk] = field(default_factory=list)
     next_steps: list[str] = field(default_factory=list)
     subject: dict[str, Any] = field(default_factory=dict)
+    inferred_goal: str = ""
+    ranking_tags: list[str] = field(default_factory=list)
+    goal_source: str = "inferred"
     schema_version: str = BRIEFING_SCHEMA_VERSION
 
     def to_dict(self) -> dict[str, Any]:
@@ -173,6 +280,9 @@ class AnalysisBriefing:
             "regions": [region.to_dict() for region in self.regions],
             "overall_ask": self.overall_ask,
             "next_steps": list(self.next_steps),
+            "inferred_goal": self.inferred_goal,
+            "ranking_tags": list(self.ranking_tags),
+            "goal_source": self.goal_source,
         }
 
 
@@ -180,6 +290,8 @@ def build_briefing(
     source: Any,
     *,
     max_regions: int = MAX_REGIONS,
+    user_goal: str | None = None,
+    extra_tags: Iterable[str] | None = None,
 ) -> dict[str, Any]:
     """Build a ranked briefing from an AnalysisResult or public analysis dict."""
     analysis = _as_analysis_dict(source)
@@ -193,6 +305,10 @@ def build_briefing(
     r2_deep = _dict(deep.get("radare2"))
     ghidra = _dict(deep.get("ghidra"))
     children = _dict(deep.get("firmware_children"))
+    tag_list = [str(tag) for tag in (extra_tags or []) if str(tag).strip()]
+    if not tag_list:
+        tag_list = [str(tag) for tag in _list(analysis.get("tags")) if str(tag).strip()]
+    goal_text = (user_goal or analysis.get("user_goal") or "").strip() or None
 
     subject = _subject(name, binary, firmware, profile, r2_quick, r2_deep, analysis)
     candidates = _collect_regions(
@@ -205,17 +321,24 @@ def build_briefing(
         children=children,
         graph=_dict(analysis.get("analysis_graph")),
         issues=list(analysis.get("issues") or []),
+        wrapper=_is_wrapper_subject(subject, firmware),
     )
-    candidates.sort(key=lambda region: (-region.score, region.id))
-    regions = _dedupe_regions(candidates)[: max(1, max_regions)]
+    goal, lenses, goal_source = infer_goal(goal_text, subject, tag_list, candidates)
+    ranked = apply_goal_ranking(candidates, lenses, goal)
+    ranked.sort(key=lambda region: (-region.score, region.id))
+    regions = _dedupe_regions(ranked)[: max(1, max_regions)]
     for index, region in enumerate(regions, start=1):
         region.ask = _region_ask(region, index=index, total=len(regions), subject=subject)
         if not region.next_actions:
             region.next_actions = _default_next_actions(region)
 
+    ranking_tags = [f"lens-{lens}" for lens in lenses]
+    subject["inferred_goal"] = goal
+    subject["goal_source"] = goal_source
+    subject["ranking_tags"] = ranking_tags
     next_steps = _overall_next_steps(subject, regions, firmware, children)
-    summary = _summary_line(subject, regions)
-    overall_ask = _overall_ask(subject, regions, next_steps)
+    summary = _summary_line(subject, regions, goal)
+    overall_ask = _overall_ask(subject, regions, next_steps, goal)
     return AnalysisBriefing(
         binary=binary,
         subject=subject,
@@ -223,6 +346,9 @@ def build_briefing(
         regions=regions,
         overall_ask=overall_ask,
         next_steps=next_steps,
+        inferred_goal=goal,
+        ranking_tags=ranking_tags,
+        goal_source=goal_source,
     ).to_dict()
 
 
@@ -237,6 +363,8 @@ def render_briefing_markdown(
     if max_regions is not None:
         regions = regions[:max_regions]
     subject = _dict(data.get("subject"))
+    goal = str(data.get("inferred_goal") or subject.get("inferred_goal") or "").strip()
+    goal_source = str(data.get("goal_source") or subject.get("goal_source") or "inferred")
     lines = [
         f"# Briefing: {subject.get('name') or Path(str(data.get('binary') or 'binary')).name}",
         "",
@@ -255,6 +383,11 @@ def render_briefing_markdown(
             if part
         ),
     ]
+    if goal:
+        lines.append(f"Thesis ({goal_source}): {goal}")
+    ranking_tags = list(data.get("ranking_tags") or subject.get("ranking_tags") or [])
+    if ranking_tags:
+        lines.append("Lenses: " + ", ".join(str(tag) for tag in ranking_tags[:6]))
     if subject.get("dangerous_imports"):
         lines.append("Dangerous imports: " + ", ".join(subject["dangerous_imports"][:8]))
     if data.get("next_steps"):
@@ -359,8 +492,14 @@ def _subject(
     info = _dict(_dict(r2_quick.get("info")).get("bin"))
     core = _dict(_dict(r2_quick.get("info")).get("core"))
     imports = [_import_name(item) for item in _list(r2_quick.get("imports"))]
-    dangerous = sorted({item for item in imports if _basename(item) in _DANGEROUS_IMPORTS})
-    interesting = sorted({item for item in imports if _basename(item) in _INTERESTING_IMPORTS})
+    dangerous = sorted(
+        {item for item in imports if _basename(item) in _DANGEROUS_IMPORTS},
+        key=lambda item: (_SINK_RANK.get(_basename(item), 40), item),
+    )
+    interesting = sorted(
+        {item for item in imports if _basename(item) in _INTERESTING_IMPORTS},
+        key=lambda item: (_SINK_RANK.get(_basename(item), 40), item),
+    )
     functions = _list(r2_deep.get("functions"))
     return {
         "name": name,
@@ -392,12 +531,14 @@ def _collect_regions(
     children: dict[str, Any],
     graph: dict[str, Any],
     issues: list[Any],
+    wrapper: bool = False,
 ) -> list[RegionAsk]:
     regions: list[RegionAsk] = []
     regions.extend(_firmware_regions(firmware))
     regions.extend(_signal_regions(firmware, profile))
     regions.extend(_import_regions(r2_quick))
-    regions.extend(_entry_regions(r2_deep, name))
+    if not wrapper:
+        regions.extend(_entry_regions(r2_deep, name))
     regions.extend(_function_regions(r2_deep))
     regions.extend(_ghidra_regions(ghidra))
     regions.extend(_child_regions(children))
@@ -426,13 +567,42 @@ def _collect_regions(
 
 def _firmware_regions(firmware: dict[str, Any]) -> list[RegionAsk]:
     regions: list[RegionAsk] = []
-    artifacts = _list(firmware.get("embedded_artifacts")) or _list(firmware.get("recommended_targets"))
+    artifacts: list[dict[str, Any]] = []
+    seen_keys: set[str] = set()
+    for bucket in (
+        _list(firmware.get("recommended_targets")),
+        _list(firmware.get("embedded_artifacts")),
+    ):
+        for item in bucket:
+            if not isinstance(item, dict):
+                continue
+            key = f"{item.get('kind')}:{_hex(item.get('offset_hex') or item.get('offset')) or item.get('name')}"
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            artifacts.append(item)
+    artifacts.sort(key=lambda item: -_FIRMWARE_KIND_SCORE.get(str(item.get("kind") or ""), 0))
     seen_wrappers: set[str] = set()
-    for artifact in artifacts[:12]:
+    kinds_present = {str(item.get("kind") or "") for item in artifacts}
+    has_wrapper = "vendor_wrapper" in kinds_present
+    fmt = str(firmware.get("top_level_format") or firmware.get("container_type") or "").lower()
+    already_elf = fmt in {"elf", "executable"}
+    for artifact in artifacts:
         if not isinstance(artifact, dict):
             continue
         kind = str(artifact.get("kind") or "artifact")
         if kind in _NOISY_FIRMWARE_KINDS and not artifact.get("carved_path"):
+            continue
+        if kind == "compressed_stream" and (
+            not artifact.get("recommended")
+            or "squashfs_filesystem" in kinds_present
+            or "uimage" in kinds_present
+        ):
+            continue
+        offset = _hex(artifact.get("offset_hex") or artifact.get("offset"))
+        if kind == "elf_binary" and (
+            already_elf or (has_wrapper and _is_zero_offset(offset, artifact.get("offset")))
+        ):
             continue
         if kind == "vendor_wrapper":
             wrapper_key = str(artifact.get("name") or kind)
@@ -442,7 +612,12 @@ def _firmware_regions(firmware: dict[str, Any]) -> list[RegionAsk]:
         score = _FIRMWARE_KIND_SCORE.get(kind, 62)
         if artifact.get("recommended"):
             score += 4
-        offset = _hex(artifact.get("offset_hex") or artifact.get("offset"))
+        if kind == "squashfs_filesystem":
+            score += 12
+        if kind == "vendor_wrapper" and (
+            "squashfs_filesystem" in kinds_present or "elf_binary" in kinds_present
+        ):
+            score -= 6
         title = str(artifact.get("name") or kind)
         why = str(artifact.get("description") or f"{kind} at {offset or 'unknown offset'}")
         lines = [
@@ -472,6 +647,8 @@ def _firmware_regions(firmware: dict[str, Any]) -> list[RegionAsk]:
                 next_actions=_firmware_next_actions(kind, artifact),
             )
         )
+        if len(regions) >= 6:
+            break
     return regions
 
 
@@ -497,8 +674,7 @@ def _signal_regions(firmware: dict[str, Any], profile: dict[str, Any]) -> list[R
             continue
         items = [
             item for item in items
-            if str(item.get("value") or "").strip().lower() not in _WEAK_STRINGS
-            and "tftp" not in str(item.get("value") or "").lower()
+            if not _is_weak_string(str(item.get("value") or ""))
         ]
         if not items:
             continue
@@ -536,6 +712,7 @@ def _import_regions(r2_quick: dict[str, Any]) -> list[RegionAsk]:
     hits = [name for name in imports if _basename(name) in _DANGEROUS_IMPORTS | _INTERESTING_IMPORTS]
     if not hits:
         return []
+    hits = sorted(hits, key=lambda item: (_SINK_RANK.get(_basename(item), 40), item))
     dangerous = [name for name in hits if _basename(name) in _DANGEROUS_IMPORTS]
     score = 93 if dangerous else 76
     text = "\n".join(hits[:16])
@@ -738,20 +915,20 @@ def _child_regions(children: dict[str, Any]) -> list[RegionAsk]:
 
 def _issue_regions(issues: list[Any], graph: dict[str, Any]) -> list[RegionAsk]:
     regions: list[RegionAsk] = []
-    for issue in issues[:3]:
+    for issue in issues[:2]:
         text = str(issue)
         regions.append(
             RegionAsk(
                 id=f"issue:{text[:32]}",
                 title="Analysis issue",
                 why=text,
-                score=72,
+                score=48,
                 tags=["issue"],
                 snippet=RegionSnippet(source="r2d2", kind="inventory", text=text),
                 next_actions=["Fix the tooling gap named in the issue before asking the model to guess."],
             )
         )
-    for node in _list(graph.get("nodes")):
+    for node in _list(graph.get("nodes"))[:1]:
         if not isinstance(node, dict) or node.get("kind") != "issue":
             continue
         label = str(node.get("label") or "graph issue")
@@ -760,7 +937,7 @@ def _issue_regions(issues: list[Any], graph: dict[str, Any]) -> list[RegionAsk]:
                 id=f"graph-issue:{label[:32]}",
                 title=label,
                 why="Marked as an issue node on the analysis graph.",
-                score=74,
+                score=46,
                 tags=["issue", "graph"],
                 snippet=RegionSnippet(
                     source=str(node.get("source") or "graph"),
@@ -802,7 +979,12 @@ def _region_ask(region: RegionAsk, *, index: int, total: int, subject: dict[str,
     return _clamp("\n".join(lines), MAX_ASK_CHARS)
 
 
-def _overall_ask(subject: dict[str, Any], regions: list[RegionAsk], next_steps: list[str]) -> str:
+def _overall_ask(
+    subject: dict[str, Any],
+    regions: list[RegionAsk],
+    next_steps: list[str],
+    goal: str | None = None,
+) -> str:
     region_lines = []
     for index, region in enumerate(regions, start=1):
         loc = ""
@@ -814,6 +996,8 @@ def _overall_ask(subject: dict[str, Any], regions: list[RegionAsk], next_steps: 
         f"Format/arch: {subject.get('format') or '?'} {subject.get('arch') or '?'}",
         f"Functions: {subject.get('function_count') or 0}; imports: {subject.get('import_count') or 0}",
     ]
+    if goal:
+        facts.append(f"Thesis: {goal}")
     if subject.get("dangerous_imports"):
         facts.append("Dangerous imports: " + ", ".join(subject["dangerous_imports"][:8]))
     if subject.get("firmware_kind"):
@@ -848,7 +1032,7 @@ def _overall_next_steps(
     children: dict[str, Any],
 ) -> list[str]:
     steps: list[str] = []
-    if firmware.get("top_level_format") and not _list(children.get("analyses")):
+    if _is_wrapper_subject(subject, firmware) and not _list(children.get("analyses")):
         steps.append("Unpack the vendor wrapper and brief a carved ELF (httpd/tdpServer), not the .bin.")
     if subject.get("dangerous_imports"):
         first = subject["dangerous_imports"][0]
@@ -893,7 +1077,7 @@ def _firmware_next_actions(kind: str, artifact: dict[str, Any]) -> list[str]:
     return [f"Carve at {artifact.get('offset_hex') or artifact.get('offset')} and identify the payload."]
 
 
-def _summary_line(subject: dict[str, Any], regions: list[RegionAsk]) -> str:
+def _summary_line(subject: dict[str, Any], regions: list[RegionAsk], goal: str | None = None) -> str:
     parts = [
         f"{subject.get('name')} looks like {subject.get('format') or 'an unidentified image'}",
         f"{subject.get('arch') or 'unknown arch'}",
@@ -903,7 +1087,10 @@ def _summary_line(subject: dict[str, Any], regions: list[RegionAsk]) -> str:
     if subject.get("dangerous_imports"):
         parts.append("imports " + ", ".join(subject["dangerous_imports"][:4]))
     top = regions[0].title if regions else "no ranked region"
-    return f"{'; '.join(parts)}. First region: {top}."
+    line = f"{'; '.join(parts)}. First region: {top}."
+    if goal:
+        return f"{line} Thesis: {goal}."
+    return line
 
 
 def _overview_snippet(
@@ -978,6 +1165,163 @@ def _dedupe_regions(regions: Iterable[RegionAsk]) -> list[RegionAsk]:
     return unique
 
 
+def infer_goal(
+    user_goal: str | None,
+    subject: dict[str, Any],
+    extra_tags: Iterable[str],
+    regions: list[RegionAsk],
+) -> tuple[str, list[str], str]:
+    """Return (goal, lenses, source). Source is 'user' or 'inferred'."""
+    tags = [str(tag) for tag in extra_tags if str(tag).strip()]
+    if user_goal:
+        lenses = _match_lenses(user_goal, tags)
+        return user_goal, lenses or ["general"], "user"
+
+    lenses = _match_lenses(" ".join(tags), tags)
+    name = str(subject.get("name") or "").lower()
+    if _is_wrapper_subject(subject, {}):
+        return (
+            "carve the rootfs and brief the userspace ELF — not this wrapper",
+            ["unpack"],
+            "inferred",
+        )
+    if any(hint in name for hint in _USERSPACE_NAMES):
+        if subject.get("dangerous_imports"):
+            return (
+                "xref the dangerous and network imports; name the callers",
+                ["sinks", "network"],
+                "inferred",
+            )
+        return (
+            "map the user-facing surface (cgi/auth/listen) and name sink callers",
+            ["network", "sinks"],
+            "inferred",
+        )
+    if subject.get("dangerous_imports"):
+        return (
+            "xref dangerous imports and name the first caller worth reading",
+            ["sinks"],
+            "inferred",
+        )
+    region_tags = {str(tag) for region in regions for tag in region.tags}
+    if "credential" in region_tags:
+        return "locate credential/auth handling", ["auth"], "inferred"
+    if "crypto" in region_tags:
+        return "find the crypto routine and what material it uses", ["crypto"], "inferred"
+    if lenses:
+        return f"follow tagged surface: {', '.join(sorted(set(tags)))}", lenses, "inferred"
+    return "isolate the highest-signal next region", ["general"], "inferred"
+
+
+def apply_goal_ranking(
+    regions: list[RegionAsk],
+    lenses: Iterable[str],
+    goal: str,
+) -> list[RegionAsk]:
+    lens_list = [lens for lens in lenses if lens in _GOAL_LENSES]
+    if not lens_list:
+        return [region for region in regions if "issue" not in region.tags]
+
+    boost: set[str] = set()
+    mute: set[str] = set()
+    for lens in lens_list:
+        spec = _GOAL_LENSES[lens]
+        boost.update(spec["boost"])
+        mute.update(spec["mute"])
+    mute -= boost
+    goal_tokens = {token for token in re.split(r"[^a-z0-9]+", goal.lower()) if len(token) >= 4}
+
+    adjusted: list[RegionAsk] = []
+    boosted_count = 0
+    for region in regions:
+        tags = set(region.tags)
+        hay = " ".join(
+            part
+            for part in (
+                region.title,
+                region.why,
+                region.snippet.text if region.snippet else "",
+                " ".join(region.tags),
+            )
+            if part
+        ).lower()
+        score = float(region.score)
+        if tags & boost:
+            score += _GOAL_BOOST
+            boosted_count += 1
+        elif tags & mute:
+            score -= _GOAL_MUTE
+        if goal_tokens and any(token in hay for token in goal_tokens):
+            score += 6
+        region.score = score
+        adjusted.append(region)
+
+    kept: list[RegionAsk] = []
+    for region in adjusted:
+        muted_only = set(region.tags) & mute and not (set(region.tags) & boost)
+        if muted_only and boosted_count and region.score < _MIN_GOAL_SCORE:
+            continue
+        if region.score < 42:
+            continue
+        kept.append(region)
+    return kept or adjusted[:1]
+
+
+def _match_lenses(text: str, tags: Iterable[str] | None = None) -> list[str]:
+    hay = text.lower()
+    tag_hay = {str(tag).lower() for tag in (tags or [])}
+    hits: list[str] = []
+    for name, spec in _GOAL_LENSES.items():
+        if any(keyword in hay for keyword in spec["keywords"]):
+            hits.append(name)
+        elif {f"lens-{name}", f"lens:{name}", name} & tag_hay:
+            hits.append(name)
+    return hits
+
+
+def _is_wrapper_subject(subject: dict[str, Any], firmware: dict[str, Any]) -> bool:
+    fmt = str(subject.get("format") or firmware.get("top_level_format") or "").lower()
+    kind = str(
+        subject.get("firmware_kind")
+        or firmware.get("container_type")
+        or firmware.get("top_level_format")
+        or ""
+    ).lower()
+    blob = f"{fmt} {kind}"
+    if "elf" in fmt and "firmware" not in blob and "container" not in blob:
+        return False
+    return any(
+        token in blob
+        for token in ("firmware", "container", "cloud", "ver. 2", "img0", "fwup", "opaque")
+    )
+
+
+def _is_zero_offset(offset_hex: str | None, raw: Any) -> bool:
+    if raw in (0, "0", "0x0", "0X0"):
+        return True
+    if offset_hex in {None, "", "0x0", "0x00"}:
+        return True
+    return False
+
+
+def _is_weak_string(value: str) -> bool:
+    text = value.strip()
+    lowered = text.lower()
+    if not text or lowered in _WEAK_STRINGS:
+        return True
+    if "tftp" in lowered:
+        return True
+    if len(text) < 6:
+        return True
+    printable = sum(1 for char in text if 32 <= ord(char) < 127)
+    if printable / max(len(text), 1) < 0.85:
+        return True
+    letters = sum(1 for char in text if char.isalpha())
+    if letters < 3:
+        return True
+    return False
+
+
 def _import_name(item: Any) -> str:
     if isinstance(item, dict):
         return str(item.get("name") or item.get("plt") or "")
@@ -1032,7 +1376,9 @@ __all__ = [
     "AnalysisBriefing",
     "RegionAsk",
     "RegionSnippet",
+    "apply_goal_ranking",
     "build_briefing",
     "extract_code_snippets",
+    "infer_goal",
     "render_briefing_markdown",
 ]

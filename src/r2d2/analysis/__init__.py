@@ -7,7 +7,13 @@ from .investigation_graph import (
     InvestigationNode,
     build_investigation_graph,
 )
-from .briefing import build_briefing, extract_code_snippets, render_briefing_markdown
+from .briefing import (
+    apply_goal_ranking,
+    build_briefing,
+    extract_code_snippets,
+    infer_goal,
+    render_briefing_markdown,
+)
 from .orchestrator import AnalysisOrchestrator, AnalysisPlan, AnalysisResult
 from .insights import extract_insights
 from .record import AnalysisRecordStore
@@ -25,11 +31,13 @@ __all__ = [
     "AnalysisRecordStore",
     "AnalysisResult",
     "analysis_result_to_public_dict",
+    "apply_goal_ranking",
     "build_analysis_graph",
     "build_briefing",
     "build_investigation_graph",
     "ensure_analysis_briefing",
     "extract_code_snippets",
     "extract_insights",
+    "infer_goal",
     "render_briefing_markdown",
 ]

@@ -85,6 +85,9 @@ def render_intake(analysis: dict[str, Any]) -> str:
     if strings:
         preview = ", ".join(str(item.get("value") if isinstance(item, dict) else item)[:40] for item in strings[:8])
         lines.append(f"strings: {preview}")
+    if briefing.get("inferred_goal"):
+        source = briefing.get("goal_source") or "inferred"
+        lines.append(f"thesis ({source}): {briefing['inferred_goal']}")
     if briefing.get("summary"):
         lines.append(f"briefing: {briefing['summary']}")
     issues = analysis.get("issues") or []
@@ -109,13 +112,7 @@ def _interesting_strings(path: Path) -> list[dict[str, Any]]:
             ranked.append((score, text))
     ranked.sort(key=lambda item: (-item[0], item[1]))
     interesting = [text for score, text in ranked if score > 0][:_MAX_STRINGS]
-    if len(interesting) < 12:
-        for _, text in ranked:
-            if text not in interesting:
-                interesting.append(text)
-            if len(interesting) >= 12:
-                break
-    return [{"value": text} for text in interesting[:_MAX_STRINGS]]
+    return [{"value": text} for text in interesting]
 
 
 def _hex_head(path: Path) -> str:

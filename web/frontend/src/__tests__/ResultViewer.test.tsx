@@ -184,25 +184,26 @@ describe('ResultViewer', () => {
     vi.unstubAllGlobals();
   });
 
-  it('shows functions in analysis tab', async () => {
+  it('shows named functions that match the thesis in analysis tab', async () => {
     const user = userEvent.setup();
     render(<ResultViewer result={mockResult} />);
 
     await user.click(screen.getByRole('tab', { name: /analysis/i }));
 
     expect(screen.getByText('main')).toBeInTheDocument();
-    expect(screen.getByText('helper')).toBeInTheDocument();
+    expect(screen.queryByText('helper')).not.toBeInTheDocument();
   });
 
-  it('shows strings in analysis tab', async () => {
+  it('shows sniffed strings, not filler, in analysis tab', async () => {
     const user = userEvent.setup();
     render(<ResultViewer result={mockResult} />);
 
     await user.click(screen.getByRole('tab', { name: /analysis/i }));
 
-    // Strings should be visible in the analysis view
-    expect(screen.getByText('Hello World')).toBeInTheDocument();
-    expect(screen.getByText('Test String')).toBeInTheDocument();
+    expect(screen.getByText('httpd')).toBeInTheDocument();
+    expect(screen.getByText('/cgi-bin/login')).toBeInTheDocument();
+    expect(screen.queryByText('Hello World')).not.toBeInTheDocument();
+    expect(screen.queryByText('Test String')).not.toBeInTheDocument();
   });
 
   it('switches to code tab', async () => {
@@ -214,24 +215,22 @@ describe('ResultViewer', () => {
     expect(screen.getByTestId('disassembly-viewer')).toBeInTheDocument();
   });
 
-  it('shows CFG in analysis tab', async () => {
+  it('hides empty CFG in analysis tab', async () => {
     const user = userEvent.setup();
     render(<ResultViewer result={mockResult} />);
 
     await user.click(screen.getByRole('tab', { name: /analysis/i }));
 
-    // CFG is accessible from analysis tab
-    expect(screen.getByTestId('cfg-viewer')).toBeInTheDocument();
+    expect(screen.queryByTestId('cfg-viewer')).not.toBeInTheDocument();
   });
 
-  it('shows DWARF panel in code tab', async () => {
+  it('hides empty DWARF panel in code tab', async () => {
     const user = userEvent.setup();
     render(<ResultViewer result={mockResult} />);
 
     await user.click(screen.getByRole('tab', { name: /code/i }));
 
-    // DWARF panel should be accessible from code tab
-    expect(screen.getByTestId('dwarf-panel')).toBeInTheDocument();
+    expect(screen.queryByTestId('dwarf-panel')).not.toBeInTheDocument();
   });
 
   it('calls onAskAboutCode callback when provided', async () => {

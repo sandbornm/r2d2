@@ -31,16 +31,49 @@ const briefing: AnalysisBriefingPayload = {
 };
 
 describe('BriefingPanel', () => {
-  it('renders ranked regions and forwards an ask', async () => {
+  it('renders ranked regions and copies a region ask', async () => {
     const onAsk = vi.fn();
     const user = userEvent.setup();
     render(<BriefingPanel briefing={briefing} onAsk={onAsk} />);
 
-    expect(screen.getByText(/what to ask next/i)).toBeInTheDocument();
+    expect(screen.getByText('Steer')).toBeInTheDocument();
+    expect(screen.getByTestId('briefing-goal')).toBeInTheDocument();
     expect(screen.getByText('Entry / main')).toBeInTheDocument();
     expect(screen.getByText(/push \{lr\}/)).toBeInTheDocument();
 
-    await user.click(screen.getByRole('button', { name: /ask qwen about this image/i }));
-    expect(onAsk).toHaveBeenCalledWith('SUMMARIZE FROM THESE FACTS');
+    await user.click(screen.getByRole('button', { name: /copy ask/i }));
+    expect(onAsk).not.toHaveBeenCalled();
+  });
+
+  it('compact mode shows inferred thesis and hides region dump', () => {
+    render(<BriefingPanel briefing={briefing} compact />);
+    expect(screen.getByText('Next')).toBeInTheDocument();
+    expect(screen.getByTestId('briefing-goal-source')).toHaveTextContent(/inferred/i);
+    expect(screen.queryByText(/push \{lr\}/)).not.toBeInTheDocument();
+  });
+
+  it('reranks when a user thesis is supplied', () => {
+    const withFirmware: typeof briefing = {
+      ...briefing,
+      inferred_goal: 'carve the rootfs and brief the userspace ELF — not this wrapper',
+      ranking_tags: ['lens-unpack'],
+      regions: [
+        ...briefing.regions,
+        {
+          id: 'fw:squashfs_filesystem:0x100200',
+          title: 'Firmware region: SquashFS LE',
+          why: 'root filesystem',
+          score: 93,
+          tags: ['firmware', 'squashfs_filesystem'],
+          snippet: { source: 'firmware', kind: 'inventory', text: 'kind=squashfs_filesystem', address: '0x100200', function: null },
+          ask: 'REGION squash',
+          next_actions: ['unsquashfs'],
+        },
+      ],
+    };
+    render(<BriefingPanel briefing={withFirmware} userGoal="carve squashfs" />);
+    expect(screen.getByTestId('briefing-goal-source')).toHaveTextContent(/thesis/i);
+    expect(screen.getByTestId('briefing-goal')).toHaveTextContent(/carve squashfs/i);
+    expect(screen.getByText(/SquashFS/)).toBeInTheDocument();
   });
 });
