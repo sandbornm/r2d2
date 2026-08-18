@@ -35,8 +35,9 @@ the CLI; they are not inside the analysis process.
 
 Stacked PRs, merge **in order** after CI is green. Do not commit to `main`.
 
-1. Land `feat/rank-goal` then `feat/rank-ui` (see open PRs). Rebase the UI
-   branch onto `main` after the ranking PR merges.
+1. Land [#9](https://github.com/sandbornm/r2d2/pull/9) (`feat/rank-goal`)
+   then [#10](https://github.com/sandbornm/r2d2/pull/10) (`feat/rank-ui`).
+   Rebase #10 onto `main` after #9 merges. Do not merge to `main` locally.
 2. Headless, no Qwen: `r2d2 brief` the WR841N wrapper (`--quick`) and
    extracted `httpd` (not `--quick` — need `aaa`/`afl`). Wrapper first
    region must be SquashFS; httpd first region PLT with `popen` before
