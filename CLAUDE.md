@@ -1,17 +1,19 @@
 # CLAUDE.md - Development Guide for r2d2
 
-This document provides essential context for AI assistants and developers working on the r2d2 codebase.
+Agent/dev notes. **Setup and interfaces: [README.md](README.md).**
 
-## Project Overview
-
-**r2d2** is a professional firmware/binary triage bus: radare2, Ghidra headless, firmware inventory, optional angr MCP, tagged records, and discovery-shaped asks for a local Qwen model. Not a teaching UI.
+**r2d2** is a professional firmware/binary triage bus: radare2, Ghidra
+headless, firmware inventory, optional angr MCP, tagged records, and
+discovery-shaped asks for a local Qwen model. Not a teaching UI. omp (Oh My
+Pi) is a separate harness that *calls* this CLI for Qwen pilots — do not
+absorb that planner here.
 
 ## Quick Commands
 
 ```bash
 # Setup
-scripts/setup.sh                    # Full setup (backend + frontend)
-uv sync --extra analyzers           # Install Python deps with analyzers
+uv sync --extra analyzers
+uv run r2d2 env
 
 # Development
 uv run r2d2-web                     # Start Flask backend on :5050

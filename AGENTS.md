@@ -2,7 +2,11 @@
 
 Overview of autonomous components inside r2d2 and how they cooperate to deliver analysis + LLM conversations.
 
-> **Note**: r2d2 is a professional triage bus. Do not add beginner tutorials, simplified tooltips, or "explain assembly to a student" prompts. Surface anomalies, sink callers, and next commands. Push the local Qwen model to find something non-obvious from a snippet.
+> User-facing setup and the public contract: [README.md](README.md).
+>
+> r2d2 is a professional triage bus. Do not add beginner tutorials. Surface
+> anomalies, sink callers, and next commands. omp (Oh My Pi) pilots Qwen by
+> calling this CLI — keep `analyze` / `brief` / `records` / `insights` stable.
 
 ## Analyzer Orchestrator (Python)
 - **Entry point**: `r2d2.analysis.orchestrator.AnalysisOrchestrator`

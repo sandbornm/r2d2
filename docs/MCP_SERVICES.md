@@ -1,8 +1,10 @@
 # MCP Services
 
-r2d2 expects MCP-adjacent analysis services to run on explicit local ports so
-the web dashboard and CLI can probe them before dispatching work. The default
-ports intentionally avoid `5000` and `5001`.
+Optional. angr on `:8770` is the only MCP this lab runs. Ghidra decompile is
+**headless 11.2**, not the GhidraMCP plugin.
+
+r2d2 expects these services on explicit local ports so the CLI and UI can
+probe them before dispatch. Defaults avoid `5000` and `5001`.
 
 ## Default Endpoints
 
@@ -47,8 +49,8 @@ uv run r2d2 mcp --json
 uv run r2d2 env
 ```
 
-The dashboard uses the same configuration and exposes service status through
-`/api/tools/status?live=1`.
+The dashboard uses `/api/tools/status` (cached). Do not poll `?live=1` on
+the single-thread Flask server.
 
 ## Launch From r2d2
 
