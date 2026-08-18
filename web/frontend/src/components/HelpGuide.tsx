@@ -37,7 +37,9 @@ const HelpGuide: FC<HelpGuideProps> = ({ open, onClose }) => (
       </Typography>
       <Block title="1. State the thesis">
         One sentence: who calls system on the login path, where upgrade writes flash,
-        whether tdpServer and httpd share a parser. That is the only question Qwen answers.
+        whether tdpServer and httpd share a parser. If you leave it blank, ranking tags
+        infer one (unpack a wrapper, xref sinks on httpd). The UI only shows what that
+        thesis ranks as interesting.
       </Block>
       <Block title="2. Give it the right file">
         An upgrade .bin is inventory only (wrapper, squashfs offset). The program you actually

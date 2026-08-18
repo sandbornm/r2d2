@@ -1535,6 +1535,7 @@ Explain why this node matters for behavior triage, dynamic-analysis targeting, o
                           toolsInfo={health?.tools}
                           onAskAboutCode={handleAskAboutCode}
                           onAskAboutCFG={handleAskAboutCFG}
+                          userGoal={userGoal}
                         />
                       </Suspense>
                     ) : (

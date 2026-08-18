@@ -1,10 +1,14 @@
 import { Box, Button, Chip, Paper, Stack, Typography } from '@mui/material';
-import { FC } from 'react';
+import { FC, useMemo } from 'react';
 import type { AnalysisBriefingPayload, BriefingRegion } from '../types';
+import { rankRegions, resolveGoal } from '../utils/rank';
 
 interface BriefingPanelProps {
   briefing: AnalysisBriefingPayload;
   onAsk?: (prompt: string) => void;
+  compact?: boolean;
+  userGoal?: string;
+  recordTags?: string[];
 }
 
 const copyText = async (text: string) => {
@@ -65,14 +69,17 @@ const RegionCard: FC<{ region: BriefingRegion; index: number; onAsk?: (prompt: s
         </Box>
       )}
       <Stack direction="row" spacing={1} sx={{ pl: 3.25 }} alignItems="center">
-        {onAsk && (
-          <Button size="small" variant="contained" onClick={() => onAsk(region.ask)}>
-            Ask Qwen
-          </Button>
-        )}
+        <Button size="small" variant="outlined" onClick={() => copyText(region.next_actions[0] || region.ask)}>
+          Copy next
+        </Button>
         <Button size="small" variant="text" onClick={() => copyText(region.ask)}>
           Copy ask
         </Button>
+        {onAsk && (
+          <Button size="small" variant="text" onClick={() => onAsk(region.ask)}>
+            Ask Qwen
+          </Button>
+        )}
         {region.tags.slice(0, 3).map((tag) => (
           <Chip key={tag} size="small" label={tag} variant="outlined" />
         ))}
@@ -81,44 +88,76 @@ const RegionCard: FC<{ region: BriefingRegion; index: number; onAsk?: (prompt: s
   );
 };
 
-const BriefingPanel: FC<BriefingPanelProps> = ({ briefing, onAsk }) => {
+const BriefingPanel: FC<BriefingPanelProps> = ({
+  briefing,
+  onAsk,
+  compact = false,
+  userGoal,
+  recordTags = [],
+}) => {
   const wrapper = isWrapper(briefing);
+  const ranked = useMemo(() => {
+    const resolved = resolveGoal(
+      userGoal,
+      briefing.inferred_goal,
+      briefing.ranking_tags || [],
+      recordTags,
+      briefing.subject,
+    );
+    return {
+      ...resolved,
+      regions: rankRegions(briefing.regions, resolved.lenses, resolved.goal),
+    };
+  }, [briefing, userGoal, recordTags]);
+  const primary = briefing.next_steps[0] || ranked.regions[0]?.next_actions[0] || '';
   return (
-    <Paper variant="outlined" sx={{ p: 2, bgcolor: 'transparent' }}>
-      <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1.25 }}>
+    <Paper variant="outlined" sx={{ p: compact ? 1.5 : 2, bgcolor: 'transparent' }} data-testid="briefing-panel">
+      <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: compact ? 0.75 : 1.25 }}>
         <Typography variant="overline" sx={{ flex: 1, letterSpacing: '0.08em' }}>
-          What to ask next
+          {compact ? 'Next' : 'Steer'}
         </Typography>
-        {onAsk && (
-          <Button size="small" variant="contained" onClick={() => onAsk(briefing.overall_ask)}>
-            Ask Qwen about this image
+        <Chip
+          size="small"
+          data-testid="briefing-goal-source"
+          label={ranked.source === 'user' ? 'thesis' : 'inferred'}
+          variant="outlined"
+          sx={{ height: 20, fontSize: '0.65rem' }}
+        />
+        {primary && (
+          <Button size="small" variant="outlined" onClick={() => copyText(primary)}>
+            Copy next
           </Button>
         )}
       </Stack>
-      <Typography variant="body1" sx={{ mb: 1.5, maxWidth: 720 }}>
+      <Typography variant="body2" color="text.secondary" sx={{ mb: 0.75, maxWidth: 720 }} data-testid="briefing-goal">
+        {ranked.goal}
+      </Typography>
+      <Typography variant="body2" sx={{ mb: compact ? 0 : 1.25, maxWidth: 720 }}>
         {briefing.summary}
       </Typography>
-      {wrapper && (
+      {wrapper && !compact && ranked.lenses.includes('unpack') && (
         <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
-          This is still a vendor upgrade blob. The useful program is usually
+          Vendor upgrade blob. Brief extracted
           {' '}<Box component="span" sx={{ fontFamily: 'var(--font-mono)' }}>httpd</Box>
-          {' '}(web admin) or tdpServer after unpack — not this file, and not a process on this Pi.
+          {' '}or tdpServer — not this file.
         </Typography>
       )}
-      {briefing.next_steps.length > 0 && (
+      {!compact && briefing.next_steps.length > 0 && (
         <Box component="ul" sx={{ m: 0, mb: 2, pl: 2.5 }}>
-          {briefing.next_steps.slice(0, 4).map((step) => (
+          {briefing.next_steps.slice(0, 3).map((step) => (
             <Typography key={step} component="li" variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
               {step}
             </Typography>
           ))}
         </Box>
       )}
-      <Stack spacing={1.25}>
-        {briefing.regions.slice(0, 6).map((region, index) => (
-          <RegionCard key={region.id || index} region={region} index={index + 1} onAsk={onAsk} />
-        ))}
-      </Stack>
+      {!compact && (
+        <Stack spacing={1.25}>
+          {ranked.regions.slice(0, 5).map((region, index) => (
+            <RegionCard key={region.id || index} region={region} index={index + 1} onAsk={onAsk} />
+          ))}
+        </Stack>
+      )}
     </Paper>
   );
 };

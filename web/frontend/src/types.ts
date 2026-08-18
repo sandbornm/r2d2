@@ -129,6 +129,9 @@ export interface AnalysisBriefingPayload {
   regions: BriefingRegion[];
   overall_ask: string;
   next_steps: string[];
+  inferred_goal?: string;
+  ranking_tags?: string[];
+  goal_source?: 'user' | 'inferred' | string;
 }
 
 export interface RuntimeRequirements {
