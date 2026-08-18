@@ -20,7 +20,6 @@ Run with:
 from __future__ import annotations
 
 import subprocess
-import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -30,7 +29,7 @@ import pytest
 pytestmark = pytest.mark.integration
 
 if TYPE_CHECKING:
-    from r2d2.compilation.compiler import Architecture, CompilerResult
+    pass
 
 
 # ============================================================================
@@ -205,10 +204,6 @@ class TestDockerDetection:
         assert "x86_64" in compilers
 
         if compiler_image_ready:
-            # Docker compilers should be available
-            arm64_names = [c.name for c in compilers["arm64"]]
-            arm32_names = [c.name for c in compilers["arm32"]]
-            
             # At least one compiler should be available for ARM targets
             assert len(compilers["arm64"]) > 0 or len(compilers["arm32"]) > 0
 

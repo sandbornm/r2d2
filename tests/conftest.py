@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import tempfile
 from pathlib import Path
 from typing import Generator
 
@@ -11,7 +10,7 @@ import pytest
 from r2d2.config import AppConfig, AnalysisSettings, LLMSettings, StorageSettings
 from r2d2.environment.detectors import EnvironmentReport, ToolCheck
 from r2d2.storage import ChatDAO, Database
-from r2d2.analysis.resource_tree import BinaryResource, FunctionResource, Resource
+from r2d2.analysis.resource_tree import BinaryResource, FunctionResource
 
 
 # ============================================================================

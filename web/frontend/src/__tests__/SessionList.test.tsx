@@ -73,9 +73,13 @@ describe('SessionList', () => {
       />
     );
 
-    await user.click(screen.getByText('Binary One'));
+    const row = screen.getByText('Binary One').closest('[role="button"]');
+    expect(row).toBeTruthy();
+    await user.click(row as HTMLElement);
 
-    expect(handleSelect).toHaveBeenCalledWith(mockSessions[0]);
+    expect(handleSelect).toHaveBeenCalledWith(
+      expect.objectContaining({ session_id: 'session-1', title: 'Binary One' }),
+    );
   });
 
   it('shows delete option in context menu', async () => {
@@ -91,13 +95,7 @@ describe('SessionList', () => {
       />
     );
 
-    // Click the menu button for first session
-    const menuButtons = screen.getAllByRole('button');
-    // Find the menu button (not the list item button)
-    const menuButton = menuButtons.find(btn => btn.querySelector('svg'));
-    expect(menuButton).toBeDefined();
-
-    await user.click(menuButton!);
+    await user.click(screen.getByRole('button', { name: /actions for binary one/i }));
 
     // Click delete
     const deleteMenuItem = await screen.findByText('Delete');

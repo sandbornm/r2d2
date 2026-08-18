@@ -114,6 +114,7 @@ export const SessionList: FC<SessionListProps> = memo(({
               />
               <IconButton
                 size="small"
+                aria-label={`Actions for ${session.fileName}`}
                 onClick={(e) => handleMenuOpen(e, session.session_id)}
                 sx={{
                   opacity: 0.5,

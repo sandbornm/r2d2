@@ -1,6 +1,5 @@
 """Unit tests for resource tree module."""
 
-import pytest
 
 from r2d2.analysis.resource_tree import (
     Resource,

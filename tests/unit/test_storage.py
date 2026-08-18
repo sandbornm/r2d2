@@ -1,11 +1,8 @@
 """Unit tests for storage module."""
 
-from pathlib import Path
-import json
 
-import pytest
 
-from r2d2.storage import ChatDAO, Database
+from r2d2.storage import Database
 from r2d2.storage.models import (
     ChatSession,
     ChatMessage,
@@ -21,7 +18,7 @@ class TestDatabase:
 
     def test_create_database(self, tmp_db_path):
         """Test creating a new database."""
-        db = Database(tmp_db_path)
+        Database(tmp_db_path)
 
         assert tmp_db_path.exists()
 

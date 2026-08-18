@@ -3,7 +3,6 @@
 Following TDD: these tests are written FIRST, before any implementation.
 """
 
-import pytest
 
 
 class TestPythonValidation:
