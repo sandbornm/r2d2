@@ -26,6 +26,20 @@ class TrajectoryDAO:
             )
         return trajectory
 
+    def record_action(
+        self,
+        *,
+        trajectory_id: str,
+        adapter: str | None = None,
+        stage: str | None = None,
+        action: str | None = None,
+        payload: Any = None,
+    ) -> None:
+        """Persist a tool/script action when only the trajectory id is known."""
+        name = action or ".".join(part for part in (adapter, stage) if part) or "tools.action"
+        stub = AnalysisTrajectory(binary_path="", trajectory_id=trajectory_id)
+        self.append_action(stub, TrajectoryAction(action=name, payload=payload))
+
     def append_action(self, trajectory: AnalysisTrajectory, action: TrajectoryAction) -> None:
         trajectory.append(action)
         with self._lock:

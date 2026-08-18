@@ -21,7 +21,11 @@ from flask_cors import CORS  # type: ignore[import-untyped]
 from werkzeug.exceptions import RequestEntityTooLarge
 
 from ..analysis import AnalysisOrchestrator, AnalysisResult
+from ..analysis.briefing import build_briefing, extract_code_snippets, render_briefing_markdown
 from ..analysis.investigation_graph import build_investigation_graph
+from ..analysis.insights import extract_insights, save_lab_note
+from ..analysis.record import AnalysisRecordStore
+from ..analysis.result_dto import analysis_result_to_public_dict, ensure_analysis_briefing
 from ..config import AppConfig
 from ..environment.detectors import detect_mcp_connections
 from ..environment.mcp_launcher import MCPLaunchError, launch_mcp_services
@@ -747,10 +751,86 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
         analysis_attachment = _extract_latest_analysis(messages)
         if not analysis_attachment:
             return jsonify({"error": "analysis result not found for session"}), 404
+        if isinstance(analysis_attachment, dict) and "briefing" not in analysis_attachment:
+            analysis_attachment = {
+                **analysis_attachment,
+                "briefing": ensure_analysis_briefing(analysis_attachment),
+            }
         return jsonify({
             "session": _session_to_dict(session),
             "analysis": _serialize(analysis_attachment),
         })
+
+    @app.get("/api/chats/<session_id>/briefing")
+    def chat_briefing(session_id: str) -> Any:
+        session = chat_dao.get_session(session_id)
+        if not session:
+            return jsonify({"error": "chat session not found"}), 404
+        messages = chat_dao.list_messages(session.session_id, limit=500)
+        analysis_attachment = _extract_latest_analysis(messages)
+        if not analysis_attachment:
+            return jsonify({"error": "analysis result not found for session"}), 404
+        briefing = ensure_analysis_briefing(analysis_attachment)
+        if str(request.args.get("format", "")).lower() in {"md", "markdown", "text"}:
+            return Response(render_briefing_markdown(briefing), mimetype="text/markdown")
+        return jsonify({
+            "session": _session_to_dict(session),
+            "briefing": briefing,
+        })
+
+    @app.get("/api/records")
+    def list_records() -> Any:
+        store = AnalysisRecordStore(Path(state.config.output.artifacts_dir))
+        tag = request.args.get("tag")
+        try:
+            limit = int(request.args.get("limit") or 50)
+        except ValueError:
+            limit = 50
+        return jsonify({"records": store.list_records(tag=tag, limit=limit)})
+
+    @app.get("/api/records/<record_id>")
+    def get_record(record_id: str) -> Any:
+        store = AnalysisRecordStore(Path(state.config.output.artifacts_dir))
+        include_blobs = str(request.args.get("blobs", "")).lower() in {"1", "true", "yes", "on"}
+        try:
+            record = store.load(record_id, include_blobs=include_blobs)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        if not record:
+            return jsonify({"error": "record not found"}), 404
+        if str(request.args.get("format", "")).lower() in {"md", "markdown"}:
+            commentary = record.get("commentary_text")
+            if commentary is None:
+                commentary = (store.record_dir(record_id) / "commentary.md").read_text(encoding="utf-8") if (store.record_dir(record_id) / "commentary.md").is_file() else ""
+            return Response(commentary, mimetype="text/markdown")
+        return jsonify(record)
+
+    @app.get("/api/insights")
+    def get_insights() -> Any:
+        store = AnalysisRecordStore(Path(state.config.output.artifacts_dir))
+        focus_id = request.args.get("record_id")
+        tag = request.args.get("tag")
+        try:
+            insights = extract_insights(store, focus_id=focus_id, tag=tag)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        if str(request.args.get("format", "")).lower() in {"md", "markdown"}:
+            return Response(str(insights.get("lab_note") or insights.get("reason") or ""), mimetype="text/markdown")
+        return jsonify(insights)
+
+    @app.post("/api/insights/note")
+    def persist_insight_note() -> Any:
+        store = AnalysisRecordStore(Path(state.config.output.artifacts_dir))
+        body = request.get_json(silent=True) or {}
+        insights = extract_insights(
+            store,
+            focus_id=body.get("record_id"),
+            tag=body.get("tag"),
+        )
+        if not insights.get("ready"):
+            return jsonify({"error": insights.get("reason"), "insights": insights}), 409
+        path = save_lab_note(store, insights)
+        return jsonify({"path": str(path), "insights": insights})
 
     @app.get("/api/chats/<session_id>/graphs")
     def chat_graphs(session_id: str) -> Any:
@@ -1433,47 +1513,34 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
                 )
                 job.session_id = updated_session.session_id
 
-                # Extract snippets from analysis results for session persistence
-                snippets = _extract_snippets(result.deep_scan)
                 tool_scorecard = _build_analysis_tool_scorecard(
                     result.tool_status,
                     result.tool_availability,
                     result.evidence_coverage,
                 )
-                
-                analysis_attachment = {
-                    "type": "analysis_result",
-                    "binary": str(result.binary),
-                    "plan": asdict(result.plan),
-                    "quick_scan": result.quick_scan,
-                    "deep_scan": result.deep_scan,
-                    "notes": result.notes,
-                    "issues": result.issues,
-                    "trajectory_id": result.trajectory_id,
-                    "snippets": snippets,
-                    "snippet_count": len(snippets),
-                    "tool_availability": result.tool_availability,
-                    "tool_status": result.tool_status,
-                    "tool_scorecard": tool_scorecard,
-                    "evidence_coverage": result.evidence_coverage,
-                    "analysis_graph": result.analysis_graph,
-                }
+                record_summary = None
+                try:
+                    record_store = AnalysisRecordStore(Path(request_config.output.artifacts_dir))
+                    record_summary = record_store.persist(
+                        result,
+                        binary=path,
+                        session_id=updated_session.session_id,
+                    )
+                except Exception as exc:
+                    result.notes.append(f"analysis record not persisted: {exc}")
+                analysis_attachment = analysis_result_to_public_dict(
+                    result,
+                    session_id=updated_session.session_id,
+                    tool_scorecard=tool_scorecard,
+                    record=record_summary,
+                )
                 chat_dao.append_message(
                     updated_session.session_id,
                     "system",
                     f"Analysis completed for {path.name}",
                     attachments=[analysis_attachment],
                 )
-
-                payload = _serialize(result)
-                if isinstance(payload, dict):
-                    payload["session_id"] = updated_session.session_id
-                else:
-                    payload = {"result": payload, "session_id": updated_session.session_id}
-                payload["trajectory_id"] = result.trajectory_id
-                payload["analysis_graph"] = result.analysis_graph
-                payload["tool_scorecard"] = tool_scorecard
-                job.put("analysis_result", payload)
+                job.put("analysis_result", analysis_attachment)
                 job.put(
                     "job_completed",
                     {
@@ -1497,6 +1564,21 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
         thread.start()
 
         return jsonify({"job_id": job.id, "session_id": session.session_id})
+
+    @app.get("/api/jobs/<job_id>")
+    def job_status(job_id: str) -> Any:
+        job = jobs.get(job_id)
+        if not job:
+            return jsonify({"error": "job not found"}), 404
+        return jsonify(
+            {
+                "job_id": job.id,
+                "status": job.status,
+                "session_id": job.session_id,
+                "binary": job.binary_path,
+                "error": job.error,
+            }
+        )
 
     @app.get("/api/jobs/<job_id>/stream")
     def stream(job_id: str) -> Response | tuple[Response, int]:
@@ -2081,7 +2163,7 @@ Generate ONLY the script code, no explanations before or after. The script shoul
                 "execution": None,
                 "result": {},
                 "error": validation.error_summary,
-            })
+            }), 400
 
         # Get the appropriate executor
         executor = None
@@ -2094,7 +2176,7 @@ Generate ONLY the script code, no explanations before or after. The script shoul
                     "execution": None,
                     "result": {},
                     "error": "Ghidra bridge not configured or not connected",
-                })
+                }), 503
         elif tool == ToolName.RADARE2:
             # Radare2 executor needs an r2pipe instance
             executor = Radare2Executor(r2pipe=None)
@@ -2104,7 +2186,7 @@ Generate ONLY the script code, no explanations before or after. The script shoul
                 "execution": None,
                 "result": {},
                 "error": f"Executor not yet implemented for {tool.value}",
-            })
+            }), 501
 
         # Execute the script
         try:
@@ -2115,13 +2197,11 @@ Generate ONLY the script code, no explanations before or after. The script shoul
                 timeout_ms=timeout_ms,
             )
 
-            # Record in trajectory if session provided
-            if session_id and state.dao:
-                state.dao.record_action(
-                    trajectory_id=session_id,
-                    adapter=f"tools_{tool.value}",
-                    stage="script_execution",
-                    payload={
+            if session_id:
+                _record_trajectory_action(
+                    session_id,
+                    f"tools.{tool.value}.script_execution",
+                    {
                         "language": lang.value,
                         "script_length": len(script),
                         "success": output.execution.status.value == "success" if output.execution else False,
@@ -2505,6 +2585,7 @@ def _build_analysis_bundle(
         "context": {
             "compact_markdown": _build_compact_analysis_context(analysis, investigation_graph),
         },
+        "briefing": ensure_analysis_briefing(analysis),
     }
     if include_raw:
         bundle["raw"] = {
@@ -3481,59 +3562,28 @@ def _build_llm_messages(
     
     user_goal = _extract_user_goal(history)
     
-    # Build system prompt - friendly but technical
     system_parts = [
-        """You are r2d2, a friendly reverse engineering assistant built for learning ARM assembly and binary analysis.
+        """You are r2d2, a senior reverse engineer working a firmware/binary lab.
+The analyst is a professional. Do not teach, do not define terms, do not summarize the listing.
 
-## Your Role
-Help users understand binaries at their level. Start simple, go deeper when asked.
+## Objective
+Find something non-obvious in the evidence: a sink caller, an unexpected trust boundary, a vendor-specific path (nvram/cfm/tdp/upgrade), a mismatch between name and behavior, or a missing carve. If nothing is interesting, say so and name the next probe.
 
-## Common Use Cases
-1. **Analyze a specific block**: User selects code, asks about a function or basic block
-2. **Open-ended exploration**: User asks broad questions, needs help narrowing down to interesting code
-3. **Instrumentation planning**: User wants to hook/instrument specific code, needs to identify targets
-4. **Educational**: User is learning about binary representation levels (source → assembly → machine code)
-
-## Analysis Tools Available
-The analysis uses multiple tools, each providing different insights:
-- **radare2**: Disassembly, function discovery, imports, strings
-- **angr**: Control Flow Graphs (CFG), symbolic execution paths
-- **Capstone**: Instruction-level decoding with operand details
-- **Ghidra**: Decompilation to C-like pseudocode, type recovery
-- **AutoProfile**: Security features (NX, PIE, RELRO), risk assessment
-- **DWARF**: Debug symbols, type info, source mappings (if available)
-- **Frida**: Runtime instrumentation, dynamic analysis (if enabled)
-- **GEF/GDB**: Execution tracing, register snapshots (if enabled)
-
-When explaining, mention which tool provided specific information to help users understand the analysis.
-
-## Frontend Tools (mention these naturally when helpful)
-- **Summary**: Quick view of binary info, functions, imports, strings
-- **Profile**: Security features, risk assessment, interesting strings
-- **Disassembly**: Hover any ARM/x86 instruction for docs • Drag to select code • "Ask Claude" to explain
-- **CFG**: Control flow graph with function list and block details
-- **Decompiler**: C-like pseudocode from Ghidra (if enabled)
-- **Dynamic**: Execution traces and register snapshots (if GEF enabled)
-- **DWARF**: Debug symbols and source mappings (if available)
-- **Annotations**: Click or drag-select to add notes that persist
+## Grounding
+- Use only the briefing, snippet, and thesis. Do not invent symbols, strings, or callees.
+- Cite addresses as `0x...` so the UI can hover them.
+- Name the tool that produced a fact when it matters (r2 vs Ghidra vs firmware inventory).
+- Defensive analysis only: describe behavior and next commands. No exploit/PoC steps.
 
 ## Style
-- First response: 2-3 sentences max. What is it? What stands out?
-- Follow-ups: Go as deep as needed
-- Use code blocks for assembly snippets
-- Reference addresses like `0x1234` and function names so the user can hover them for context
-- If binary looks packed/encrypted/unusual, say so upfront
-- When explaining code, relate assembly to higher-level concepts when helpful
-
-## Address Citations
-When referencing specific addresses in your response, always use the format `0x...` (e.g., `0x401000`).
-The frontend will automatically make these addresses hoverable, showing the relevant assembly context.
-This helps users follow along with your explanations in the disassembly view.""",
+- Dense. Prefer one unexpected claim over five obvious ones.
+- 4–8 short bullets unless asked for more.
+- End with one exact next command (r2, Ghidra headless, unsquashfs, or brief an ELF).""",
     ]
     
     if user_goal:
         system_parts.append(f"\n## User's Goal\n{user_goal}")
-    
+
     compact_context = bool(getattr(getattr(config, "llm", None), "compact_context", True))
 
     if prebuilt_context:
@@ -3598,8 +3648,15 @@ def _build_compact_analysis_context(
         else {}
     )
 
+    briefing = analysis.get("briefing") if isinstance(analysis.get("briefing"), dict) else None
+    if briefing is None:
+        briefing = build_briefing(analysis)
+
     lines = ["## Compact Binary Analysis Context"]
     lines.append(f"Binary: {analysis.get('binary', 'unknown')}")
+    if briefing:
+        lines.append("")
+        lines.append(render_briefing_markdown(briefing, max_regions=4, include_asks=False).rstrip())
 
     r2_quick = quick.get("radare2", {}) if isinstance(quick, dict) else {}
     r2_info = r2_quick.get("info", {}) if isinstance(r2_quick, dict) else {}
@@ -3780,7 +3837,7 @@ def _build_analysis_context(analysis: dict[str, Any]) -> str:
 
     if tools_used:
         lines.append("\n### Tools Used")
-        lines.append("The following analysis tools contributed to this session:")
+        lines.append("Sources:")
         for tool in tools_used:
             lines.append(f"  - {tool}")
         lines.append("")
@@ -4039,40 +4096,7 @@ def _format_message_for_llm(message: StoredChatMessage) -> str:
 
 def _extract_snippets(deep_scan: dict[str, Any] | None) -> list[dict[str, Any]]:
     """Extract code snippets from deep scan results for session persistence."""
-    snippets: list[dict[str, Any]] = []
-    
-    if not deep_scan:
-        return snippets
-    
-    # Extract from angr if available
-    angr_data = deep_scan.get("angr", {})
-    if isinstance(angr_data, dict):
-        angr_snippets = angr_data.get("snippets", [])
-        for snippet in angr_snippets[:100]:
-            if isinstance(snippet, dict) and snippet.get("instructions"):
-                snippets.append({
-                    "source": "angr",
-                    "address": snippet.get("addr", "0x0"),
-                    "function": snippet.get("function_name") or snippet.get("function"),
-                    "instructions": snippet.get("instructions", [])[:20],
-                })
-    
-    # Extract from radare2 if available
-    r2_data = deep_scan.get("radare2", {})
-    if isinstance(r2_data, dict):
-        r2_snippets = r2_data.get("snippets", [])
-        for snippet in r2_snippets[:100]:
-            if isinstance(snippet, dict):
-                for block in snippet.get("blocks", [])[:10]:
-                    if block.get("disassembly"):
-                        snippets.append({
-                            "source": "radare2",
-                            "address": block.get("offset", "0x0"),
-                            "function": snippet.get("function"),
-                            "instructions": block.get("disassembly", [])[:20],
-                        })
-    
-    return snippets[:200]  # Limit total snippets
+    return extract_code_snippets(deep_scan)  # Limit total snippets
 
 
 def _render_analysis_summary(analysis: dict[str, Any]) -> str:
@@ -4081,8 +4105,11 @@ def _render_analysis_summary(analysis: dict[str, Any]) -> str:
     issues = analysis.get("issues") or []
     notes = analysis.get("notes") or []
 
-    function_count = len(deep.get("functions", [])) if isinstance(deep.get("functions"), list) else 0
-    imports = quick.get("imports") if isinstance(quick, dict) else None
+    r2_quick = quick.get("radare2") if isinstance(quick.get("radare2"), dict) else {}
+    r2_deep = deep.get("radare2") if isinstance(deep.get("radare2"), dict) else {}
+    functions = r2_deep.get("functions") if isinstance(r2_deep.get("functions"), list) else deep.get("functions")
+    function_count = len(functions) if isinstance(functions, list) else int(r2_deep.get("function_count") or 0)
+    imports = r2_quick.get("imports") if isinstance(r2_quick.get("imports"), list) else quick.get("imports")
     import_count = len(imports) if isinstance(imports, list) else 0
 
     lines = [
@@ -4096,7 +4123,7 @@ def _render_analysis_summary(analysis: dict[str, Any]) -> str:
     if notes:
         lines.append("Notes: " + "; ".join(str(note) for note in notes[:10]))
 
-    quick_info = quick.get("info") if isinstance(quick, dict) else None
+    quick_info = r2_quick.get("info") if isinstance(r2_quick.get("info"), dict) else quick.get("info")
     if isinstance(quick_info, dict):
         bin_meta = quick_info.get("bin")
         if isinstance(bin_meta, dict):

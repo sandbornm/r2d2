@@ -75,6 +75,7 @@ class TestToolsExecuteEndpoint:
             'language': 'python',
         })
         data = response.get_json()
+        assert response.status_code == 400
         assert 'validation' in data
         assert data['validation']['valid'] is False
         assert len(data['validation']['errors']) > 0

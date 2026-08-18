@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import shlex
 from dataclasses import asdict
 from pathlib import Path
@@ -13,6 +12,11 @@ from rich.console import Console
 from rich.json import JSON
 from rich.table import Table
 
+from .analysis.briefing import build_briefing, render_briefing_markdown
+from .analysis.handoff import publish_analysis_session
+from .analysis.insights import extract_insights, save_lab_note
+from .analysis.record import AnalysisRecordStore
+from .analysis.result_dto import analysis_result_to_public_dict
 from .config import load_config
 from .environment import MCPConnectionCheck, EnvironmentReport, detect_environment, detect_mcp_connections
 from .environment.ghidra import detect_ghidra
@@ -20,11 +24,12 @@ from .environment.ghidra_setup import GhidraSetupError, GhidraSetupResult, setup
 from .environment.mcp_launcher import MCPLaunchError, MCPLaunchResult, launch_mcp_services
 from .llm import ChatMessage as LLMChatMessage, LLMBridge
 from .state import AppState, build_state
-from .utils import to_json
 
 app = typer.Typer(add_completion=False)
 ghidra_app = typer.Typer(help="Inspect or install a local Ghidra distribution.", add_completion=False)
+records_app = typer.Typer(help="List or reopen tagged per-binary analysis records.", add_completion=False)
 app.add_typer(ghidra_app, name="ghidra")
+app.add_typer(records_app, name="records")
 console = Console()
 
 
@@ -35,7 +40,10 @@ def analyze(
     quick: bool = typer.Option(False, "--quick", help="Quick scan only"),
     skip_deep: bool = typer.Option(False, "--skip-deep", help="Skip deep analysis stage"),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON instead of table"),
-    ask: Optional[str] = typer.Option(None, "--ask", help="Question to ask LLM about analysis"),
+    brief: bool = typer.Option(False, "--brief", help="Print ranked region briefing instead of the full dump"),
+    ask: Optional[str] = typer.Option(None, "--ask", help="Question to ask LLM about the briefing"),
+    ask_regions: int = typer.Option(0, "--ask-regions", help="Send the first N region asks to the LLM"),
+    tags: Optional[list[str]] = typer.Option(None, "--tag", help="Extra record tags. Repeatable."),
 ) -> None:
     """Analyze the supplied binary and optionally query the LLM."""
 
@@ -46,64 +54,69 @@ def analyze(
 
     plan = state.orchestrator.create_plan(quick_only=quick, skip_deep=skip_deep)
     result = state.orchestrator.analyze(binary, plan)
+    record = _persist_record(state, result, binary, extra_tags=tags)
+    public = analysis_result_to_public_dict(result, record=record)
+    session = _publish_session(state, result, public)
+    if session:
+        public["session_id"] = session.session_id
+    briefing = public.get("briefing") or build_briefing(public)
 
     if json_output:
-        console.print(JSON.from_data(json.loads(to_json(result))))
+        payload = briefing if brief else public
+        console.print(JSON.from_data(payload))
+    elif brief:
+        console.print(render_briefing_markdown(briefing))
     else:
         _render_result(result)
+        if record:
+            console.print(f"[cyan]Record[/] {record.get('record_id')}  rev {record.get('revision')}  {record.get('directory')}")
+        console.print(render_briefing_markdown(briefing, include_asks=False))
 
-    if ask:
-        bridge = LLMBridge(state.config)
-        summary = {
-            "quick": result.quick_scan,
-            "deep": result.deep_scan,
-            "notes": result.notes,
-            "issues": result.issues,
-        }
-        plan_opt = result.plan if hasattr(result, "plan") else None
-        pipeline_hint = ""
-        if plan_opt:
-            enabled_segments: list[str] = []
-            if getattr(plan_opt, "quick", False):
-                enabled_segments.append("quick scan (libmagic, radare2 metadata, strings)")
-            if getattr(plan_opt, "deep", False):
-                enabled_segments.append("deep analysis (radare2 analysis, capstone disassembly)")
-            if getattr(plan_opt, "run_angr", False):
-                enabled_segments.append("symbolic pivots with angr")
-            if enabled_segments:
-                pipeline_hint = (
-                    "This run executed "
-                    + ", ".join(enabled_segments[:-1])
-                    + (" and " if len(enabled_segments) > 1 else "")
-                    + enabled_segments[-1]
-                    + ". "
-                )
+    if ask or ask_regions:
+        _ask_briefing(state, briefing, question=ask, region_count=ask_regions)
 
-        messages = [
-            LLMChatMessage(
-                role="system",
-                content=(
-                    "You are r2d2, a binary analysis copilot. "
-                    "Respond as a senior reverse engineer who references pipeline stages explicitly. "
-                    "Explain what the quick stage (libmagic + radare2) reveals, what the deep stage "
-                    "(radare2 analysis, capstone disassembly, optional angr) contributes, and highlight risks. "
-                    "Offer practical next steps (commands, dynamic analysis ideas) while staying concise. "
-                    + pipeline_hint
-                    + "If something is still running, describe what the current stage is doing and why it matters."
-                ),
-            ),
-            LLMChatMessage(
-                role="user",
-                content=f"Question: {ask}\n\nContext:\n{json.dumps(summary, indent=2)}",
-            ),
-        ]
-        try:
-            response = bridge.chat(messages)
-        except RuntimeError as exc:
-            console.print(f"[red]LLM unavailable: {exc}")
-        else:
-            console.rule(f"LLM Response ({bridge.last_provider or bridge.providers[0]})")
-            console.print(response)
+
+@app.command()
+def brief(
+    binary: Path = typer.Argument(..., help="Path to ELF, firmware blob, or carved child"),
+    config_path: Optional[Path] = typer.Option(None, "--config", help="Path to config TOML"),
+    quick: bool = typer.Option(False, "--quick", help="Quick scan only"),
+    skip_deep: bool = typer.Option(False, "--skip-deep", help="Skip deep analysis stage"),
+    json_output: bool = typer.Option(False, "--json", help="Emit briefing JSON"),
+    ask: bool = typer.Option(False, "--ask", help="Send the overall briefing ask to the LLM"),
+    ask_regions: int = typer.Option(0, "--ask-regions", help="Send the first N region asks to the LLM"),
+    max_regions: int = typer.Option(6, "--max-regions", help="Cap ranked regions"),
+    tags: Optional[list[str]] = typer.Option(None, "--tag", help="Extra record tags. Repeatable."),
+) -> None:
+    """Break a binary into ranked regions and emit Qwen-sized snippet asks."""
+
+    if not binary.exists():
+        raise typer.BadParameter(f"Binary path does not exist: {binary}")
+
+    state: AppState = build_state(config_path)
+    plan = state.orchestrator.create_plan(quick_only=quick, skip_deep=skip_deep)
+    result = state.orchestrator.analyze(binary, plan)
+    record = _persist_record(state, result, binary, extra_tags=tags)
+    public = analysis_result_to_public_dict(result, record=record)
+    session = _publish_session(state, result, public)
+    briefing = build_briefing(result, max_regions=max_regions)
+    if record:
+        console.print(f"[cyan]Record[/] {record.get('record_id')}  rev {record.get('revision')}  {record.get('directory')}")
+    if session:
+        console.print(f"[cyan]Session[/] {session.session_id}")
+
+    if json_output:
+        console.print(JSON.from_data(briefing))
+    else:
+        console.print(render_briefing_markdown(briefing))
+
+    if ask or ask_regions:
+        _ask_briefing(
+            state,
+            briefing,
+            question=briefing.get("overall_ask") if ask else None,
+            region_count=ask_regions,
+        )
 
 
 @app.command("env")
@@ -272,6 +285,170 @@ def trajectories(
         )
 
     console.print(table)
+
+
+def _publish_session(state: AppState, result: Any, public: dict[str, Any]):
+    if not state.chat_dao:
+        return None
+    try:
+        return publish_analysis_session(state.chat_dao, result, public)
+    except Exception as exc:
+        console.print(f"[yellow]Session not published: {exc}")
+        return None
+
+
+def _persist_record(
+    state: AppState,
+    result: Any,
+    binary: Path,
+    *,
+    extra_tags: list[str] | None = None,
+) -> dict[str, Any] | None:
+    try:
+        store = AnalysisRecordStore(Path(state.config.output.artifacts_dir))
+        return store.persist(result, binary=binary, extra_tags=extra_tags)
+    except Exception as exc:
+        console.print(f"[yellow]Record not persisted: {exc}")
+        return None
+
+
+@records_app.command("list")
+def records_list(
+    config_path: Optional[Path] = typer.Option(None, "--config", help="Path to config TOML"),
+    tag: Optional[str] = typer.Option(None, "--tag", help="Filter by tag"),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON"),
+) -> None:
+    """List tagged analysis records."""
+    state = build_state(config_path)
+    store = AnalysisRecordStore(Path(state.config.output.artifacts_dir))
+    rows = store.list_records(tag=tag)
+    if json_output:
+        console.print(JSON.from_data(rows))
+        return
+    table = Table(title="Analysis records")
+    table.add_column("ID")
+    table.add_column("Name")
+    table.add_column("Tags")
+    table.add_column("Rev")
+    table.add_column("Updated")
+    for row in rows:
+        names = ", ".join(str(name) for name in (row.get("names") or [])[:2]) or "-"
+        tags = ", ".join(str(item) for item in (row.get("tags") or [])[:6])
+        table.add_row(str(row.get("record_id") or "")[:16], names, tags, str(row.get("revision") or 1), str(row.get("updated_at") or ""))
+    console.print(table)
+
+
+@records_app.command("show")
+def records_show(
+    record_id: str = typer.Argument(..., help="SHA-256 (or unique prefix)"),
+    config_path: Optional[Path] = typer.Option(None, "--config", help="Path to config TOML"),
+    json_output: bool = typer.Option(False, "--json", help="Emit record JSON"),
+    blobs: bool = typer.Option(False, "--blobs", help="Include tool/region/CFG blobs"),
+) -> None:
+    """Reopen a persisted analysis record."""
+    state = build_state(config_path)
+    store = AnalysisRecordStore(Path(state.config.output.artifacts_dir))
+    resolved = _resolve_record_id(store, record_id)
+    record = store.load(resolved, include_blobs=blobs)
+    if not record:
+        raise typer.BadParameter(f"Record not found: {record_id}")
+    if json_output:
+        console.print(JSON.from_data(record))
+        return
+    console.rule(f"Record {record.get('record_id')}")
+    table = Table(show_header=False)
+    table.add_row("Directory", str(record.get("directory")))
+    table.add_row("Names", ", ".join(record.get("names") or []))
+    table.add_row("Tags", ", ".join(record.get("tags") or []))
+    table.add_row("Revision", str(record.get("revision")))
+    table.add_row("Tools", ", ".join(record.get("tool_names") or []))
+    table.add_row("Regions", str(record.get("region_count")))
+    table.add_row("CFGs", str(record.get("cfg_count")))
+    console.print(table)
+    commentary_path = Path(str(record.get("directory") or "")) / "commentary.md"
+    if commentary_path.is_file():
+        console.print(commentary_path.read_text(encoding="utf-8"))
+
+
+@app.command()
+def insights(
+    config_path: Optional[Path] = typer.Option(None, "--config", help="Path to config TOML"),
+    tag: Optional[str] = typer.Option(None, "--tag", help="Restrict to a tag"),
+    record_id: Optional[str] = typer.Option(None, "--record", help="Focus on siblings of this record"),
+    save: bool = typer.Option(False, "--save", help="Write a lab note under artifacts/insights/"),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON"),
+) -> None:
+    """Distill recurring facts from persisted records. Not a skill writer."""
+    state = build_state(config_path)
+    store = AnalysisRecordStore(Path(state.config.output.artifacts_dir))
+    focus = _resolve_record_id(store, record_id) if record_id else None
+    payload = extract_insights(store, focus_id=focus, tag=tag)
+    if json_output:
+        console.print(JSON.from_data(payload))
+        return
+    if not payload.get("ready"):
+        console.print(f"[yellow]{payload.get('reason')}")
+        return
+    console.rule(f"Insights from {payload.get('sibling_count')} records")
+    for pattern in payload.get("patterns") or []:
+        console.print(f"[bold]{pattern.get('title')}[/]")
+        console.print(f"  {pattern.get('why')}")
+        console.print(f"  next: {pattern.get('next_action')}")
+    console.print(payload.get("skill_hint") or "")
+    if save:
+        path = save_lab_note(store, payload)
+        console.print(f"[cyan]Lab note[/] {path}")
+
+
+def _resolve_record_id(store: AnalysisRecordStore, record_id: str) -> str:
+    text = record_id.strip().lower()
+    if len(text) >= 64:
+        return text
+    matches = [row for row in store.list_records(limit=500) if str(row.get("record_id") or "").startswith(text)]
+    if len(matches) == 1:
+        return str(matches[0]["record_id"])
+    if not matches:
+        return text
+    raise typer.BadParameter(f"Ambiguous record id {record_id}; matches {len(matches)}")
+
+
+def _ask_briefing(
+    state: AppState,
+    briefing: dict[str, Any],
+    *,
+    question: str | None,
+    region_count: int,
+) -> None:
+    """Send compact briefing asks instead of dumping adapter JSON."""
+    asks: list[tuple[str, str]] = []
+    if question:
+        asks.append(("overall", question))
+    for region in (briefing.get("regions") or [])[: max(0, region_count)]:
+        if isinstance(region, dict) and region.get("ask"):
+            asks.append((str(region.get("title") or region.get("id") or "region"), str(region["ask"])))
+    if not asks:
+        return
+
+    bridge = LLMBridge(state.config)
+    context = render_briefing_markdown(briefing, include_asks=False)
+    system = (
+        "You are r2d2, a senior reverse engineer. The analyst is not a beginner. "
+        "Answer only from the briefing and snippet. Hunt for a non-obvious claim: "
+        "sink caller, vendor IPC, auth gap, or missing carve. "
+        "Cite 0x addresses. One exact next command. No lectures, no exploit steps."
+    )
+    for title, ask_text in asks:
+        messages = [
+            LLMChatMessage(role="system", content=system),
+            LLMChatMessage(role="user", content=f"{ask_text}\n\nBriefing:\n{context}"),
+        ]
+        try:
+            response = bridge.chat(messages)
+        except RuntimeError as exc:
+            console.print(f"[red]LLM unavailable: {exc}")
+            return
+        console.rule(f"LLM ({bridge.last_provider or 'unknown'}): {title}")
+        console.print(response)
 
 
 def _render_result(result: Any) -> None:
