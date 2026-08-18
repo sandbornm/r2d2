@@ -56,6 +56,79 @@ export interface AnalysisResultPayload {
   tool_scorecard?: Record<string, ToolScorecardEntry>;
   evidence_coverage?: EvidenceCoverage;
   analysis_graph?: AnalysisGraphPayload;
+  snippets?: Array<Record<string, unknown>>;
+  snippet_count?: number;
+  briefing?: AnalysisBriefingPayload;
+  record?: AnalysisRecordSummary;
+}
+
+export interface InsightPattern {
+  id: string;
+  kind: string;
+  title: string;
+  why: string;
+  support: number;
+  total: number;
+  confidence: number;
+  next_action: string;
+  evidence?: Array<{ record_id?: string; name?: string; tags?: string[] }>;
+}
+
+export interface InsightsPayload {
+  schema_version?: string;
+  ready: boolean;
+  reason?: string | null;
+  focus_id?: string | null;
+  sibling_count: number;
+  siblings?: Array<{ record_id?: string; name?: string; tags?: string[] }>;
+  patterns: InsightPattern[];
+  lab_note?: string;
+  skill_ready?: boolean;
+  skill_hint?: string;
+}
+
+export interface AnalysisRecordSummary {
+  schema_version?: string;
+  record_id?: string;
+  sha256?: string;
+  names?: string[];
+  tags?: string[];
+  revision?: number;
+  directory?: string;
+  tool_names?: string[];
+  region_count?: number;
+  cfg_count?: number;
+  updated_at?: string;
+  parent_id?: string | null;
+}
+
+export interface BriefingSnippet {
+  source: string;
+  kind: string;
+  text: string;
+  address?: string | null;
+  function?: string | null;
+}
+
+export interface BriefingRegion {
+  id: string;
+  title: string;
+  why: string;
+  score: number;
+  tags: string[];
+  snippet?: BriefingSnippet | null;
+  ask: string;
+  next_actions: string[];
+}
+
+export interface AnalysisBriefingPayload {
+  schema_version?: string;
+  binary: string;
+  subject?: Record<string, unknown>;
+  summary: string;
+  regions: BriefingRegion[];
+  overall_ask: string;
+  next_steps: string[];
 }
 
 export interface RuntimeRequirements {

@@ -20,7 +20,7 @@ describe('ToolStatusBar', () => {
     mockFetch.mockImplementation(() => new Promise(() => {})); // Never resolves
 
     render(<ToolStatusBar />);
-    expect(screen.getByText(/loading/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/loading tools/i)).toBeInTheDocument();
   });
 
   it('displays tool count when loaded', async () => {
@@ -43,7 +43,8 @@ describe('ToolStatusBar', () => {
     render(<ToolStatusBar />);
 
     await waitFor(() => {
-      expect(screen.getByText(/3.*\/.*5/)).toBeInTheDocument();
+      expect(screen.getByText(/ghidra/i)).toBeInTheDocument();
+      expect(screen.getByText('3/5')).toBeInTheDocument();
     });
   });
 
@@ -74,7 +75,7 @@ describe('ToolStatusBar', () => {
 
     await waitFor(() => {
       expect(screen.getByText(/ghidra/i)).toBeInTheDocument();
-      expect(screen.getByText(/radare2/i)).toBeInTheDocument();
+      expect(screen.getByText('r2')).toBeInTheDocument();
     });
   });
 
@@ -104,7 +105,7 @@ describe('ToolStatusBar', () => {
     render(<ToolStatusBar />);
 
     await waitFor(() => {
-      expect(screen.getByText(/bridge/i)).toBeInTheDocument();
+      expect(screen.getByText(/ghidra/i)).toBeInTheDocument();
     });
   });
 
@@ -114,7 +115,7 @@ describe('ToolStatusBar', () => {
     render(<ToolStatusBar />);
 
     await waitFor(() => {
-      expect(screen.getByText(/error/i)).toBeInTheDocument();
+      expect(screen.getByText(/tools offline/i)).toBeInTheDocument();
     });
   });
 
@@ -138,7 +139,9 @@ describe('ToolStatusBar', () => {
     render(<ToolStatusBar compact />);
 
     await waitFor(() => {
-      expect(screen.getByText(/2.*\/.*5/)).toBeInTheDocument();
+      expect(screen.getByText('r2')).toBeInTheDocument();
+      expect(screen.queryByText(/pwntools/i)).not.toBeInTheDocument();
+      expect(screen.queryByText(/ghidramcp/i)).not.toBeInTheDocument();
     });
   });
 
@@ -188,6 +191,7 @@ describe('ToolStatusBar', () => {
 
     render(<ToolStatusBar />);
 
+    await user.hover(await screen.findByText('angr mcp'));
     await user.click(await screen.findByRole('button', { name: /start angr mcp/i }));
 
     await waitFor(() => {
@@ -196,7 +200,7 @@ describe('ToolStatusBar', () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ services: ['angr_mcp'] }),
       });
-      expect(screen.getByText(/angr mcp: started/i)).toBeInTheDocument();
+      expect(screen.getByText(/ready/i)).toBeInTheDocument();
     });
   });
 });

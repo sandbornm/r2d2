@@ -1,7 +1,7 @@
 [project]
 name = "r2d2"
 version = "0.1.0"
-description = "Binary analysis copilot CLI for rapid ELF triage and deep dives"
+description = "Professional firmware/binary triage bus: ranked regions, tagged records, discovery asks for a local model"
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [

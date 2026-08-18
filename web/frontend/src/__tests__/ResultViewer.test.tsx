@@ -40,6 +40,10 @@ vi.mock('../components/ToolAttribution', () => ({
   ),
 }));
 
+vi.mock('../components/InsightsPanel', () => ({
+  default: () => <div data-testid="insights-panel" />,
+}));
+
 describe('ResultViewer', () => {
   const mockResult: AnalysisResultPayload = {
     binary: '/tmp/test.bin',
@@ -50,6 +54,13 @@ describe('ResultViewer', () => {
       persist_trajectory: true,
     },
     quick_scan: {
+      sniff: {
+        file: 'ELF 32-bit LSB executable, ARM',
+        sha256: 'abc123def456',
+        size_bytes: 4096,
+        hex_head: '00000000  7f 45 4c 46 01 01 01 00  00 00 00 00 00 00 00 00  .ELF............',
+        strings: [{ value: 'httpd' }, { value: '/cgi-bin/login' }],
+      },
       radare2: {
         info: {
           bin: {
@@ -121,8 +132,8 @@ describe('ResultViewer', () => {
 
   it('renders binary info header', () => {
     render(<ResultViewer result={mockResult} />);
-    expect(screen.getByText('test.bin')).toBeInTheDocument();
-    expect(screen.getByText(/elf.*arm32.*linux/i)).toBeInTheDocument();
+    expect(screen.getAllByText('test.bin').length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/elf.*arm32.*linux/i).length).toBeGreaterThan(0);
   });
 
   it('renders count chips', () => {
@@ -134,14 +145,18 @@ describe('ResultViewer', () => {
 
   it('renders overview tab by default', () => {
     render(<ResultViewer result={mockResult} />);
-    expect(screen.getByTestId('tool-attribution')).toBeInTheDocument();
-    expect(screen.getByText('Binary Info')).toBeInTheDocument();
+    expect(screen.getByTestId('artifact-sheet')).toBeInTheDocument();
+    expect(screen.queryByText('Binary Info')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('tool-attribution')).not.toBeInTheDocument();
   });
 
-  it('renders tool scorecard details', () => {
+  it('renders sniff identity, hex, coverage, and pass timings', () => {
     render(<ResultViewer result={mockResult} />);
-    expect(screen.getByText('good 98')).toBeInTheDocument();
-    expect(screen.getByText(/speed: medium.*duration: 25 ms/i)).toBeInTheDocument();
+    expect(screen.getByText(/ELF 32-bit LSB executable, ARM/)).toBeInTheDocument();
+    expect(screen.getByTestId('artifact-hex')).toHaveTextContent(/7f 45 4c 46/);
+    expect(screen.getByTestId('artifact-strings')).toHaveTextContent('httpd');
+    expect(screen.getByTestId('artifact-coverage')).toHaveTextContent(/elf/);
+    expect(screen.getByTestId('artifact-passes')).toHaveTextContent(/radare2 25ms/);
   });
 
   it('downloads session archive export', async () => {
@@ -254,7 +269,7 @@ describe('ResultViewer', () => {
     };
 
     render(<ResultViewer result={arm64Result} />);
-    expect(screen.getByText(/elf.*arm64.*linux/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/elf.*arm64.*linux/i).length).toBeGreaterThan(0);
   });
 
   it('handles x86 architecture display', () => {
@@ -281,6 +296,6 @@ describe('ResultViewer', () => {
     };
 
     render(<ResultViewer result={x86Result} />);
-    expect(screen.getByText(/elf.*x86_64.*linux/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/elf.*x86_64.*linux/i).length).toBeGreaterThan(0);
   });
 });

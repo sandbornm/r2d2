@@ -5,23 +5,23 @@ type PaletteMode = 'light' | 'dark';
 // Improved color palette with better contrast ratios
 const colors = {
   // Neutral grays - softer for better readability
-  gray50: '#fafbfc',
-  gray100: '#f3f4f6',
-  gray200: '#e5e7eb',
-  gray300: '#d1d5db',
-  gray400: '#9ca3af',
-  gray500: '#6b7280',
-  gray600: '#4b5563',
-  gray700: '#374151',
-  gray800: '#1f2937',
-  gray900: '#111827',
-  gray950: '#030712',
+  gray50: '#f6f5f2',
+  gray100: '#eceae4',
+  gray200: '#d8d4ca',
+  gray300: '#b8b3a8',
+  gray400: '#8a857c',
+  gray500: '#6b675f',
+  gray600: '#4a4741',
+  gray700: '#2c2a26',
+  gray800: '#1a1916',
+  gray900: '#11100e',
+  gray950: '#0a0908',
 
-  // Accent - refined blue for better visibility
-  blue400: '#60a5fa',
-  blue500: '#3b82f6',
-  blue600: '#2563eb',
-  blue700: '#1d4ed8',
+  // Accent — warm paper, not SaaS blue
+  blue400: '#f0e6d2',
+  blue500: '#e4d4b4',
+  blue600: '#c8a96a',
+  blue700: '#a88a4a',
 
   // Semantic colors - clearer distinction
   green500: '#22c55e',
@@ -49,10 +49,10 @@ export const createAppTheme = (mode: PaletteMode) => {
     palette: {
       mode,
       primary: {
-        main: isDark ? colors.blue400 : colors.blue600,
+        main: isDark ? colors.blue400 : colors.blue700,
         light: colors.blue400,
         dark: colors.blue700,
-        contrastText: '#ffffff',
+        contrastText: isDark ? '#11100e' : '#ffffff',
       },
       secondary: {
         main: colors.amber500,
@@ -83,43 +83,43 @@ export const createAppTheme = (mode: PaletteMode) => {
     },
     typography: {
       // Improved font stack with better fallbacks
-      fontFamily: '"Inter", "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+      fontFamily: 'var(--font-sans)',
       // Larger base font for better readability
       fontSize: 14,
       h1: {
-        fontFamily: '"Inter", "SF Pro Display", -apple-system, sans-serif',
+        fontFamily: 'var(--font-sans)',
         fontWeight: 600,
         fontSize: '1.875rem',
         lineHeight: 1.3,
         letterSpacing: '-0.02em',
       },
       h2: {
-        fontFamily: '"Inter", "SF Pro Display", -apple-system, sans-serif',
+        fontFamily: 'var(--font-sans)',
         fontWeight: 600,
         fontSize: '1.5rem',
         lineHeight: 1.35,
         letterSpacing: '-0.01em',
       },
       h3: {
-        fontFamily: '"Inter", "SF Pro Display", -apple-system, sans-serif',
+        fontFamily: 'var(--font-sans)',
         fontWeight: 600,
         fontSize: '1.25rem',
         lineHeight: 1.4,
       },
       h4: {
-        fontFamily: '"Inter", "SF Pro Display", -apple-system, sans-serif',
+        fontFamily: 'var(--font-sans)',
         fontWeight: 600,
         fontSize: '1.125rem',
         lineHeight: 1.4,
       },
       h5: {
-        fontFamily: '"Inter", "SF Pro Display", -apple-system, sans-serif',
+        fontFamily: 'var(--font-sans)',
         fontWeight: 600,
         fontSize: '1rem',
         lineHeight: 1.5,
       },
       h6: {
-        fontFamily: '"Inter", "SF Pro Display", -apple-system, sans-serif',
+        fontFamily: 'var(--font-sans)',
         fontWeight: 600,
         fontSize: '0.875rem',
         lineHeight: 1.5,
@@ -197,10 +197,6 @@ export const createAppTheme = (mode: PaletteMode) => {
             transition: 'all 0.15s ease',
             '&:hover': {
               boxShadow: 'none',
-              transform: 'translateY(-1px)',
-            },
-            '&:active': {
-              transform: 'translateY(0)',
             },
           },
           contained: {
@@ -385,7 +381,7 @@ export const createAppTheme = (mode: PaletteMode) => {
           root: {
             transition: 'all 0.15s ease',
             '&:hover': {
-              transform: 'scale(1.05)',
+              backgroundColor: alpha(isDark ? '#fff' : '#000', 0.06),
             },
           },
           sizeSmall: {

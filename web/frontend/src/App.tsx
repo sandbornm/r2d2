@@ -5,6 +5,7 @@ import CloudUploadIcon from '@mui/icons-material/CloudUpload';
 import CodeIcon from '@mui/icons-material/Code';
 import MapIcon from '@mui/icons-material/Map';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
+import HelpOutlineIcon from '@mui/icons-material/HelpOutline';
 import SettingsIcon from '@mui/icons-material/Settings';
 import DarkModeIcon from '@mui/icons-material/DarkMode';
 import LightModeIcon from '@mui/icons-material/LightMode';
@@ -71,6 +72,7 @@ const CompilerPanel = lazy(() => import('./components/CompilerPanel'));
 const GraphExplorer = lazy(() => import('./components/GraphExplorer'));
 const ProgressLog = lazy(() => import('./components/ProgressLog'));
 const ResultViewer = lazy(() => import('./components/ResultViewer'));
+const HelpGuide = lazy(() => import('./components/HelpGuide'));
 const SettingsDrawer = lazy(() => import('./components/SettingsDrawer'));
 const ToolStatusBar = lazy(() => import('./components/ToolStatusBar'));
 
@@ -141,6 +143,11 @@ const buildAnalysisResultFromAttachment = (
   tool_status: analysisAttachment.tool_status as Record<string, ToolStatusSummary> | undefined,
   evidence_coverage: analysisAttachment.evidence_coverage as EvidenceCoverage | undefined,
   analysis_graph: analysisAttachment.analysis_graph as AnalysisResultPayload['analysis_graph'],
+  snippets: analysisAttachment.snippets as AnalysisResultPayload['snippets'],
+  snippet_count: analysisAttachment.snippet_count as number | undefined,
+  tool_scorecard: analysisAttachment.tool_scorecard as AnalysisResultPayload['tool_scorecard'],
+  briefing: analysisAttachment.briefing as AnalysisResultPayload['briefing'],
+  record: analysisAttachment.record as AnalysisResultPayload['record'],
 });
 
 const getLatestAnalysisAttachment = (messages: ChatMessageItem[]): ChatAttachment | undefined => {
@@ -202,6 +209,7 @@ const AppContent = () => {
   const [activeTab, setActiveTab] = useState<TabValue>('results');
   const [isDragging, setIsDragging] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsDrawerMounted, setSettingsDrawerMounted] = useState(false);
   const [settings, setSettings] = useState<AnalysisSettings>(loadSettings);
@@ -213,6 +221,7 @@ const AppContent = () => {
   const loadedMessagesSessionIdRef = useRef<string | null>(null);
   const restoredAnalysisSessionIdRef = useRef<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const goalInputRef = useRef<HTMLInputElement>(null);
 
   const activeSession = useMemo(
     () => sessions.find((session) => session.session_id === activeSessionId) ?? null,
@@ -458,8 +467,13 @@ const AppContent = () => {
       });
 
       source.onerror = () => {
-        setStatus('error');
-        setStatusMessage('Connection lost');
+        // Browsers fire error when the server closes a finished SSE stream.
+        if (source.readyState === EventSource.CLOSED) {
+          closeSource();
+          return;
+        }
+        setStatus((current) => (current === 'done' ? current : 'error'));
+        setStatusMessage((current) => (current === 'Done' ? current : 'Connection lost'));
         closeSource();
       };
     },
@@ -541,8 +555,7 @@ const AppContent = () => {
     }
   };
 
-  const handleAnalyze = async (event: FormEvent) => {
-    event.preventDefault();
+  const startAnalysis = async () => {
     if (!binaryPath.trim()) {
       setStatus('error');
       setStatusMessage('Upload a binary first');
@@ -635,10 +648,9 @@ const AppContent = () => {
             activeSessionIdRef.current = analysis.session_id;
             refreshSessions();
 
-            // Auto-ask with the actual analysis data for context
-            setTimeout(() => {
+            if (settings.autoAskLLM) {
               handleAutoAskLLM(analysis.session_id!, analysis);
-            }, 300);
+            }
           }
         },
       };
@@ -651,26 +663,106 @@ const AppContent = () => {
     }
   };
 
+  const handleAnalyze = (event: FormEvent) => {
+    event.preventDefault();
+    void startAnalysis();
+  };
+
+  const startAnalysisRef = useRef(startAnalysis);
+  startAnalysisRef.current = startAnalysis;
+
+  useEffect(() => {
+    const isTypingTarget = (target: EventTarget | null) => {
+      if (!(target instanceof HTMLElement)) return false;
+      const tag = target.tagName;
+      return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target.isContentEditable;
+    };
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        if (helpOpen) {
+          event.preventDefault();
+          setHelpOpen(false);
+          return;
+        }
+        if (settingsOpen) {
+          event.preventDefault();
+          setSettingsOpen(false);
+        }
+        return;
+      }
+
+      if (isTypingTarget(event.target) || event.metaKey || event.ctrlKey || event.altKey) {
+        return;
+      }
+
+      if (event.key === '?' || (event.shiftKey && event.key === '/')) {
+        event.preventDefault();
+        setHelpOpen((open) => !open);
+        return;
+      }
+      if (event.key === '1') {
+        event.preventDefault();
+        setActiveTab('results');
+        return;
+      }
+      if (event.key === '2') {
+        event.preventDefault();
+        setActiveTab('map');
+        return;
+      }
+      if (event.key === '3') {
+        event.preventDefault();
+        setActiveTab('chat');
+        return;
+      }
+      if (event.key === '4') {
+        event.preventDefault();
+        setActiveTab('logs');
+        return;
+      }
+      if (event.key === 'g') {
+        event.preventDefault();
+        if (!fileName) {
+          fileInputRef.current?.click();
+          return;
+        }
+        goalInputRef.current?.focus();
+        return;
+      }
+      if (event.key === 'a') {
+        if (status === 'running' || uploading || !fileName) return;
+        event.preventDefault();
+        void startAnalysisRef.current();
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [helpOpen, settingsOpen, fileName, status, uploading]);
+
   const handleAutoAskLLM = async (sessionId: string, analysisResult?: AnalysisResultPayload) => {
+    if (!settings.autoAskLLM) return;
+    if (activeSessionIdRef.current && activeSessionIdRef.current !== sessionId) return;
     setActiveTab('chat');
     setSendingMessage(true);
     
-    // Extract key info from analysis if available
+    const briefing = analysisResult?.briefing ?? result?.briefing;
     const analysisDeepScan = analysisResult?.deep_scan ?? result?.deep_scan ?? {};
     const r2Deep = (analysisDeepScan.radare2 ?? {}) as Record<string, unknown>;
     const funcCount = Array.isArray(r2Deep.functions) ? r2Deep.functions.length : 0;
     const currentFileName = analysisResult?.binary?.split('/').pop() ?? 'this binary';
     
-    // Build a simple, friendly intro prompt
     let prompt: string;
-    
-    if (userGoal.trim()) {
-      // User has a specific goal
+    if (briefing?.overall_ask) {
+      prompt = userGoal.trim()
+        ? `${briefing.overall_ask}\n\nUser goal: ${userGoal.trim()}`
+        : briefing.overall_ask;
+    } else if (userGoal.trim()) {
       prompt = `My goal: ${userGoal.trim()}
 
 What can you tell me about ${currentFileName}? Keep it brief.`;
     } else {
-      // Simple intro - just ask for a quick summary
       prompt = `Give me a quick intro to ${currentFileName}.
 
 In 2-3 sentences: what is it and what does it do? I'm ${funcCount > 0 ? 'seeing ' + funcCount + ' functions' : 'just getting started'}.`;
@@ -901,7 +993,9 @@ Explain why this node matters for behavior triage, dynamic-analysis targeting, o
   const handleAskAboutCode = useCallback((codeOrQuestion: string) => {
     setActiveTab('chat');
 
-    const hasUserQuestion = codeOrQuestion.includes('```') && codeOrQuestion.indexOf('```') > 10;
+    const hasUserQuestion =
+      (codeOrQuestion.includes('```') && codeOrQuestion.indexOf('```') > 10)
+      || /^(REGION\s+\d|SUMMARIZE FROM|PROFESSIONAL TRIAGE)/.test(codeOrQuestion);
     let prompt: string;
     if (hasUserQuestion) {
       prompt = codeOrQuestion;
@@ -1042,7 +1136,9 @@ Explain why this node matters for behavior triage, dynamic-analysis targeting, o
             setActiveSessionId(payload.session_id);
             activeSessionIdRef.current = payload.session_id;
             refreshSessions();
-            // Auto-ask about the compiled binary
+            if (!settings.autoAskLLM) {
+              return;
+            }
             const prompt = `Help me understand this compiled ARM binary (${filename}). What patterns do you see in the assembly?`;
             setSendingMessage(true);
             fetch(`/api/chats/${payload.session_id}/messages`, {
@@ -1098,6 +1194,7 @@ Explain why this node matters for behavior triage, dynamic-analysis targeting, o
     settings.enableGhidra,
     settings.enableGef,
     settings.enableFrida,
+    settings.autoAskLLM,
   ]);
 
   return (
@@ -1124,13 +1221,18 @@ Explain why this node matters for behavior triage, dynamic-analysis targeting, o
           bgcolor: 'background.paper',
         }}
       >
-        <Typography variant="h6" fontWeight={600} sx={{ fontFamily: 'var(--font-sans)' }}>
+        <Typography variant="h6" fontWeight={500} sx={{ fontFamily: 'var(--font-sans)', letterSpacing: '-0.03em' }}>
           r2d2
         </Typography>
 
         <Box sx={{ display: { xs: 'none', lg: 'block' }, maxWidth: 760, minWidth: 0, overflow: 'hidden' }}>
           <Suspense fallback={null}>
-            <ToolStatusBar compact refreshInterval={60000} />
+            <ToolStatusBar
+              compact
+              refreshInterval={60000}
+              settings={settings}
+              onSettingsChange={setSettings}
+            />
           </Suspense>
         </Box>
 
@@ -1174,6 +1276,11 @@ Explain why this node matters for behavior triage, dynamic-analysis targeting, o
           </IconButton>
         </Tooltip>
 
+        <Tooltip title="How this works">
+          <IconButton size="small" onClick={() => setHelpOpen(true)}>
+            <HelpOutlineIcon sx={{ fontSize: 18 }} />
+          </IconButton>
+        </Tooltip>
         <Tooltip title="Settings">
           <IconButton size="small" onClick={() => setSettingsOpen(true)}>
             <SettingsIcon sx={{ fontSize: 18 }} />
@@ -1181,6 +1288,11 @@ Explain why this node matters for behavior triage, dynamic-analysis targeting, o
         </Tooltip>
       </Box>
 
+      {helpOpen && (
+        <Suspense fallback={null}>
+          <HelpGuide open={helpOpen} onClose={() => setHelpOpen(false)} />
+        </Suspense>
+      )}
       {(settingsOpen || settingsDrawerMounted) && (
         <Suspense fallback={null}>
           <SettingsDrawer
@@ -1353,7 +1465,9 @@ Explain why this node matters for behavior triage, dynamic-analysis targeting, o
                   {/* User goal input */}
                   <TextField
                     size="small"
-                    placeholder="What are you looking for? (e.g., find C2 callbacks, identify crypto)"
+                    inputRef={goalInputRef}
+                    inputProps={{ 'aria-label': 'Thesis' }}
+                    placeholder="Thesis — who calls system on the login path"
                     value={userGoal}
                     onChange={(e) => setUserGoal(e.target.value)}
                     fullWidth

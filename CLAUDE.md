@@ -4,7 +4,7 @@ This document provides essential context for AI assistants and developers workin
 
 ## Project Overview
 
-**r2d2** is a binary analysis copilot for learning ARM reverse engineering with AI. It combines fast local reverse engineering tools (radare2, angr, Capstone, Ghidra) with Claude-powered AI insights through a web interface and CLI.
+**r2d2** is a professional firmware/binary triage bus: radare2, Ghidra headless, firmware inventory, optional angr MCP, tagged records, and discovery-shaped asks for a local Qwen model. Not a teaching UI.
 
 ## Quick Commands
 
@@ -291,7 +291,7 @@ Set longer timeout in config: `analysis.ghidra_timeout = 120`
 ## UI Features
 
 ### Tool Attribution
-The Summary tab displays which analysis tools were used (radare2, angr, capstone, etc.) with beginner-friendly tooltips explaining what each tool does.
+The Summary tab attributes findings to tools (radare2, angr, capstone, Ghidra). Keep labels short; no tutorial tooltips.
 
 ### CFG Viewer
 The CFG (Control Flow Graph) viewer provides visualization of function control flow:

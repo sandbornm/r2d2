@@ -1,5 +1,5 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+import { fireEvent, render, screen } from '@testing-library/react';
+import { describe, expect, it, vi, beforeEach } from 'vitest';
 import SettingsDrawer, { type AnalysisSettings } from '../components/SettingsDrawer';
 
 const mockFetch = vi.fn();
@@ -16,70 +16,35 @@ const settings: AnalysisSettings = {
   selectedModel: 'gemma4:latest',
 };
 
-const renderDrawer = () => render(
-  <SettingsDrawer
-    open
-    onClose={vi.fn()}
-    isDarkMode={false}
-    onToggleTheme={vi.fn()}
-    settings={settings}
-    onSettingsChange={vi.fn()}
-  />,
-);
-
 describe('SettingsDrawer', () => {
   beforeEach(() => {
     mockFetch.mockReset();
-  });
-
-  afterEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it('starts unavailable MCP services from the detailed tool list', async () => {
-    mockFetch
-      .mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve({
-          tools: {
-            angr_mcp: {
-              available: false,
-              description: 'angr MCP',
-              start_command: ['uv', 'run', 'angr-mcp-dev-server'],
-              working_dir: '../angr_mcp',
-            },
-            ghidra: { available: true, description: 'Ghidra' },
-          },
-          meta: { live: true, generated_at: new Date().toISOString() },
-        }),
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve({
-          launch: { angr_mcp: { status: 'started' } },
-          tools: {
-            angr_mcp: {
-              available: true,
-              description: 'angr MCP',
-              start_command: ['uv', 'run', 'angr-mcp-dev-server'],
-            },
-            ghidra: { available: true, description: 'Ghidra' },
-          },
-          meta: { live: true, generated_at: new Date().toISOString() },
-        }),
-      });
-
-    renderDrawer();
-
-    fireEvent.click(await screen.findByRole('button', { name: /start angr mcp/i }));
-
-    await waitFor(() => {
-      expect(mockFetch).toHaveBeenCalledWith('/api/tools/start', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ services: ['angr_mcp'] }),
-      });
-      expect(screen.getByText(/angr MCP: started/i)).toBeInTheDocument();
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ tools: { ghidra: { available: true }, angr: { available: true } } }),
     });
+  });
+
+  it('renders profile and engine toggles without a live tool crawl', async () => {
+    const onChange = vi.fn();
+    render(
+      <SettingsDrawer
+        open
+        onClose={vi.fn()}
+        isDarkMode
+        onToggleTheme={vi.fn()}
+        settings={settings}
+        onSettingsChange={onChange}
+      />,
+    );
+
+    expect(screen.getByText('Settings')).toBeInTheDocument();
+    expect(screen.getByText('angr')).toBeInTheDocument();
+    expect(screen.getByText('Ghidra')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /start angr mcp/i })).not.toBeInTheDocument();
+
+    fireEvent.mouseDown(screen.getByRole('combobox'));
+    fireEvent.click(await screen.findByRole('option', { name: 'Triage' }));
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ analysisProfile: 'triage', quickScanOnly: true }));
   });
 });
