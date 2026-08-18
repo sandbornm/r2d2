@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/sandbornm/r2d2/schemas/briefing.schema.json",
+  "title": "r2d2 Analysis Briefing",
+  "description": "Ranked binary regions with compact dis/asm snippets and concrete LLM asks.",
+  "type": "object",
+  "required": ["schema_version", "binary", "summary", "regions", "overall_ask", "next_steps"],
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": { "const": "r2d2.briefing.v1" },
+    "binary": { "type": "string" },
+    "subject": { "type": "object" },
+    "summary": { "type": "string" },
+    "overall_ask": { "type": "string" },
+    "next_steps": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "regions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "title", "why", "score", "ask"],
+        "additionalProperties": true,
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "why": { "type": "string" },
+          "score": { "type": "number" },
+          "tags": { "type": "array", "items": { "type": "string" } },
+          "ask": { "type": "string" },
+          "next_actions": { "type": "array", "items": { "type": "string" } },
+          "snippet": {
+            "type": ["object", "null"],
+            "properties": {
+              "source": { "type": "string" },
+              "kind": { "type": "string" },
+              "text": { "type": "string" },
+              "address": { "type": ["string", "null"] },
+              "function": { "type": ["string", "null"] }
+            }
+          }
+        }
+      }
+    }
+  }
+}
