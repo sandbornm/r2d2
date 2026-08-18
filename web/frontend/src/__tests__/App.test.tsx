@@ -208,4 +208,22 @@ describe('App session loading', () => {
     ).length;
     expect(session1AnalysisFetches).toBe(1);
   });
+
+  it('opens help and switches tabs from keybindings', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByText('sample.elf'));
+    await screen.findByText('Mock ResultViewer');
+
+    await user.keyboard('?');
+    expect(await screen.findByText(/how this works/i)).toBeInTheDocument();
+
+    await user.keyboard('{Escape}');
+    await waitFor(() => {
+      expect(screen.queryByText(/how this works/i)).not.toBeInTheDocument();
+    });
+
+    await user.keyboard('3');
+    expect(await screen.findByText(/Mock ChatPanel/)).toBeInTheDocument();
+  });
 });

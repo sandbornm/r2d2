@@ -5,6 +5,13 @@ export default defineConfig({
   plugins: [react()],
   server: {
     port: 5173,
+    host: '127.0.0.1',
+    // Tailscale Serve / MagicDNS hits Vite with the public hostname.
+    allowedHosts: [
+      'r2d2.tailcba5f3.ts.net',
+      'kali-raspberry-pi5.tailcba5f3.ts.net',
+      '.ts.net',
+    ],
     proxy: {
       '/api': {
         target: 'http://127.0.0.1:5050',

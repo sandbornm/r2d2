@@ -31,10 +31,12 @@ import type {
   ToolScorecardEntry,
   ToolStatusSummary,
 } from '../types';
+import ArtifactSheet from './ArtifactSheet';
 import AutoProfilePanel from './AutoProfilePanel';
+import BriefingPanel from './BriefingPanel';
+import InsightsPanel from './InsightsPanel';
 import DisassemblyViewer from './DisassemblyViewer';
 import FirmwareTriagePanel from './FirmwareTriagePanel';
-import ToolAttribution from './ToolAttribution';
 
 // Lazy load heavy components for better initial load performance
 const CFGViewer = lazy(() => import('./CFGViewer'));
@@ -134,7 +136,7 @@ const downloadBlob = (body: BlobPart, filename: string, type: string) => {
   URL.revokeObjectURL(url);
 };
 
-const ResultViewer: FC<ResultViewerProps> = memo(({ result, sessionId, toolsInfo, onAskAboutCode, onAskAboutCFG }) => {
+const ResultViewer: FC<ResultViewerProps> = memo(({ result, sessionId, onAskAboutCode, onAskAboutCFG }) => {
   const theme = useTheme();
   const [view, setView] = useState<ViewTab>('overview');
   const [annotations, setAnnotations] = useState<AssemblyAnnotation[]>([]);
@@ -229,6 +231,7 @@ const ResultViewer: FC<ResultViewerProps> = memo(({ result, sessionId, toolsInfo
   const gefDeep = (deepScan.gef ?? null) as GEFData | null;
   const autoprofileQuick = (quickScan.autoprofile ?? null) as AutoProfileData | null;
   const firmwareQuick = (quickScan.firmware ?? null) as Record<string, unknown> | null;
+  const sniffQuick = (quickScan.sniff ?? null) as Record<string, unknown> | null;
   const firmwareChildren = (deepScan.firmware_children ?? null) as Record<string, unknown> | null;
   const runtimeRequirements = (quickScan.runtime ?? null) as RuntimeRequirements | null;
   const toolStatus = (result?.tool_status ?? {}) as Record<string, ToolStatusSummary>;
@@ -311,7 +314,6 @@ const ResultViewer: FC<ResultViewerProps> = memo(({ result, sessionId, toolsInfo
   const functionCfgs = Array.isArray(r2Deep.function_cfgs) ? r2Deep.function_cfgs : [];
   const firmwareArtifacts = Array.isArray(firmwareQuick?.embedded_artifacts) ? firmwareQuick.embedded_artifacts : [];
   const firmwareTargets = Array.isArray(firmwareQuick?.recommended_targets) ? firmwareQuick.recommended_targets : [];
-  const firmwareCarves = Array.isArray(firmwareQuick?.carved_targets) ? firmwareQuick.carved_targets : [];
   
   // angr data - properly extract CFG nodes, edges, and stats
   const angrCfg = (angrDeep.cfg ?? {}) as Record<string, unknown>;
@@ -391,7 +393,15 @@ const ResultViewer: FC<ResultViewerProps> = memo(({ result, sessionId, toolsInfo
             </Typography>
             <Typography variant="caption" color="text.secondary">
               {formatDisplay} · {archDisplay.short} · {osDisplay}
+              {result?.record?.record_id ? ` · rec ${result.record.record_id.slice(0, 12)} r${result.record.revision ?? 1}` : ''}
             </Typography>
+            {!!result?.record?.tags?.length && (
+              <Stack direction="row" spacing={0.5} sx={{ mt: 0.5, flexWrap: 'wrap', gap: 0.5 }}>
+                {result.record.tags.slice(0, 8).map((tag) => (
+                  <Chip key={tag} size="small" label={tag} variant="outlined" />
+                ))}
+              </Stack>
+            )}
           </Box>
           <Stack direction="row" spacing={0.5}>
             <Chip size="small" label={`${functions.length} fn`} variant="outlined" />
@@ -451,6 +461,10 @@ const ResultViewer: FC<ResultViewerProps> = memo(({ result, sessionId, toolsInfo
         {/* OVERVIEW TAB - Binary info, Profile, Tool attribution */}
         {view === 'overview' && (
           <Stack spacing={1.5}>
+            {result?.briefing && (
+              <BriefingPanel briefing={result.briefing} onAsk={onAskAboutCode} />
+            )}
+            <InsightsPanel recordId={result?.record?.record_id} />
             {firmwareQuick && (
               <FirmwareTriagePanel
                 firmware={firmwareQuick}
@@ -460,221 +474,52 @@ const ResultViewer: FC<ResultViewerProps> = memo(({ result, sessionId, toolsInfo
               />
             )}
 
-            {/* Runtime requirements */}
-            {runtimeRequirements && (
-              <Paper variant="outlined" sx={{ p: 1.5 }}>
-                <Typography variant="caption" color="text.secondary" fontWeight={600}>
-                  Runtime Requirements
-                </Typography>
-                {runtimeRequirements.error ? (
-                  <Typography variant="caption" color="error.main" sx={{ display: 'block', mt: 1 }}>
-                    {runtimeRequirements.error}
-                  </Typography>
-                ) : (
-                  <Box sx={{ mt: 1 }}>
-                    {[
-                      ['Architecture', runtimeRequirements.arch],
-                      ['Bits', runtimeRequirements.bits ? `${runtimeRequirements.bits}-bit` : undefined],
-                      ['Endianness', runtimeRequirements.endianness],
-                      ['OS ABI', runtimeRequirements.osabi],
-                      ['Interpreter', runtimeRequirements.interp],
-                      [
-                        'Needed libs',
-                        runtimeRequirements.needed && runtimeRequirements.needed.length
-                          ? runtimeRequirements.needed.join(', ')
-                          : undefined,
-                      ],
-                    ]
-                      .filter((item): item is [string, string] => Boolean(item[1]))
-                      .map(([label, value]) => (
-                        <Box key={label} sx={{ display: 'flex', justifyContent: 'space-between', py: 0.25 }}>
-                          <Typography variant="caption" color="text.secondary">{label}</Typography>
-                          <Typography variant="caption" sx={{ maxWidth: '70%', textAlign: 'right' }}>{value}</Typography>
-                        </Box>
-                      ))}
-                  </Box>
-                )}
-              </Paper>
-            )}
-
-            {/* Tool status coverage */}
-            {Object.keys(toolStatus).length > 0 && (
-              <Paper variant="outlined" sx={{ p: 1.5 }}>
-                <Typography variant="caption" color="text.secondary" fontWeight={600}>
-                  Tool Status
-                </Typography>
-                <Grid container spacing={1} sx={{ mt: 0.5 }}>
-                  {Object.entries(toolStatus).map(([name, status]) => {
-                    const scorecard = toolScorecard[name];
-                    return (
-                    <Grid item xs={12} md={6} key={name}>
-                      <Paper variant="outlined" sx={{ p: 1, bgcolor: 'background.paper' }}>
-                        <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.5 }}>
-                          <Typography variant="caption" fontWeight={600}>
-                            {name}
-                          </Typography>
-                          <Chip
-                            size="small"
-                            label={status.status}
-                            color={status.status === 'completed' ? 'success' : status.status === 'failed' ? 'error' : 'warning'}
-                            variant="outlined"
-                          />
-                          {scorecard && (
-                            <Chip
-                              size="small"
-                              label={`${scorecard.quality} ${scorecard.score}`}
-                              color={scorecard.quality === 'good' ? 'success' : scorecard.quality === 'usable' ? 'info' : scorecard.quality === 'limited' ? 'warning' : 'default'}
-                              variant="outlined"
-                            />
-                          )}
-                        </Stack>
-                        <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
-                          functions: {status.functions_count ?? 0} · cfg: {status.cfg_nodes ?? 0} nodes / {status.cfg_edges ?? 0} edges
-                        </Typography>
-                        {(status.duration_ms !== undefined || scorecard?.speed) && (
-                          <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
-                            {scorecard?.speed ? `speed: ${scorecard.speed}` : ''}
-                            {scorecard?.speed && status.duration_ms !== undefined ? ' · ' : ''}
-                            {status.duration_ms !== undefined ? `duration: ${status.duration_ms} ms` : ''}
-                          </Typography>
-                        )}
-                        {scorecard?.best_for?.length ? (
-                          <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
-                            best: {scorecard.best_for.slice(0, 3).join(', ')}
-                          </Typography>
-                        ) : null}
-                        {status.memory_allocations && status.memory_allocations.length > 0 && (
-                          <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
-                            allocs: {status.memory_allocations.join(', ')}
-                          </Typography>
-                        )}
-                        {status.error && (
-                          <Typography variant="caption" color="error.main" sx={{ display: 'block' }}>
-                            {status.error}
-                          </Typography>
-                        )}
-                        {status.warnings && status.warnings.length > 0 && (
-                          <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
-                            {status.warnings.join(' ')}
-                          </Typography>
-                        )}
-                      </Paper>
-                    </Grid>
-                    );
-                  })}
-                </Grid>
-              </Paper>
-            )}
-
-            {/* Evidence coverage matrix */}
-            {evidenceCoverage && (
-              <Paper variant="outlined" sx={{ p: 1.5 }}>
-                <Typography variant="caption" color="text.secondary" fontWeight={600}>
-                  Evidence Coverage Matrix
-                </Typography>
-                <Box
-                  sx={{
-                    mt: 1,
-                    display: 'grid',
-                    gridTemplateColumns: `160px repeat(${evidenceCoverage.columns.length}, minmax(80px, 1fr))`,
-                    gap: 0.5,
-                    alignItems: 'center',
-                  }}
-                >
-                  <Box />
-                  {evidenceCoverage.columns.map((col) => (
-                    <Typography key={col} variant="caption" color="text.secondary" sx={{ fontWeight: 600 }}>
-                      {col}
-                    </Typography>
-                  ))}
-                  {evidenceCoverage.rows.map((row) => (
-                    <Box key={row} sx={{ display: 'contents' }}>
-                      <Typography variant="caption" sx={{ fontWeight: 600 }}>
-                        {row}
-                      </Typography>
-                      {evidenceCoverage.columns.map((col) => {
-                        const status = evidenceCoverage.matrix?.[row]?.[col] ?? 'missing';
-                        const color = status === 'present' ? 'success' : status === 'partial' ? 'warning' : 'default';
-                        return (
-                          <Chip
-                            key={`${row}-${col}`}
-                            size="small"
-                            label={status}
-                            color={color}
-                            variant={status === 'missing' ? 'outlined' : 'filled'}
-                            sx={{ height: 20, fontSize: '0.65rem' }}
-                          />
-                        );
-                      })}
-                    </Box>
-                  ))}
-                </Box>
-              </Paper>
-            )}
-            {/* Tool Attribution */}
-            <ToolAttribution
-              quickScan={quickScan}
-              deepScan={deepScan}
-              toolAvailability={result?.tool_availability as Record<string, boolean> | undefined}
-              toolsInfo={toolsInfo}
+            <ArtifactSheet
+              fileName={fileName}
+              format={formatDisplay}
+              arch={archDisplay.full}
+              os={osDisplay}
+              binType={binType}
+              compiler={compiler}
+              firmware={firmwareQuick}
+              sniff={sniffQuick}
+              runtime={runtimeRequirements as Record<string, unknown> | null}
+              briefingSubject={(result?.briefing?.subject as Record<string, unknown> | undefined) ?? null}
+              toolStatus={toolStatus}
+              toolScorecard={toolScorecard}
+              evidenceCoverage={evidenceCoverage}
+              functionCount={functions.length}
+              importCount={imports.length}
+              stringCount={strings.length}
+              sha256={result?.record?.sha256 ?? null}
             />
 
             <Grid container spacing={1.5}>
-              {/* Binary Info */}
-              <Grid item xs={12} md={6}>
-                <Paper variant="outlined" sx={{ p: 1.5, height: '100%' }}>
-                  <Typography variant="caption" color="text.secondary" fontWeight={600}>
-                    Binary Info
-                  </Typography>
-                  <Box sx={{ mt: 1 }}>
-                    {([
-                      ['Format', format],
-                      ['Architecture', archDisplay.full],
-                      ['OS', os],
-                      ['Type', binType],
-                      firmwareFormat ? ['Firmware format', firmwareFormat] : null,
-                      firmwareContainer ? ['Container', firmwareContainer] : null,
-                      firmwareCarves.length ? ['Carved targets', `${firmwareCarves.length}`] : null,
-                      compiler ? ['Compiler', compiler] : null,
-                    ] as (readonly [string, string] | null)[]).filter((item): item is readonly [string, string] => item !== null).map(([label, value]) => (
-                      <Box key={label} sx={{ display: 'flex', justifyContent: 'space-between', py: 0.25 }}>
-                        <Typography variant="caption" color="text.secondary">{label}</Typography>
-                        <Typography variant="caption">{value}</Typography>
-                      </Box>
-                    ))}
-                  </Box>
-                </Paper>
-              </Grid>
-
-              {/* Security Profile (from AutoProfile) */}
-              <Grid item xs={12} md={6}>
+              <Grid item xs={12} md={topImports.length ? 6 : 12}>
                 <Paper variant="outlined" sx={{ p: 1.5, height: '100%' }}>
                   <AutoProfilePanel data={autoprofileQuick} compact />
                 </Paper>
               </Grid>
-
-              {/* Top Imports */}
-              <Grid item xs={12}>
-                <Paper variant="outlined" sx={{ p: 1.5 }}>
-                  <Typography variant="caption" color="text.secondary" fontWeight={600}>
-                    Imports ({topImports.length})
-                  </Typography>
-                  <Box sx={{ mt: 1, display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
-                    {topImports.slice(0, 15).map((name, i) => (
-                      <Chip
-                        key={i}
-                        label={name}
-                        size="small"
-                        variant="outlined"
-                        sx={{ fontFamily: 'monospace', fontSize: '0.65rem' }}
-                      />
-                    ))}
-                    {topImports.length === 0 && (
-                      <Typography variant="caption" color="text.secondary">No imports found</Typography>
-                    )}
-                  </Box>
-                </Paper>
-              </Grid>
+              {topImports.length > 0 && (
+                <Grid item xs={12} md={6}>
+                  <Paper variant="outlined" sx={{ p: 1.5, height: '100%' }}>
+                    <Typography variant="caption" color="text.secondary" fontWeight={600}>
+                      Imports ({topImports.length})
+                    </Typography>
+                    <Box sx={{ mt: 1, display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
+                      {topImports.slice(0, 15).map((name, i) => (
+                        <Chip
+                          key={i}
+                          label={name}
+                          size="small"
+                          variant="outlined"
+                          sx={{ fontFamily: 'monospace', fontSize: '0.65rem' }}
+                        />
+                      ))}
+                    </Box>
+                  </Paper>
+                </Grid>
+              )}
             </Grid>
           </Stack>
         )}

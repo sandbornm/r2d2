@@ -1,38 +1,82 @@
-import CheckCircleIcon from '@mui/icons-material/CheckCircle';
-import ErrorIcon from '@mui/icons-material/Error';
-import LinkIcon from '@mui/icons-material/Link';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
-import { alpha, Box, Chip, CircularProgress, IconButton, Stack, Tooltip, Typography, useTheme } from '@mui/material';
-import { FC, useCallback, useEffect, useState } from 'react';
-import type { ToolsStartResponse, ToolsStatusResponse, ToolExecutionStatus } from '../types';
-import { toolColors } from '../theme';
-import { getToolCatalogEntry, getToolDisplayName, sortToolEntries } from '../toolCatalog';
+import {
+  Box,
+  CircularProgress,
+  ClickAwayListener,
+  Paper,
+  Popper,
+  Stack,
+  Switch,
+  Typography,
+  alpha,
+  useTheme,
+} from '@mui/material';
+import { FC, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { AnalysisSettings } from './SettingsDrawer';
+import type { ToolExecutionStatus, ToolsStartResponse, ToolsStatusResponse } from '../types';
+import { getToolCatalogEntry, getToolDisplayName, getToolShortName, sortToolEntries } from '../toolCatalog';
 
 interface ToolStatusBarProps {
   compact?: boolean;
   refreshInterval?: number;
+  settings?: AnalysisSettings;
+  onSettingsChange?: (next: AnalysisSettings) => void;
 }
 
+const HIDDEN_TOOLS = new Set(['pwntools', 'ghidra_mcp']);
+
 const COMPACT_TOOL_ORDER = [
+  'firmware',
   'radare2',
-  'angr',
   'ghidra',
-  'capstone',
-  'pyelftools',
-  'pefile',
-  'pwntools',
-  'ghidra_mcp',
+  'angr',
   'angr_mcp',
+  'capstone',
+  'binwalk',
 ];
 
-const ToolStatusBar: FC<ToolStatusBarProps> = ({ compact = false, refreshInterval = 30000 }) => {
+type EnableKey = 'enableAngr' | 'enableGhidra' | 'enableGef' | 'enableFrida';
+
+const ENABLE_BY_TOOL: Record<string, EnableKey> = {
+  angr: 'enableAngr',
+  angr_mcp: 'enableAngr',
+  ghidra: 'enableGhidra',
+  ghidra_gdb: 'enableGhidra',
+  gef: 'enableGef',
+  gdb: 'enableGef',
+  frida: 'enableFrida',
+};
+
+type HealthKind = 'ok' | 'off' | 'down';
+
+const toolHealth = (name: string, tool: ToolExecutionStatus, settings?: AnalysisSettings): HealthKind => {
+  const enableKey = ENABLE_BY_TOOL[name];
+  if (enableKey && settings && settings[enableKey] === false) return 'off';
+  if (!tool.available) return 'down';
+  return 'ok';
+};
+
+const healthLabel = (kind: HealthKind): string => {
+  if (kind === 'ok') return 'Ready';
+  if (kind === 'off') return 'Off for this run';
+  return 'Not running';
+};
+
+const ToolStatusBar: FC<ToolStatusBarProps> = ({
+  compact = false,
+  refreshInterval = 30000,
+  settings,
+  onSettingsChange,
+}) => {
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
   const [status, setStatus] = useState<ToolsStatusResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [launching, setLaunching] = useState<Record<string, boolean>>({});
-  const [launchMessage, setLaunchMessage] = useState<string | null>(null);
+  const [openTool, setOpenTool] = useState<string | null>(null);
+  const closeTimer = useRef<number | null>(null);
+  const anchors = useRef<Record<string, HTMLElement | null>>({});
 
   const fetchStatus = useCallback(async (live = false) => {
     try {
@@ -52,94 +96,30 @@ const ToolStatusBar: FC<ToolStatusBarProps> = ({ compact = false, refreshInterva
 
   useEffect(() => {
     fetchStatus().catch(console.error);
-
     const interval = setInterval(() => {
       fetchStatus().catch(console.error);
     }, refreshInterval);
-
     return () => clearInterval(interval);
   }, [fetchStatus, refreshInterval]);
 
-  if (loading) {
-    return (
-      <Stack direction="row" spacing={1} alignItems="center">
-        <CircularProgress size={14} />
-        <Typography variant="caption" color="text.secondary">
-          Loading tools...
-        </Typography>
-      </Stack>
-    );
-  }
+  const visibleTools = useMemo(() => {
+    if (!status) return [] as Array<[string, ToolExecutionStatus]>;
+    const entries = Object.entries(status.tools).filter(([name]) => !HIDDEN_TOOLS.has(name));
+    if (!compact) return sortToolEntries(entries);
+    return COMPACT_TOOL_ORDER
+      .filter((name) => status.tools[name] && !HIDDEN_TOOLS.has(name))
+      .map((name) => [name, status.tools[name]] as [string, ToolExecutionStatus]);
+  }, [compact, status]);
 
-  if (error) {
-    return (
-      <Stack direction="row" spacing={1} alignItems="center">
-        <ErrorIcon color="error" sx={{ fontSize: 16 }} />
-        <Typography variant="caption" color="error">
-          Error loading tools
-        </Typography>
-      </Stack>
-    );
-  }
+  const readyCount = visibleTools.filter(([, tool]) => tool.available).length;
 
-  if (!status) {
-    return null;
-  }
-
-  const getToolColor = (name: string): string => {
-    return toolColors[name as keyof typeof toolColors] || theme.palette.grey[500];
-  };
-
-  const getToolTooltip = (name: string, toolStatus: ToolExecutionStatus) => {
-    const catalog = getToolCatalogEntry(name);
-    const lines = [toolStatus.description || catalog?.description];
-    if (catalog) {
-      lines.push(`Category: ${catalog.category}`);
-      lines.push(`Best for: ${catalog.produces}`);
-    }
-    if (toolStatus.scorecard) {
-      lines.push(
-        `Score: ${toolStatus.scorecard.quality} (${toolStatus.scorecard.score}/100, ${toolStatus.scorecard.speed ?? 'unknown'} speed)`,
-      );
-      if (toolStatus.scorecard.best_for?.length) {
-        lines.push(`Use for: ${toolStatus.scorecard.best_for.join(', ')}`);
-      }
-    }
-    if (name === 'ghidra') {
-      if (toolStatus.bridge_connected) {
-        lines.push('Bridge: Connected');
-      } else if (toolStatus.bridge_available) {
-        lines.push('Bridge: Available (not connected)');
-      }
-      if (toolStatus.headless_ready || toolStatus.headless_available) {
-        lines.push('Headless: Available');
-      }
-    }
-    if (toolStatus.details) lines.push(toolStatus.details);
-    if (toolStatus.active_url || toolStatus.url || toolStatus.command) {
-      lines.push(String(toolStatus.active_url || toolStatus.url || toolStatus.command));
-    }
-    if (toolStatus.start_command?.length) {
-      const command = toolStatus.start_command.join(' ');
-      if (toolStatus.working_dir) lines.push(`Working dir: ${toolStatus.working_dir}`);
-      lines.push(`Run: ${command}`);
-    } else if (toolStatus.command && toolStatus.args?.length) {
-      lines.push(`Run: ${[toolStatus.command, ...toolStatus.args].join(' ')}`);
-    }
-    if (toolStatus.install_hint) lines.push(toolStatus.install_hint);
-    if (toolStatus.path) lines.push(`Path: ${toolStatus.path}`);
-    return lines.filter(Boolean).join('\n');
-  };
-
-  const canLaunchTool = (name: string, toolStatus: ToolExecutionStatus) => {
-    return name.endsWith('_mcp') || name === 'ghidra_gdb'
-      ? !toolStatus.available && Boolean(toolStatus.start_command?.length)
-      : false;
-  };
+  const canLaunchTool = (name: string, toolStatus: ToolExecutionStatus) =>
+    (name.endsWith('_mcp') || name === 'ghidra_gdb')
+    && !toolStatus.available
+    && Boolean(toolStatus.start_command?.length);
 
   const startTool = async (name: string) => {
     setLaunching((prev) => ({ ...prev, [name]: true }));
-    setLaunchMessage(null);
     try {
       const response = await fetch('/api/tools/start', {
         method: 'POST',
@@ -158,167 +138,185 @@ const ToolStatusBar: FC<ToolStatusBarProps> = ({ compact = false, refreshInterva
         scorecard: data.scorecard,
         score_summary: data.score_summary,
       });
-      const result = data.launch[name];
-      setLaunchMessage(`${getToolDisplayName(name)}: ${result?.status ?? 'started'}`);
-    } catch (e) {
-      setLaunchMessage(`${getToolDisplayName(name)}: ${e instanceof Error ? e.message : 'launch failed'}`);
     } finally {
       setLaunching((prev) => ({ ...prev, [name]: false }));
     }
   };
 
-  const orderedToolEntries = sortToolEntries(Object.entries(status.tools));
+  const toggleEnabled = (name: string, enabled: boolean) => {
+    const key = ENABLE_BY_TOOL[name];
+    if (!key || !settings || !onSettingsChange) return;
+    onSettingsChange({ ...settings, [key]: enabled });
+  };
 
-  if (compact) {
-    const compactEntries = COMPACT_TOOL_ORDER
-      .filter((name) => status.tools[name])
-      .map((name) => [name, status.tools[name]] as [string, ToolExecutionStatus]);
+  const open = (name: string) => {
+    if (closeTimer.current) window.clearTimeout(closeTimer.current);
+    setOpenTool(name);
+  };
 
+  const scheduleClose = () => {
+    if (closeTimer.current) window.clearTimeout(closeTimer.current);
+    closeTimer.current = window.setTimeout(() => setOpenTool(null), 160);
+  };
+
+  if (loading) {
     return (
-      <Stack direction="row" spacing={0.75} alignItems="center" sx={{ minWidth: 0, overflow: 'hidden' }}>
-        <Typography variant="caption" color="text.secondary" sx={{ whiteSpace: 'nowrap' }}>
-          Tools: {status.available_count} / {status.total_count}
-        </Typography>
-        {compactEntries.map(([name, toolStatus]) => {
-          const color = getToolColor(name);
-          const available = toolStatus.available;
-          return (
-            <Tooltip key={name} title={getToolTooltip(name, toolStatus)} arrow>
-              <Chip
-                size="small"
-                label={getToolDisplayName(name)}
-                icon={available ? <CheckCircleIcon sx={{ fontSize: 12 }} /> : <ErrorIcon sx={{ fontSize: 12 }} />}
-                sx={{
-                  height: 20,
-                  fontSize: '0.65rem',
-                  flexShrink: 0,
-                  bgcolor: available ? alpha(color, isDark ? 0.2 : 0.12) : alpha(theme.palette.error.main, 0.08),
-                  color: available ? color : 'text.secondary',
-                  border: `1px solid ${available ? alpha(color, 0.3) : alpha(theme.palette.error.main, 0.25)}`,
-                  '& .MuiChip-icon': { color: available ? color : theme.palette.error.main },
-                  '& .MuiChip-label': { px: 0.5 },
-                }}
-              />
-            </Tooltip>
-          );
-        })}
+      <Stack direction="row" spacing={1} alignItems="center" aria-label="Loading tools">
+        <CircularProgress size={12} />
       </Stack>
     );
   }
 
-  // Full mode
-  return (
-    <Box
-      sx={{
-        p: 1.5,
-        borderRadius: 1,
-        bgcolor: isDark ? alpha(theme.palette.common.white, 0.02) : alpha(theme.palette.common.black, 0.02),
-        border: 1,
-        borderColor: 'divider',
-      }}
-    >
-      <Stack direction="row" alignItems="center" justifyContent="space-between" mb={1}>
-        <Typography variant="caption" color="text.secondary" fontWeight={600}>
-          Tool Execution Status
-        </Typography>
-        <Stack direction="row" spacing={0.75} alignItems="center">
-          {launchMessage && (
-            <Typography variant="caption" color="text.secondary">
-              {launchMessage}
-            </Typography>
-          )}
-          <Chip
-            size="small"
-            label={`${status.available_count} / ${status.total_count} ready`}
-            sx={{
-              height: 18,
-              fontSize: '0.65rem',
-              bgcolor: alpha(theme.palette.primary.main, 0.1),
-              color: 'primary.main',
-            }}
-          />
-        </Stack>
-      </Stack>
-      <Stack direction="row" spacing={1} flexWrap="wrap" gap={0.75}>
-        {orderedToolEntries.map(([name, toolStatus]) => {
-          const color = getToolColor(name);
-          const isAvailable = toolStatus.available;
-          const isBridgeConnected = name === 'ghidra' && toolStatus.bridge_connected;
-          const canLaunch = canLaunchTool(name, toolStatus);
+  if (error) {
+    return (
+      <Typography variant="caption" color="error">
+        tools offline
+      </Typography>
+    );
+  }
 
-          return (
-            <Stack key={name} direction="row" spacing={0.25} alignItems="center">
-              <Tooltip title={getToolTooltip(name, toolStatus)} arrow>
-                <Chip
-                  size="small"
-                  label={getToolDisplayName(name)}
-                  icon={
-                    isAvailable ? (
-                      isBridgeConnected ? (
-                        <LinkIcon sx={{ fontSize: 14 }} />
-                      ) : (
-                        <CheckCircleIcon sx={{ fontSize: 14 }} />
-                      )
-                    ) : (
-                      <ErrorIcon sx={{ fontSize: 14 }} />
-                    )
-                  }
-                  sx={{
-                    height: 24,
-                    bgcolor: isAvailable
-                      ? alpha(color, isDark ? 0.15 : 0.1)
-                      : alpha(theme.palette.error.main, isDark ? 0.1 : 0.05),
-                    color: isAvailable ? color : 'error.main',
-                    border: `1px solid ${isAvailable ? alpha(color, 0.3) : alpha(theme.palette.error.main, 0.3)}`,
-                    opacity: isAvailable ? 1 : 0.6,
-                    '& .MuiChip-icon': {
-                      color: isAvailable ? color : theme.palette.error.main,
-                    },
-                  }}
-                />
-              </Tooltip>
-              {canLaunch && (
-                <Tooltip title={`Start ${getToolDisplayName(name)}`}>
-                  <span>
-                    <IconButton
-                      size="small"
-                      aria-label={`Start ${getToolDisplayName(name)}`}
-                      disableRipple
-                      disabled={launching[name]}
-                      onClick={() => startTool(name)}
-                      sx={{
-                        width: 24,
-                        height: 24,
-                        color,
-                        border: `1px solid ${alpha(color, 0.28)}`,
-                        bgcolor: alpha(color, isDark ? 0.1 : 0.06),
-                      }}
-                    >
-                      {launching[name] ? <CircularProgress size={12} /> : <PlayArrowIcon sx={{ fontSize: 15 }} />}
-                    </IconButton>
-                  </span>
-                </Tooltip>
-              )}
+  if (!status) return null;
+
+  const renderCard = (name: string, toolStatus: ToolExecutionStatus) => {
+    const health = toolHealth(name, toolStatus, settings);
+    const catalog = getToolCatalogEntry(name);
+    const enableKey = ENABLE_BY_TOOL[name];
+    const enabled = enableKey && settings ? settings[enableKey] : true;
+    const launchable = canLaunchTool(name, toolStatus);
+    const hint = health === 'down'
+      ? (toolStatus.install_hint || toolStatus.details || 'Not reachable on this box.')
+      : catalog?.description;
+
+    return (
+      <Paper
+        elevation={0}
+        onMouseEnter={() => open(name)}
+        onMouseLeave={scheduleClose}
+        sx={{
+          p: 1.25,
+          minWidth: 200,
+          maxWidth: 260,
+          border: 1,
+          borderColor: 'divider',
+          bgcolor: isDark ? '#141310' : '#fff',
+        }}
+      >
+        <Stack spacing={0.75}>
+          <Stack direction="row" justifyContent="space-between" alignItems="baseline">
+            <Typography variant="body2" fontWeight={600}>
+              {getToolDisplayName(name)}
+            </Typography>
+            <Typography
+              variant="caption"
+              sx={{ color: health === 'ok' ? 'success.main' : health === 'off' ? 'text.secondary' : 'warning.main' }}
+            >
+              {healthLabel(health)}
+            </Typography>
+          </Stack>
+          <Typography variant="caption" color="text.secondary">
+            {hint}
+          </Typography>
+          {enableKey && settings && onSettingsChange && (
+            <Stack direction="row" alignItems="center" justifyContent="space-between">
+              <Typography variant="caption">Use on next analyze</Typography>
+              <Switch
+                size="small"
+                checked={Boolean(enabled)}
+                onChange={(event) => toggleEnabled(name, event.target.checked)}
+                inputProps={{ 'aria-label': `Enable ${getToolDisplayName(name)}` }}
+              />
             </Stack>
+          )}
+          {launchable && (
+            <Box
+              component="button"
+              onClick={() => startTool(name)}
+              disabled={launching[name]}
+              aria-label={`Start ${getToolDisplayName(name)}`}
+              sx={{
+                border: 1,
+                borderColor: 'divider',
+                bgcolor: 'transparent',
+                color: 'text.primary',
+                font: 'inherit',
+                fontSize: 12,
+                py: 0.5,
+                cursor: 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 0.5,
+              }}
+            >
+              {launching[name] ? <CircularProgress size={10} /> : <PlayArrowIcon sx={{ fontSize: 14 }} />}
+              Start service
+            </Box>
+          )}
+        </Stack>
+      </Paper>
+    );
+  };
+
+  const dots = compact ? visibleTools : visibleTools.slice(0, 10);
+
+  return (
+    <ClickAwayListener onClickAway={() => setOpenTool(null)}>
+      <Stack direction="row" spacing={0.75} alignItems="center" sx={{ minWidth: 0 }}>
+        {dots.map(([name, toolStatus]) => {
+          const health = toolHealth(name, toolStatus, settings);
+          const label = getToolShortName(name);
+          return (
+            <Box
+              key={name}
+              ref={(node: HTMLDivElement | null) => {
+                anchors.current[name] = node;
+              }}
+              onMouseEnter={() => open(name)}
+              onMouseLeave={scheduleClose}
+              sx={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 0.5,
+                px: 0.6,
+                py: 0.15,
+                cursor: 'default',
+                opacity: health === 'off' ? 0.4 : 1,
+              }}
+            >
+              <Box
+                sx={{
+                  width: 6,
+                  height: 6,
+                  borderRadius: '50%',
+                  bgcolor:
+                    health === 'ok'
+                      ? alpha(theme.palette.success.main, 0.9)
+                      : health === 'off'
+                        ? theme.palette.text.disabled
+                        : theme.palette.warning.main,
+                  boxShadow: health === 'down' ? `0 0 0 3px ${alpha(theme.palette.warning.main, 0.2)}` : 'none',
+                }}
+              />
+              <Typography variant="caption" sx={{ fontFamily: 'var(--font-mono)', fontSize: 11, letterSpacing: '0.02em' }}>
+                {label}
+              </Typography>
+              <Popper
+                open={openTool === name}
+                anchorEl={anchors.current[name]}
+                placement="bottom-start"
+                sx={{ zIndex: theme.zIndex.tooltip }}
+              >
+                {renderCard(name, toolStatus)}
+              </Popper>
+            </Box>
           );
         })}
-        {/* Show bridge indicator separately if Ghidra bridge is connected */}
-        {status.tools.ghidra?.bridge_connected && (
-          <Chip
-            size="small"
-            label="Bridge"
-            icon={<LinkIcon sx={{ fontSize: 14 }} />}
-            sx={{
-              height: 24,
-              bgcolor: alpha(theme.palette.success.main, isDark ? 0.15 : 0.1),
-              color: 'success.main',
-              border: `1px solid ${alpha(theme.palette.success.main, 0.3)}`,
-              '& .MuiChip-icon': { color: theme.palette.success.main },
-            }}
-          />
+        {!compact && (
+          <Typography variant="caption" color="text.secondary" sx={{ ml: 0.5 }}>
+            {readyCount}/{visibleTools.length}
+          </Typography>
         )}
       </Stack>
-    </Box>
+    </ClickAwayListener>
   );
 };
 

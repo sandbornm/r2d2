@@ -1,4 +1,4 @@
-"""r2d2 - Binary analysis copilot."""
+"""r2d2 — professional firmware/binary triage bus."""
 
 from importlib.metadata import PackageNotFoundError, version
 

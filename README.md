@@ -1,22 +1,16 @@
 # r2d2
 
-**Learn ARM Reverse Engineering with AI** — A production-ready binary analysis copilot that pairs fast local tooling with Claude-powered insights. Perfect for learning ARM assembly, CTF challenges, malware analysis, and understanding how programs work at the machine level.
+**Professional binary / firmware triage bus.** r2d2 ranks interesting regions, persists tagged records, and feeds a local (often abliterated) model short, concrete asks — not lectures. It assumes you already reverse. The goal is to surface something you would have spent an afternoon finding.
 
 ## Why r2d2?
 
-Reverse engineering is hard. You need to juggle multiple tools (disassemblers, decompilers, debuggers), understand complex file formats, and interpret low-level assembly—all while trying to answer high-level questions like "what does this malware do?" or "where's the vulnerability?"
+1. **Adapter orchestration** — radare2, Ghidra headless, firmware inventory, optional angr MCP — one plan, one record.
 
-**r2d2 solves this by:**
+2. **Discovery-shaped LLM context** — Qwen sees a snippet, a thesis, and four questions aimed at an anomaly. It does not get the adapter dump or a beginner prompt.
 
-1. **Unified Tool Orchestration**: Instead of manually running radare2, Ghidra, angr, and GDB separately, r2d2 orchestrates them automatically and presents unified results.
+3. **Records, not sessions-as-truth** — SHA-256 folders, mergeable tool blobs, sibling insights across firmware families.
 
-2. **AI-Powered Understanding**: Claude explains assembly code in plain English, identifies patterns, and helps you understand what you're looking at. The LLM has full context of the analysis—functions, strings, security features, CFG—so its answers are grounded in actual data.
-
-3. **Learning-Focused Design**: Hover over any instruction for documentation. Select code and ask "what does this do?" Annotations persist so you can build understanding over time. Perfect for learning ARM assembly.
-
-4. **Multiple Representation Levels**: See your code as C source, assembly, and machine bytes. Understand the transformation pipeline from high-level to low-level.
-
-5. **Trajectory Recording**: Every analysis step is recorded to SQLite. Replay sessions, audit decisions, and build training data for future automation.
+4. **Trajectory** — every adapter step is logged so you can audit what the model was shown.
 
 ## System Architecture
 
@@ -120,6 +114,17 @@ flowchart TB
 - **Context-aware responses**: LLM sees functions, strings, security features, disassembly
 - **Activity tracking**: LLM knows what you've been exploring for relevant answers
 - **Trajectory recording**: Every analysis step is logged for reproducibility
+- **Region briefing**: `r2d2 brief BIN` ranks important regions and emits small dis/asm asks for a local model. Do not dump the full analysis JSON into the prompt.
+
+```bash
+uv run r2d2 brief path/to/httpd
+uv run r2d2 brief path/to/httpd --ask --ask-regions 3
+uv run r2d2 records list
+uv run r2d2 records show HASH
+uv run r2d2 insights --tag httpd
+```
+
+Each binary gets a tagged, mergeable record under `artifacts_dir/records/<aa>/<sha256>/` (tools, region commentary, serialized CFGs). Re-runs extend the same record instead of replacing it.
 
 ## Full Setup Guide
 
