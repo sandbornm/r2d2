@@ -31,6 +31,7 @@ from ..environment.detectors import detect_mcp_connections
 from ..environment.mcp_launcher import MCPLaunchError, launch_mcp_services
 from ..llm import ChatMessage as LLMChatMessage, LLMBridge, LLMError
 from ..llm.credentials import resolve_llm_api_key, resolve_openai_base_url
+from ..llm.prompts import ANALYST_SYSTEM
 from ..state import AppState, build_state
 from ..storage.chat import ChatDAO
 from ..storage.models import AnalysisTrajectory, ChatMessage as StoredChatMessage, ChatSession, TrajectoryAction
@@ -3574,24 +3575,7 @@ def _build_llm_messages(
     
     user_goal = _extract_user_goal(history)
     
-    system_parts = [
-        """You are r2d2, a senior reverse engineer working a firmware/binary lab.
-The analyst is a professional. Do not teach, do not define terms, do not summarize the listing.
-
-## Objective
-Find something non-obvious in the evidence: a sink caller, an unexpected trust boundary, a vendor-specific path (nvram/cfm/tdp/upgrade), a mismatch between name and behavior, or a missing carve. If nothing is interesting, say so and name the next probe.
-
-## Grounding
-- Use only the briefing, snippet, and thesis. Do not invent symbols, strings, or callees.
-- Cite addresses as `0x...` so the UI can hover them.
-- Name the tool that produced a fact when it matters (r2 vs Ghidra vs firmware inventory).
-- Defensive analysis only: describe behavior and next commands. No exploit/PoC steps.
-
-## Style
-- Dense. Prefer one unexpected claim over five obvious ones.
-- 4–8 short bullets unless asked for more.
-- End with one exact next command (r2, Ghidra headless, unsquashfs, or brief an ELF).""",
-    ]
+    system_parts = [ANALYST_SYSTEM]
     
     if user_goal:
         system_parts.append(f"\n## User's Goal\n{user_goal}")

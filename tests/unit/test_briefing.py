@@ -18,6 +18,7 @@ def _sample_analysis(tmp_path: Path) -> dict:
             "firmware": {
                 "top_level_format": "firmware_container",
                 "container_type": "tp_link_cloud",
+                "wrapper_family": "cloud",
                 "embedded_artifacts": [
                     {
                         "kind": "vendor_wrapper",
@@ -99,6 +100,8 @@ def test_build_briefing_ranks_wrapper_and_dangerous_imports(tmp_path: Path):
     briefing = build_briefing(_sample_analysis(tmp_path), max_regions=6)
 
     assert briefing["schema_version"] == BRIEFING_SCHEMA_VERSION
+    assert briefing["prompt_id"] == "r2d2.prompt.v1"
+    assert briefing["subject"]["wrapper_family"] == "cloud"
     assert briefing["regions"]
     titles = " ".join(region["title"].lower() for region in briefing["regions"])
     assert "cloud" in titles or "firmware" in titles
@@ -154,6 +157,93 @@ def test_briefing_drops_noisy_firmware_hits(tmp_path: Path):
     asks = " ".join(region.get("ask") or "" for region in briefing["regions"])
     assert "rootpath" not in asks
     assert "admin_password=root" in asks
+
+
+def test_briefing_elf_subject_does_not_ask_to_unpack(tmp_path: Path):
+    analysis = {
+        "binary": str(tmp_path / "flipper.elf"),
+        "quick_scan": {
+            "firmware": {
+                "is_elf": True,
+                "top_level_format": "elf",
+                "container_type": "executable",
+                "carved_targets": [],
+                "embedded_artifacts": [
+                    {
+                        "kind": "elf_binary",
+                        "name": "ELF",
+                        "offset": 0,
+                        "offset_hex": "0x0",
+                        "description": "Embedded ELF executable/shared object",
+                    },
+                    {
+                        "kind": "jffs2_marker",
+                        "name": "JFFS2 LE",
+                        "offset": 64,
+                        "offset_hex": "0x40",
+                    },
+                ],
+                "string_signals": {
+                    "top_signals": [
+                        {"category": "credential", "value": "AcceptAllPasswords", "offset": 10},
+                    ]
+                },
+            },
+            "radare2": {
+                "info": {"bin": {"arch": "arm", "bits": 16, "os": "none"}},
+                "imports": [],
+                "interesting_symbols": [
+                    {"name": "subghz_protocol_princeton", "vaddr": 0x080A70F8, "type": "OBJ"},
+                    {"name": "subghz_protocol_decoder_princeton_feed", "vaddr": 0x08061200, "type": "FUNC"},
+                ],
+            },
+        },
+        "deep_scan": {"radare2": {"functions": [], "function_count": 0}},
+        "issues": [],
+    }
+    briefing = build_briefing(analysis, max_regions=6)
+    assert briefing["subject"]["subject_class"] == "baremetal_elf"
+    steps = " ".join(briefing["next_steps"]).lower()
+    assert "already an elf" in steps
+    assert "httpd" not in steps
+    titles = " ".join(region["title"].lower() for region in briefing["regions"])
+    assert "protocol" in titles or "subghz" in titles
+    assert "jffs2" not in titles
+    asks = " ".join(region.get("ask") or "" for region in briefing["regions"]).lower()
+    assert "acceptallpasswords" not in asks
+
+
+def test_briefing_uimage_does_not_ask_to_unpack_httpd(tmp_path: Path):
+    analysis = {
+        "binary": str(tmp_path / "kernel.uimage"),
+        "quick_scan": {
+            "firmware": {
+                "is_elf": False,
+                "top_level_format": "uimage",
+                "container_type": "boot_firmware",
+                "carved_targets": [],
+                "embedded_artifacts": [
+                    {
+                        "kind": "uimage",
+                        "name": "uImage",
+                        "offset": 0,
+                        "offset_hex": "0x0",
+                        "description": "U-Boot legacy uImage",
+                        "recommended": True,
+                    }
+                ],
+            },
+            "radare2": {"info": {"bin": {"arch": "mips", "bits": 32}}, "imports": []},
+        },
+        "deep_scan": {},
+        "issues": [],
+    }
+    briefing = build_briefing(analysis, max_regions=4)
+    assert briefing["subject"]["subject_class"] == "uimage"
+    steps = " ".join(briefing["next_steps"]).lower()
+    assert "uimage payload" in steps
+    assert "unpack the vendor wrapper" not in steps
+    assert "tdpserver" not in steps
 
 
 def test_briefing_does_not_dump_full_adapter_bags(tmp_path: Path):

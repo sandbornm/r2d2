@@ -56,6 +56,7 @@ def test_firmware_adapter_detects_tplink_cloud_and_img0(tmp_path: Path):
     cloud = FirmwareAdapter(run_binwalk=False).quick_scan(path)
     kinds = {artifact["kind"] for artifact in cloud["embedded_artifacts"]}
     assert "vendor_wrapper" in kinds
+    assert cloud["wrapper_family"] == "cloud"
     assert any(item["name"] == "TP-Link Cloud" for item in cloud["embedded_artifacts"])
 
     img = bytearray(b"\x00" * 32)
@@ -64,6 +65,7 @@ def test_firmware_adapter_detects_tplink_cloud_and_img0(tmp_path: Path):
     img_path.write_bytes(img)
     img_result = FirmwareAdapter(run_binwalk=False).quick_scan(img_path)
     assert any(item["name"] == "TP-Link IMG0" for item in img_result["embedded_artifacts"])
+    assert img_result["wrapper_family"] == "img0"
 
 
 def test_firmware_adapter_classifies_top_level_elf(tmp_path: Path):
@@ -77,6 +79,22 @@ def test_firmware_adapter_classifies_top_level_elf(tmp_path: Path):
     assert result["container_type"] == "executable"
 
 
+def test_firmware_adapter_does_not_carve_jffs2_inside_elf(tmp_path: Path):
+    blob = bytearray(b"\x7fELF" + b"\x00" * 512)
+    blob[64:66] = b"\x85\x19"
+    blob[128:130] = b"\x19\x85"
+    path = tmp_path / "thumb.elf"
+    path.write_bytes(blob)
+
+    result = FirmwareAdapter(run_binwalk=False).quick_scan(path)
+
+    kinds = {item["kind"] for item in result["embedded_artifacts"]}
+    assert "jffs2_marker" not in kinds
+    assert result["carved_targets"] == []
+    assert result["recommended_targets"] == []
+    assert any("signature carving skipped" in note for note in result["notes"])
+
+
 def test_firmware_adapter_reports_string_signals_and_entropy(tmp_path: Path):
     high_entropy = bytes(range(256)) * 256
     signal_strings = b"\x00".join(
@@ -84,7 +102,7 @@ def test_firmware_adapter_reports_string_signals_and_entropy(tmp_path: Path):
             b"admin_password=root",
             b"http://updates.example/router.bin",
             b"/etc/init.d/telnetd",
-            b"system",
+            b"system(\"/bin/sh\")",
             b"-----BEGIN RSA PRIVATE KEY-----",
         ]
     )

@@ -48,7 +48,8 @@ uv run r2d2 insights --tag httpd
 ```
 
 `--quick` = sniff + firmware + r2 metadata. Full analyze adds listing/CFG.
-`--brief` ranks regions. `--ask` sends those asks to the configured model.
+`--brief` ranks regions by **subject class** (container vs uImage vs ELF).
+`--ask` sends those asks to the configured model. An ELF is not a squashfs.
 
 ### LLM keys
 

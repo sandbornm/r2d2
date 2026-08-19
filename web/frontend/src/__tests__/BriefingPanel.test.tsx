@@ -40,7 +40,20 @@ describe('BriefingPanel', () => {
     expect(screen.getByText('Entry / main')).toBeInTheDocument();
     expect(screen.getByText(/push \{lr\}/)).toBeInTheDocument();
 
-    await user.click(screen.getByRole('button', { name: /ask qwen about this image/i }));
+    await user.click(screen.getByRole('button', { name: /ask about this image/i }));
     expect(onAsk).toHaveBeenCalledWith('SUMMARIZE FROM THESE FACTS');
+  });
+
+  it('does not treat a program ELF as a vendor wrapper', () => {
+    render(
+      <BriefingPanel
+        briefing={{
+          ...briefing,
+          subject: { subject_class: 'baremetal_elf', format: 'elf', firmware_kind: 'executable' },
+        }}
+      />,
+    );
+    expect(screen.queryByText(/vendor upgrade blob/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/program ELF/i)).toBeInTheDocument();
   });
 });
