@@ -7,6 +7,11 @@ Overview of autonomous components inside r2d2 and how they cooperate to deliver 
 > r2d2 is a professional triage bus. Do not add beginner tutorials. Surface
 > anomalies, sink callers, and next commands. omp (Oh My Pi) pilots Qwen by
 > calling this CLI — keep `analyze` / `brief` / `records` / `insights` stable.
+>
+> **LLM keys:** never in committed toml. Overlay names `api_key_env`; the
+> process reads the env (or gitignored `.env` / `config/local.toml`).
+> Z.ai is an OpenAI-compat primary (`config/z.ai.example.toml`, `ZAI_API_KEY`).
+> Local Qwen/exo is optional — a Mac Mini model, not the product default.
 
 ## Analyzer Orchestrator (Python)
 - **Entry point**: `r2d2.analysis.orchestrator.AnalysisOrchestrator`

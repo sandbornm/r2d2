@@ -1,0 +1,23 @@
+# Pi / SSH / no-GUI overlay. Merge with an LLM overlay via R2D2_CONFIG.
+#   export R2D2_CONFIG=$PWD/config/headless.example.toml
+#
+# Do not run Ghidra on a Raspberry Pi. analyzeHeadless wants a multi-GB Java
+# heap; firmware blobs will swap or OOM. Use sniff + firmware + radare2 here,
+# and decompile on a bigger box if you need C.
+
+[analysis]
+require_elf = false
+enable_angr = false
+enable_ghidra = false
+enable_gef = false
+enable_frida = false
+timeout_quick = 8
+timeout_deep = 60
+max_binary_size = "200MB"
+
+[ghidra]
+use_bridge = false
+
+[llm]
+compact_context = true
+context_budget_chars = 16000

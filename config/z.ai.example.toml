@@ -1,0 +1,17 @@
+# Z.ai (GLM) overlay. Copy to config/local.toml (gitignored) or:
+#   export R2D2_CONFIG=/path/to/this/file
+#   export ZAI_API_KEY=...          # never commit the key
+#   echo 'ZAI_API_KEY=...' >> .env  # gitignored, auto-loaded
+#
+# General API keys:  https://api.z.ai/api/paas/v4/     model glm-5.2
+# Coding-plan keys:  https://api.z.ai/api/coding/paas/v4/  model glm-5.3
+
+[llm]
+provider = "openai"
+model = "glm-5.2"
+api_key_env = "ZAI_API_KEY"
+openai_base_url = "https://api.z.ai/api/paas/v4/"
+enable_fallback = false
+temperature = 0.2
+max_tokens = 2048
+compact_context = true

@@ -294,3 +294,67 @@ show_compiler = true
             config = load_config()
 
             assert isinstance(config, AppConfig)
+
+    def test_load_config_picks_up_implicit_local_overlay(self, tmp_path, monkeypatch):
+        """config/local.toml should merge without setting R2D2_CONFIG."""
+        local = tmp_path / "local.toml"
+        local.write_text("""
+[llm]
+provider = "glm"
+model = "glm-4.6"
+api_key_env = "GLM_API_KEY"
+""")
+        monkeypatch.setattr("r2d2.config.LOCAL_CONFIG_PATH", local)
+        monkeypatch.setattr("r2d2.config.USER_CONFIG_PATH", tmp_path / "missing.toml")
+        monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+        monkeypatch.delenv("R2D2_IGNORE_LOCAL", raising=False)
+        monkeypatch.delenv("R2D2_CONFIG", raising=False)
+        monkeypatch.delenv("R2D2_LLM_PROVIDER", raising=False)
+
+        config = load_config()
+
+        assert config.llm.provider == "glm"
+        assert config.llm.model == "glm-4.6"
+        assert config.llm.api_key_env == "GLM_API_KEY"
+
+    def test_load_config_glm_provider_fills_defaults(self, tmp_path):
+        """R2D2_LLM_PROVIDER=glm should pick a GLM model and BigModel host."""
+        config_path = tmp_path / "empty.toml"
+        config_path.write_text("")
+
+        with patch.dict(
+            os.environ,
+            {
+                "R2D2_LLM_PROVIDER": "glm",
+                "GLM_API_KEY": "glm-secret",
+                "R2D2_CONFIG": str(config_path),
+            },
+            clear=False,
+        ):
+            os.environ.pop("ZAI_API_KEY", None)
+            os.environ.pop("R2D2_OPENAI_BASE_URL", None)
+            config = load_config(config_path)
+
+        assert config.llm.provider == "glm"
+        assert config.llm.model == "glm-5.2"
+        assert config.llm.api_key_env == "GLM_API_KEY"
+        assert config.llm.openai_base_url == "https://open.bigmodel.cn/api/paas/v4"
+
+
+class TestDetectEnvironmentHeadless:
+    def test_missing_ghidra_is_a_note_not_a_blocker(self):
+        from r2d2.environment.detectors import detect_environment
+
+        config = AppConfig()
+        config.analysis.enable_angr = False
+        config.ghidra.install_dir = None
+        with patch.dict(os.environ, {"GHIDRA_INSTALL_DIR": ""}, clear=False):
+            os.environ.pop("GHIDRA_INSTALL_DIR", None)
+            report = detect_environment(config)
+
+        assert report.ghidra is not None
+        assert report.ghidra.is_ready is False
+        assert not any("GHIDRA_INSTALL_DIR" in issue for issue in report.issues)
+        assert any("Ghidra skipped" in note for note in report.notes)
+        assert report.llm is not None
+        assert report.llm.provider == config.llm.provider

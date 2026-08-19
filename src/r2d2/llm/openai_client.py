@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any, Iterable
 
 from pydantic import BaseModel
 
 from ..config import AppConfig
+from .credentials import (
+    is_openai_compat,
+    requires_api_key as _requires_api_key,
+    resolve_llm_api_key as _resolve_openai_api_key,
+    resolve_openai_base_url as _openai_base_url,
+)
 
 try:  # pragma: no cover - import guard
     from openai import OpenAI, APIError, AuthenticationError, RateLimitError
@@ -19,23 +24,6 @@ except ModuleNotFoundError:  # pragma: no cover
     RateLimitError = Exception  # type: ignore
 
 _LOGGER = logging.getLogger(__name__)
-_DEFAULT_OLLAMA_HOST = "11434"
-
-
-def _openai_base_url(config: AppConfig) -> str | None:
-    """Return an OpenAI-compatible base URL, or None for the official API."""
-    explicit = getattr(config.llm, "openai_base_url", None)
-    if explicit:
-        return explicit.rstrip("/")
-    base = (config.llm.base_url or "").rstrip("/")
-    if (
-        config.llm.provider
-        and config.llm.provider.lower() == "openai"
-        and base
-        and _DEFAULT_OLLAMA_HOST not in base
-    ):
-        return base
-    return None
 
 
 class ChatMessage(BaseModel):
@@ -62,15 +50,15 @@ class OpenAIClient:
         if OpenAI is None:
             raise OpenAIError("OpenAI package is not installed. Run: pip install openai")
 
-        api_env = config.llm.fallback_api_key_env or "OPENAI_API_KEY"
-        api_key = os.getenv(api_env)
+        api_key, api_env = _resolve_openai_api_key(config)
         base_url = _openai_base_url(config)
         if not api_key:
-            if base_url:
+            if base_url and not _requires_api_key(base_url):
                 api_key = "local"
             else:
                 raise OpenAIError(
-                    f"OpenAI API key not found. Set the {api_env} environment variable."
+                    f"API key not found. Set {api_env} (or GLM_API_KEY / ZAI_API_KEY). "
+                    "Do not put the key in a committed toml."
                 )
 
         client_kwargs: dict[str, Any] = {"api_key": api_key}
@@ -78,8 +66,9 @@ class OpenAIClient:
             client_kwargs["base_url"] = base_url
         self._client = OpenAI(**client_kwargs)
         self._base_url = base_url
+        self._api_env = api_env
         self._config = config
-        if config.llm.provider and config.llm.provider.lower() == "openai":
+        if is_openai_compat(config.llm.provider):
             self._model = config.llm.model
         else:
             self._model = config.llm.fallback_model or "gpt-4o"
@@ -123,7 +112,9 @@ class OpenAIClient:
             completion = self._client.chat.completions.create(**params)
             return completion.choices[0].message.content or ""
         except AuthenticationError:
-            raise OpenAIError("Invalid OpenAI API key. Check your OPENAI_API_KEY.")
+            raise OpenAIError(
+                f"Invalid API key. Check {self._api_env or 'GLM_API_KEY / ZAI_API_KEY / OPENAI_API_KEY'}."
+            )
         except RateLimitError:
             raise OpenAIError("OpenAI rate limit exceeded. Please wait and try again.")
         except APIError as e:
@@ -145,4 +136,10 @@ class OpenAIClient:
         return self.chat(messages)
 
 
-__all__ = ["ChatMessage", "OpenAIClient", "OpenAIError"]
+__all__ = [
+    "ChatMessage",
+    "OpenAIClient",
+    "OpenAIError",
+    "_resolve_openai_api_key",
+    "_requires_api_key",
+]

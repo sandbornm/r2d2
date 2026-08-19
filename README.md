@@ -25,7 +25,7 @@ That is enough for sniff + firmware inventory + radare2. Optional later:
 | Node 20 + `web/frontend` | you want the UI |
 | Ghidra **11.2** at `GHIDRA_INSTALL_DIR` | decompile an ELF (`analyzeHeadless`) |
 | angr MCP on `:8770` | extra CFG after you have an ELF |
-| OpenAI-compat base URL | `brief --ask` / chat |
+| OpenAI-compat base URL | `brief --ask` / chat (Z.ai, exo, …) |
 
 This lab keeps Ghidra 11.2. Do not upgrade to 12 unless you need the MCP plugin.
 
@@ -38,6 +38,7 @@ to see it in the UI.
 ```bash
 export R2D2_CONFIG=/path/to/config.toml   # optional overlay
 
+uv run r2d2 env --json
 uv run r2d2 analyze path/to/httpd --quick --json
 uv run r2d2 analyze path/to/httpd --brief --tag httpd
 uv run r2d2 brief path/to/httpd --ask --ask-regions 3
@@ -48,6 +49,32 @@ uv run r2d2 insights --tag httpd
 
 `--quick` = sniff + firmware + r2 metadata. Full analyze adds listing/CFG.
 `--brief` ranks regions. `--ask` sends those asks to the configured model.
+
+### LLM keys
+
+Never put a secret in a committed toml. The overlay **names** the env var;
+the process **reads** it.
+
+```bash
+# Z.ai (international GLM) — recommended default for --ask
+cp config/z.ai.example.toml config/local.toml   # gitignored
+echo 'ZAI_API_KEY=...' >> .env                  # gitignored, auto-loaded
+export R2D2_CONFIG="$PWD/config/local.toml"
+
+# Official BigModel / Zhipu (China) — same client, different host
+cp config/glm.example.toml config/local.toml
+echo 'GLM_API_KEY=...' >> .env                  # or ZHIPUAI_API_KEY
+# skip the overlay:  export GLM_API_KEY=... R2D2_LLM_PROVIDER=glm
+
+# Local exo / llama.cpp / vLLM — no cloud key
+# openai_base_url = "http://<tailscale-host>:52415/v1"
+```
+
+Never put the secret in toml. `uv run r2d2 env` shows provider / model / whether the named key is present.
+
+Pi / SSH box: `config/headless.example.toml` turns off Ghidra, angr, GEF, and Frida. Do not run `analyzeHeadless` on a Raspberry Pi.
+
+`analyze` / `brief` without `--ask` still run no model.
 
 Start the API against the same config, then open the session list:
 
@@ -77,7 +104,7 @@ move.
 | `brief BIN` | same, print ranked regions |
 | `records list` / `records show ID` | revisit a SHA-256 record |
 | `insights [--tag T]` | sibling patterns across records |
-| `env` | tool detection |
+| `env [--json]` | tool + LLM key presence (JSON is pipe-safe) |
 | `mcp` / `mcp-start` | probe / launch optional MCP |
 | `ghidra status` / `ghidra setup` | headless Ghidra install |
 
@@ -91,7 +118,7 @@ record + sniff). Same object on SSE and `GET` attachments.
 | Method | Path | Notes |
 |---|---|---|
 | `GET` | `/api/health` | model + tool flags |
-| `POST` | `/api/analyze` | `{binary, user_goal?, analysis_profile?}` → `{job_id, session_id}` |
+| `POST` | `/api/analyze` | `{binary, user_goal?, analysis_profile?, require_elf?}` → `{job_id, session_id}` |
 | `GET` | `/api/jobs/<id>/stream` | SSE (`analysis_result`, `job_completed`) |
 | `GET` | `/api/chats` | sessions |
 | `GET` | `/api/chats/<id>/analysis` | latest DTO (UI Results/Map) |
@@ -143,7 +170,8 @@ headless. r2d2 itself is not an MCP — do not Funnel `/api/tools/execute`.
 
 ## Config
 
-`R2D2_CONFIG=/path/to.toml` overlays `config/default_config.toml`.
+Overlays merge in order: `config/default_config.toml`, `~/.config/r2d2/config.toml`,
+`config/local.toml` (gitignored), then `R2D2_CONFIG` / `--config`. Later wins.
 
 ```bash
 export GHIDRA_INSTALL_DIR=/home/kali/ghidra_11.2_PUBLIC

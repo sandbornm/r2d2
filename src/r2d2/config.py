@@ -5,7 +5,8 @@ Configuration is loaded from:
 2. R2D2_CONFIG env var (optional custom config path)
 3. Environment variables override specific settings:
    - GHIDRA_INSTALL_DIR: Path to Ghidra installation
-   - ANTHROPIC_API_KEY / OPENAI_API_KEY: API keys
+   - ANTHROPIC_API_KEY / OPENAI_API_KEY / ZAI_API_KEY / GLM_API_KEY:
+     API keys (toml names the env var; never store the secret in the file)
 """
 
 from __future__ import annotations
@@ -18,6 +19,8 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent.parent / "config" / "default_config.toml"
+LOCAL_CONFIG_PATH = DEFAULT_CONFIG_PATH.with_name("local.toml")
+USER_CONFIG_PATH = Path("~/.config/r2d2/config.toml").expanduser()
 TRUE_ENV_VALUES = {"1", "true", "yes", "on"}
 FALSE_ENV_VALUES = {"0", "false", "no", "off"}
 
@@ -29,6 +32,16 @@ def _get_env(*names: str) -> str | None:
         if value is not None:
             return value
     return None
+
+
+def _load_implicit_overlays() -> bool:
+    """Load ~/.config/r2d2/config.toml and config/local.toml outside pytest."""
+    if os.getenv("PYTEST_CURRENT_TEST"):
+        return False
+    parsed = _parse_env_bool(os.getenv("R2D2_IGNORE_LOCAL") or "")
+    if parsed is True:
+        return False
+    return True
 
 
 def _parse_env_bool(value: str) -> bool | None:
@@ -216,8 +229,10 @@ def load_config(config_path: Path | None = None) -> AppConfig:
     
     Config sources (in order of precedence, later overrides earlier):
     1. config/default_config.toml (project defaults)
-    2. R2D2_CONFIG env var or config_path argument (optional custom config)
-    3. Environment variables (GHIDRA_INSTALL_DIR, API keys)
+    2. ~/.config/r2d2/config.toml (user overlay, if present)
+    3. config/local.toml (gitignored lab overlay, if present)
+    4. R2D2_CONFIG env var or config_path argument
+    5. Environment variables (GHIDRA_INSTALL_DIR, API keys)
     """
     load_dotenv()
 
@@ -226,6 +241,12 @@ def load_config(config_path: Path | None = None) -> AppConfig:
     # Load project defaults
     if DEFAULT_CONFIG_PATH.exists():
         data = _merge(data, _load_toml(DEFAULT_CONFIG_PATH))
+
+    if _load_implicit_overlays():
+        if USER_CONFIG_PATH.exists():
+            data = _merge(data, _load_toml(USER_CONFIG_PATH))
+        if LOCAL_CONFIG_PATH.exists():
+            data = _merge(data, _load_toml(LOCAL_CONFIG_PATH))
 
     # Load custom config if specified via argument or R2D2_CONFIG env var
     custom_config = config_path
@@ -291,5 +312,9 @@ def load_config(config_path: Path | None = None) -> AppConfig:
         config.llm.base_url = env_llm_base
         if config.llm.provider.lower() == "openai" and not config.llm.openai_base_url:
             config.llm.openai_base_url = env_llm_base
+
+    from .llm.credentials import apply_glm_defaults
+
+    apply_glm_defaults(config)
 
     return config

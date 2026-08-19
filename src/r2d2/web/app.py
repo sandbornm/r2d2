@@ -30,6 +30,7 @@ from ..config import AppConfig
 from ..environment.detectors import detect_mcp_connections
 from ..environment.mcp_launcher import MCPLaunchError, launch_mcp_services
 from ..llm import ChatMessage as LLMChatMessage, LLMBridge, LLMError
+from ..llm.credentials import resolve_llm_api_key, resolve_openai_base_url
 from ..state import AppState, build_state
 from ..storage.chat import ChatDAO
 from ..storage.models import AnalysisTrajectory, ChatMessage as StoredChatMessage, ChatSession, TrajectoryAction
@@ -387,6 +388,7 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
     def health() -> Any:
         tools_status, tools_meta = _get_tools_status_cached(state, live=_live_status_requested())
         
+        key, key_env = resolve_llm_api_key(state.config)
         return jsonify(_serialize({
             "status": "ok",
             "model": llm_bridge.model,
@@ -394,6 +396,13 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
             "available_models": llm_bridge.available_models,
             "model_names": llm_bridge.model_display_names,
             "ghidra_ready": bool(state.env.ghidra and state.env.ghidra.is_ready),
+            "llm": {
+                "provider": state.config.llm.provider,
+                "model": state.config.llm.model,
+                "api_key_env": key_env,
+                "api_key_present": bool(key),
+                "openai_base_url": resolve_openai_base_url(state.config, key_env),
+            },
             "features": {
                 "show_compiler": state.config.ui.show_compiler,
             },
@@ -1424,6 +1433,7 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
         enable_ghidra = bool(body.get("enable_ghidra", True))
         enable_gef = bool(body.get("enable_gef", True))
         enable_frida = bool(body.get("enable_frida", True))
+        require_elf = body.get("require_elf")
         if analysis_profile == "exhaustive":
             enable_angr = True
             enable_ghidra = True
@@ -1479,6 +1489,8 @@ def create_app(config_path: Optional[Path] = None) -> Flask:
                 request_config.analysis.enable_ghidra = enable_ghidra
                 request_config.analysis.enable_gef = enable_gef
                 request_config.analysis.enable_frida = enable_frida
+                if require_elf is not None:
+                    request_config.analysis.require_elf = bool(require_elf)
                 
                 orchestrator = AnalysisOrchestrator(request_config, state.env, trajectory_dao=state.dao)
                 # Create custom analysis plan respecting frontend settings

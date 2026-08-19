@@ -34,6 +34,12 @@ def main() -> None:
     print(f"Python: {report.python_version}")
     print(f"uv available: {report.uv_available}")
     print(f"OpenAI key present: {report.openai_key_present}")
+    if report.llm:
+        print(f"LLM provider: {report.llm.provider}")
+        print(f"LLM model: {report.llm.model}")
+        print(f"LLM key env: {report.llm.api_key_env}")
+        print(f"LLM key present: {report.llm.api_key_present}")
+        print(f"LLM base URL: {report.llm.openai_base_url or '-'}")
     for tool in report.tools:
         status = "ok" if tool.available else "missing"
         detail = tool.version or tool.details or ""

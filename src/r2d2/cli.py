@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import shlex
+import sys
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Optional
 
 import typer
 from rich.console import Console
-from rich.json import JSON
 from rich.table import Table
 
 from .analysis.briefing import build_briefing, render_briefing_markdown
@@ -22,8 +22,9 @@ from .environment import MCPConnectionCheck, EnvironmentReport, detect_environme
 from .environment.ghidra import detect_ghidra
 from .environment.ghidra_setup import GhidraSetupError, GhidraSetupResult, setup_ghidra
 from .environment.mcp_launcher import MCPLaunchError, MCPLaunchResult, launch_mcp_services
-from .llm import ChatMessage as LLMChatMessage, LLMBridge
+from .llm import ChatMessage as LLMChatMessage, LLMBridge, LLMError
 from .state import AppState, build_state
+from .utils.serialization import to_json
 
 app = typer.Typer(add_completion=False)
 ghidra_app = typer.Typer(help="Inspect or install a local Ghidra distribution.", add_completion=False)
@@ -31,6 +32,11 @@ records_app = typer.Typer(help="List or reopen tagged per-binary analysis record
 app.add_typer(ghidra_app, name="ghidra")
 app.add_typer(records_app, name="records")
 console = Console()
+
+
+def _emit_json(payload: Any) -> None:
+    """Write JSON to stdout without Rich wrapping or ANSI."""
+    sys.stdout.write(to_json(payload) + "\n")
 
 
 @app.command()
@@ -63,7 +69,7 @@ def analyze(
 
     if json_output:
         payload = briefing if brief else public
-        console.print(JSON.from_data(payload))
+        _emit_json(payload)
     elif brief:
         console.print(render_briefing_markdown(briefing))
     else:
@@ -106,7 +112,7 @@ def brief(
         console.print(f"[cyan]Session[/] {session.session_id}")
 
     if json_output:
-        console.print(JSON.from_data(briefing))
+        _emit_json(briefing)
     else:
         console.print(render_briefing_markdown(briefing))
 
@@ -122,11 +128,17 @@ def brief(
 @app.command("env")
 def env_check(
     config_path: Optional[Path] = typer.Option(None, "--config", help="Path to config TOML"),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON instead of tables"),
 ) -> None:
-    """Run environment diagnostics."""
+    """Run environment diagnostics (tools, LLM key presence, Ghidra, MCP)."""
 
     config = load_config(config_path)
-    _render_env_report(detect_environment(config))
+    report = detect_environment(config)
+    if json_output:
+        # Raw stdout so SSH/scripts can pipe this. Do not send it through Rich.
+        _emit_json(report)
+        return
+    _render_env_report(report)
 
 
 @app.command("mcp")
@@ -139,7 +151,7 @@ def mcp_check(
     config = load_config(config_path)
     checks = detect_mcp_connections(config)
     if json_output:
-        console.print(JSON.from_data({name: asdict(check) for name, check in checks.items()}))
+        _emit_json({name: asdict(check) for name, check in checks.items()})
         return
     _render_mcp_connections(checks)
 
@@ -173,7 +185,7 @@ def mcp_start(
         raise typer.BadParameter(str(exc)) from exc
 
     if json_output:
-        console.print(JSON.from_data({name: _mcp_launch_to_dict(result) for name, result in results.items()}))
+        _emit_json({name: _mcp_launch_to_dict(result) for name, result in results.items()})
         return
 
     _render_mcp_launch_results(results)
@@ -189,7 +201,7 @@ def ghidra_status(
     config = load_config(config_path)
     detection = detect_ghidra(config)
     if json_output:
-        console.print(JSON.from_data(_ghidra_detection_to_dict(detection)))
+        _emit_json(_ghidra_detection_to_dict(detection))
         return
 
     status = "[green]Ready" if detection.is_ready else "[red]Not ready"
@@ -240,7 +252,7 @@ def ghidra_setup(
         raise typer.BadParameter(str(exc)) from exc
 
     if json_output:
-        console.print(JSON.from_data(_ghidra_setup_to_dict(result)))
+        _emit_json(_ghidra_setup_to_dict(result))
         return
 
     title = "Ghidra setup plan" if result.dry_run else "Ghidra installed"
@@ -323,7 +335,7 @@ def records_list(
     store = AnalysisRecordStore(Path(state.config.output.artifacts_dir))
     rows = store.list_records(tag=tag)
     if json_output:
-        console.print(JSON.from_data(rows))
+        _emit_json(rows)
         return
     table = Table(title="Analysis records")
     table.add_column("ID")
@@ -353,7 +365,7 @@ def records_show(
     if not record:
         raise typer.BadParameter(f"Record not found: {record_id}")
     if json_output:
-        console.print(JSON.from_data(record))
+        _emit_json(record)
         return
     console.rule(f"Record {record.get('record_id')}")
     table = Table(show_header=False)
@@ -384,7 +396,7 @@ def insights(
     focus = _resolve_record_id(store, record_id) if record_id else None
     payload = extract_insights(store, focus_id=focus, tag=tag)
     if json_output:
-        console.print(JSON.from_data(payload))
+        _emit_json(payload)
         return
     if not payload.get("ready"):
         console.print(f"[yellow]{payload.get('reason')}")
@@ -444,7 +456,7 @@ def _ask_briefing(
         ]
         try:
             response = bridge.chat(messages)
-        except RuntimeError as exc:
+        except (LLMError, RuntimeError) as exc:
             console.print(f"[red]LLM unavailable: {exc}")
             return
         console.rule(f"LLM ({bridge.last_provider or 'unknown'}): {title}")
@@ -479,6 +491,19 @@ def _render_result(result: Any) -> None:
 
 def _render_env_report(report: EnvironmentReport) -> None:
     console.rule("Environment Report")
+    if report.llm:
+        llm_table = Table(title="LLM")
+        llm_table.add_column("Field")
+        llm_table.add_column("Value")
+        llm_table.add_row("Provider", report.llm.provider)
+        llm_table.add_row("Model", report.llm.model)
+        llm_table.add_row("Key env", report.llm.api_key_env or "-")
+        llm_table.add_row("Key present", "yes" if report.llm.api_key_present else "no")
+        llm_table.add_row("OpenAI-compat URL", report.llm.openai_base_url or "-")
+        if report.llm.hint:
+            llm_table.add_row("Hint", report.llm.hint)
+        console.print(llm_table)
+
     table = Table(title="Tooling")
     table.add_column("Tool")
     table.add_column("Status")
