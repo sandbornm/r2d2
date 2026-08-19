@@ -25,6 +25,20 @@ except ModuleNotFoundError:  # pragma: no cover
 
 _LOGGER = logging.getLogger(__name__)
 
+_CHAT_TEMPLATE_STOPS = ("<|endoftext|>", "<|im_start|>", "<|im_end|>")
+
+
+def _truncate_template_leak(content: str) -> str:
+    """Drop continuation garbage after raw chat-template tokens.
+
+    Abliterated builds served through local OpenAI-compatible gateways (exo)
+    sometimes ramble past end-of-sequence into literal template tokens;
+    everything after the first marker is boilerplate, not an answer.
+    """
+    for marker in _CHAT_TEMPLATE_STOPS:
+        content = content.split(marker)[0]
+    return content
+
 
 class ChatMessage(BaseModel):
     role: str
@@ -86,8 +100,22 @@ class OpenAIClient:
             return True
         return False
 
-    def chat(self, messages: Iterable[ChatMessage] | Iterable[dict[str, str]]) -> str:
-        """Send messages to OpenAI and return the assistant response."""
+    def chat(
+        self,
+        messages: Iterable[ChatMessage] | Iterable[dict[str, str]],
+        *,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        extra_body: dict[str, Any] | None = None,
+        timeout: float | None = None,
+    ) -> str:
+        """Send messages to OpenAI and return the assistant response.
+
+        Optional parameters override the configured defaults for a single
+        call. ``extra_body`` is merged into the request body for local
+        gateways that accept extra fields (e.g. ``{"enable_thinking": False}``
+        for exo-served Qwen builds); ``timeout`` is per-request seconds.
+        """
         payload: list[dict[str, str]] = []
         for message in messages:
             if isinstance(message, ChatMessage):
@@ -99,18 +127,24 @@ class OpenAIClient:
         params: dict[str, Any] = {
             "model": self._model,
             "messages": payload,
-            "temperature": self._config.llm.temperature,
+            "temperature": self._config.llm.temperature if temperature is None else temperature,
         }
+        token_budget = self._config.llm.max_tokens if max_tokens is None else max_tokens
 
         # Use appropriate token parameter
         if self._uses_new_api():
-            params["max_completion_tokens"] = self._config.llm.max_tokens
+            params["max_completion_tokens"] = token_budget
         else:
-            params["max_tokens"] = self._config.llm.max_tokens
+            params["max_tokens"] = token_budget
+        if extra_body:
+            params["extra_body"] = extra_body
+        if timeout is not None:
+            params["timeout"] = timeout
 
         try:
             completion = self._client.chat.completions.create(**params)
-            return completion.choices[0].message.content or ""
+            content = completion.choices[0].message.content or ""
+            return _truncate_template_leak(content)
         except AuthenticationError:
             raise OpenAIError(
                 f"Invalid API key. Check {self._api_env or 'GLM_API_KEY / ZAI_API_KEY / OPENAI_API_KEY'}."
@@ -142,4 +176,5 @@ __all__ = [
     "OpenAIError",
     "_resolve_openai_api_key",
     "_requires_api_key",
+    "_truncate_template_leak",
 ]

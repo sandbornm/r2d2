@@ -24,13 +24,24 @@ from .environment.ghidra_setup import GhidraSetupError, GhidraSetupResult, setup
 from .environment.mcp_launcher import MCPLaunchError, MCPLaunchResult, launch_mcp_services
 from .llm import ChatMessage as LLMChatMessage, LLMBridge, LLMError
 from .state import AppState, build_state
+from .pilot import (
+    build_engine,
+    enqueue as pilot_enqueue,
+    pilot_dir_for,
+    report_text as pilot_report_text,
+    status as pilot_status,
+    step_log as pilot_step_log,
+    watch as pilot_watch,
+)
 from .utils.serialization import to_json
 
 app = typer.Typer(add_completion=False)
 ghidra_app = typer.Typer(help="Inspect or install a local Ghidra distribution.", add_completion=False)
 records_app = typer.Typer(help="List or reopen tagged per-binary analysis records.", add_completion=False)
+pilot_app = typer.Typer(help="Goal-driven pilot runs: a planner LLM designs steps, r2d2 executes.", add_completion=False)
 app.add_typer(ghidra_app, name="ghidra")
 app.add_typer(records_app, name="records")
+app.add_typer(pilot_app, name="pilot")
 console = Console()
 
 
@@ -636,6 +647,96 @@ def _ghidra_detection_to_dict(detection: Any) -> dict[str, Any]:
 
 def _mcp_launch_to_dict(result: MCPLaunchResult) -> dict[str, Any]:
     return asdict(result)
+
+
+def _pilot_root(root: Optional[Path]) -> Path:
+    return Path(root).resolve() if root else Path.cwd().resolve()
+
+
+@pilot_app.command("plan")
+def pilot_plan(
+    goal: str = typer.Option(..., "--goal", help="What the run should accomplish"),
+    config_path: Optional[Path] = typer.Option(None, "--config", help="Path to config TOML"),
+    root: Optional[Path] = typer.Option(None, "--root", help="Lab corpus root (holds samples/ and work/)"),
+) -> None:
+    """Ask the planner for a validated plan JSON (makes an LLM call)."""
+    engine = build_engine(config_path, _pilot_root(root))
+    plan, errs, _raw = engine.plan(goal)
+    if not plan:
+        console.print(f"[red]planner reply was not JSON:[/] {errs}")
+        raise typer.Exit(code=1)
+    _emit_json(plan)
+    if errs:
+        console.print(f"[red]plan invalid:[/] {errs}")
+        raise typer.Exit(code=1)
+    console.print("plan valid")
+
+
+@pilot_app.command("run")
+def pilot_run(
+    goal: str = typer.Option(..., "--goal", help="What the run should accomplish"),
+    config_path: Optional[Path] = typer.Option(None, "--config", help="Path to config TOML"),
+    root: Optional[Path] = typer.Option(None, "--root", help="Lab corpus root (holds samples/ and work/)"),
+    max_steps: int = typer.Option(3, "--max-steps", help="Cap on executed steps per plan"),
+    followup: bool = typer.Option(True, "--followup/--no-followup", help="Allow one follow-up round"),
+    timeout: int = typer.Option(900, "--timeout", help="Per-step subprocess timeout (seconds)"),
+) -> None:
+    """Full run: plan, execute steps, report, optional follow-up round."""
+    engine = build_engine(config_path, _pilot_root(root))
+    engine.do_run(goal, max_steps=max_steps, followup=followup, timeout=timeout)
+
+
+@pilot_app.command("enqueue")
+def pilot_enqueue_cmd(
+    goal: str = typer.Option(..., "--goal", help="What the run should accomplish"),
+    root: Optional[Path] = typer.Option(None, "--root", help="Lab corpus root (holds samples/ and work/)"),
+    max_steps: int = typer.Option(3, "--max-steps", help="Cap on executed steps per plan"),
+    followup: bool = typer.Option(True, "--followup/--no-followup", help="Allow one follow-up round"),
+) -> None:
+    """Drop a goal into <root>/work/pilot/queue/ for the watcher."""
+    job = pilot_enqueue(pilot_dir_for(_pilot_root(root)) / "queue", goal,
+                        max_steps=max_steps, followup=followup)
+    console.print(f"queued {job}")
+
+
+@pilot_app.command("watch")
+def pilot_watch_cmd(
+    config_path: Optional[Path] = typer.Option(None, "--config", help="Path to config TOML"),
+    root: Optional[Path] = typer.Option(None, "--root", help="Lab corpus root (holds samples/ and work/)"),
+    once: bool = typer.Option(False, "--once", help="Process one job then exit"),
+    interval: int = typer.Option(5, "--interval", help="Queue poll interval (seconds)"),
+) -> None:
+    """Process goals from work/pilot/queue/ (run under a service manager)."""
+    engine = build_engine(config_path, _pilot_root(root))
+    raise typer.Exit(code=pilot_watch(engine, once=once, interval=interval))
+
+
+@pilot_app.command("status")
+def pilot_status_cmd(
+    root: Optional[Path] = typer.Option(None, "--root", help="Lab corpus root (holds samples/ and work/)"),
+    run: Optional[str] = typer.Argument(None, help="Restrict to one run id"),
+) -> None:
+    """List pilot runs and their step states."""
+    raise typer.Exit(code=pilot_status(pilot_dir_for(_pilot_root(root)), run))
+
+
+@pilot_app.command("logs")
+def pilot_logs_cmd(
+    run: str = typer.Argument(..., help="Run id"),
+    n: str = typer.Argument("00", help="Step number or prefix (e.g. 00 or 00-analyze)"),
+    root: Optional[Path] = typer.Option(None, "--root", help="Lab corpus root (holds samples/ and work/)"),
+) -> None:
+    """Print one step log."""
+    sys.stdout.write(pilot_step_log(pilot_dir_for(_pilot_root(root)), run, n))
+
+
+@pilot_app.command("report")
+def pilot_report_cmd(
+    run: str = typer.Argument(..., help="Run id"),
+    root: Optional[Path] = typer.Option(None, "--root", help="Lab corpus root (holds samples/ and work/)"),
+) -> None:
+    """Print a run's report.md."""
+    sys.stdout.write(pilot_report_text(pilot_dir_for(_pilot_root(root)), run))
 
 
 def run() -> None:
