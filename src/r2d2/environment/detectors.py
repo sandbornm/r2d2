@@ -16,6 +16,7 @@ from typing import Iterable
 import httpx
 
 from ..config import AppConfig
+from ..llm.credentials import resolve_llm_api_key, resolve_openai_base_url, unused_glm_key_hint
 from .ghidra import GhidraDetection, detect_ghidra
 
 
@@ -51,6 +52,16 @@ class MCPConnectionCheck:
 
 
 @dataclass(slots=True)
+class LLMCheck:
+    provider: str
+    model: str
+    api_key_env: str | None
+    api_key_present: bool
+    openai_base_url: str | None = None
+    hint: str | None = None
+
+
+@dataclass(slots=True)
 class EnvironmentReport:
     python_version: str
     uv_available: bool
@@ -58,6 +69,7 @@ class EnvironmentReport:
     tools: list[ToolCheck] = field(default_factory=list)
     mcp_connections: dict[str, MCPConnectionCheck] = field(default_factory=dict)
     ghidra: GhidraDetection | None = None
+    llm: LLMCheck | None = None
     issues: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
@@ -426,11 +438,26 @@ def detect_mcp_connections(config: AppConfig) -> dict[str, MCPConnectionCheck]:
 
 
 def detect_environment(config: AppConfig) -> EnvironmentReport:
+    key, key_env = resolve_llm_api_key(config)
+    key_present = bool(key)
     report = EnvironmentReport(
         python_version=sys.version.split()[0],
         uv_available=shutil.which("uv") is not None,
-        openai_key_present=config.llm.api_key_env in os.environ,
+        openai_key_present=key_present,
+        llm=LLMCheck(
+            provider=config.llm.provider,
+            model=config.llm.model,
+            api_key_env=key_env,
+            api_key_present=key_present,
+            openai_base_url=resolve_openai_base_url(config, key_env),
+            hint=unused_glm_key_hint(config),
+        ),
     )
+    if config.analysis.require_elf:
+        report.notes.append(
+            "analysis.require_elf=true; firmware blobs will be rejected. "
+            "Set require_elf=false in config/local.toml for this lab."
+        )
     report.mcp_connections = detect_mcp_connections(config)
 
     report.tools.append(_check_command("radare2", _COMMANDS["radare2"]))
@@ -470,8 +497,11 @@ def detect_environment(config: AppConfig) -> EnvironmentReport:
 
     if config.llm.provider.lower() not in {"ollama", "local"} and not report.openai_key_present:
         report.notes.append(
-            f"Environment variable {config.llm.api_key_env} not detected; LLM calls will fail until set."
+            f"Environment variable {key_env or config.llm.api_key_env} not detected; "
+            "LLM --ask will fail until set (analyze without --ask still works)."
         )
+    if report.llm and report.llm.hint:
+        report.notes.append(report.llm.hint)
     if config.llm.enable_fallback and config.llm.fallback_api_key_env:
         if config.llm.fallback_api_key_env not in os.environ:
             report.notes.append(
@@ -481,4 +511,11 @@ def detect_environment(config: AppConfig) -> EnvironmentReport:
     return report
 
 
-__all__ = ["EnvironmentReport", "MCPConnectionCheck", "ToolCheck", "detect_environment", "detect_mcp_connections"]
+__all__ = [
+    "EnvironmentReport",
+    "LLMCheck",
+    "MCPConnectionCheck",
+    "ToolCheck",
+    "detect_environment",
+    "detect_mcp_connections",
+]

@@ -8,6 +8,7 @@ from typing import Iterable
 from ..config import AppConfig
 from .claude_client import ClaudeClient, ClaudeError, ChatMessage
 from .ollama_client import OllamaClient, OllamaError, list_ollama_models, select_ollama_model
+from .credentials import is_openai_compat
 from .openai_client import OpenAIClient, OpenAIError
 
 _LOGGER = logging.getLogger(__name__)
@@ -32,6 +33,10 @@ class LLMBridge:
         ("anthropic", "claude-5-1", "Claude 5.1"),
         ("anthropic", "claude-sonnet-4-5", "Claude Sonnet 4.5"),
         ("openai", "gpt-4o", "GPT-4o"),
+        ("glm", "glm-5.2", "GLM-5.2"),
+        ("glm", "glm-5.1", "GLM-5.1"),
+        ("glm", "glm-4.6", "GLM-4.6"),
+        ("glm", "glm-4-flash", "GLM-4 Flash"),
     ]
 
     def __init__(self, config: AppConfig) -> None:
@@ -132,7 +137,7 @@ class LLMBridge:
 
         try:
             client: OpenAIClient | ClaudeClient | OllamaClient
-            if provider.lower() == "openai":
+            if is_openai_compat(provider):
                 client = OpenAIClient(self._config)
             elif provider.lower() in {"anthropic", "claude"}:
                 client = ClaudeClient(self._config)
@@ -175,6 +180,10 @@ class LLMBridge:
             self._order = ["ollama"]
             if self._config.llm.enable_fallback and self._config.llm.fallback_provider:
                 self._order.append(self._config.llm.fallback_provider)
+        elif is_openai_compat(provider):
+            self._order = [provider]
+            if self._config.llm.enable_fallback:
+                self._order.append("anthropic")
         else:
             self._order = ["openai"]
             if self._config.llm.enable_fallback:

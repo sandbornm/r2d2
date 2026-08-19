@@ -9,6 +9,8 @@
 # Optional:
 #   ANTHROPIC_API_KEY  - API key for Claude, if selected
 #   OPENAI_API_KEY     - Fallback API key
+#   GLM_API_KEY        - Official BigModel / Zhipu (provider=glm)
+#   ZAI_API_KEY        - Z.ai international GLM overlay
 
 [llm]
 provider = "ollama"

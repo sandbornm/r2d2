@@ -69,3 +69,31 @@ def test_z_ai_host_requires_a_key(monkeypatch):
     assert _requires_api_key(config.llm.openai_base_url) is True
     with pytest.raises(OpenAIError, match="ZAI_API_KEY"):
         OpenAIClient(config)
+
+
+def test_glm_key_alias_wins_over_openai(monkeypatch):
+    monkeypatch.setenv("GLM_API_KEY", "glm-secret")
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-secret")
+    config = AppConfig(
+        llm=LLMSettings(provider="glm", api_key_env="GLM_API_KEY", fallback_api_key_env="OPENAI_API_KEY")
+    )
+    key, name = _resolve_openai_api_key(config)
+    assert key == "glm-secret"
+    assert name == "GLM_API_KEY"
+
+
+def test_glm_provider_defaults_to_bigmodel_host(monkeypatch):
+    monkeypatch.setenv("GLM_API_KEY", "glm-secret")
+    monkeypatch.delenv("ZAI_API_KEY", raising=False)
+    config = AppConfig(llm=LLMSettings(provider="glm", api_key_env="GLM_API_KEY", model="glm-5.2"))
+    assert _openai_base_url(config) == "https://open.bigmodel.cn/api/paas/v4"
+    client = OpenAIClient(config)
+    assert client._model == "glm-5.2"
+    assert client._base_url == "https://open.bigmodel.cn/api/paas/v4"
+
+
+def test_glm_provider_uses_z_ai_when_zai_key(monkeypatch):
+    monkeypatch.delenv("GLM_API_KEY", raising=False)
+    monkeypatch.setenv("ZAI_API_KEY", "zai-secret")
+    config = AppConfig(llm=LLMSettings(provider="glm", api_key_env="ZAI_API_KEY", model="glm-5.2"))
+    assert _openai_base_url(config) == "https://api.z.ai/api/paas/v4"

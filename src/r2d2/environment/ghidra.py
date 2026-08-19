@@ -73,7 +73,9 @@ def detect_ghidra(config: AppConfig, project_root: Path | None = None) -> Ghidra
         else:
             issues.append("analyzeHeadless not found in Ghidra install.")
     else:
-        issues.append("Set GHIDRA_INSTALL_DIR to enable Ghidra decompilation.")
+        notes.append(
+            "Ghidra skipped (optional). Set GHIDRA_INSTALL_DIR only when you want decompile."
+        )
 
     # Check for bridge (optional enhancement - requires Ghidra GUI running)
     bridge_available = False

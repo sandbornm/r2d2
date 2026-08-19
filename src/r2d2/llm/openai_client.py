@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any, Iterable
 
 from pydantic import BaseModel
 
 from ..config import AppConfig
+from .credentials import (
+    is_openai_compat,
+    requires_api_key as _requires_api_key,
+    resolve_llm_api_key as _resolve_openai_api_key,
+    resolve_openai_base_url as _openai_base_url,
+)
 
 try:  # pragma: no cover - import guard
     from openai import OpenAI, APIError, AuthenticationError, RateLimitError
@@ -19,50 +24,6 @@ except ModuleNotFoundError:  # pragma: no cover
     RateLimitError = Exception  # type: ignore
 
 _LOGGER = logging.getLogger(__name__)
-_DEFAULT_OLLAMA_HOST = "11434"
-_REMOTE_KEY_HOSTS = ("api.openai.com", "api.z.ai", "open.bigmodel.cn")
-
-
-def _resolve_openai_api_key(config: AppConfig) -> tuple[str | None, str | None]:
-    """Return (key, env_name). Prefer the named primary env, then aliases."""
-    names: list[str] = []
-    if (config.llm.provider or "").lower() == "openai" and config.llm.api_key_env:
-        names.append(config.llm.api_key_env)
-    if config.llm.fallback_api_key_env:
-        names.append(config.llm.fallback_api_key_env)
-    names.extend(["ZAI_API_KEY", "OPENAI_API_KEY"])
-    seen: set[str] = set()
-    for name in names:
-        if not name or name in seen:
-            continue
-        seen.add(name)
-        value = os.getenv(name)
-        if value:
-            return value, name
-    return None, names[0] if names else "OPENAI_API_KEY"
-
-
-def _requires_api_key(base_url: str | None) -> bool:
-    if not base_url:
-        return True
-    lowered = base_url.lower()
-    return any(host in lowered for host in _REMOTE_KEY_HOSTS)
-
-
-def _openai_base_url(config: AppConfig) -> str | None:
-    """Return an OpenAI-compatible base URL, or None for the official API."""
-    explicit = getattr(config.llm, "openai_base_url", None)
-    if explicit:
-        return explicit.rstrip("/")
-    base = (config.llm.base_url or "").rstrip("/")
-    if (
-        config.llm.provider
-        and config.llm.provider.lower() == "openai"
-        and base
-        and _DEFAULT_OLLAMA_HOST not in base
-    ):
-        return base
-    return None
 
 
 class ChatMessage(BaseModel):
@@ -96,7 +57,7 @@ class OpenAIClient:
                 api_key = "local"
             else:
                 raise OpenAIError(
-                    f"API key not found. Set {api_env} (or ZAI_API_KEY). "
+                    f"API key not found. Set {api_env} (or GLM_API_KEY / ZAI_API_KEY). "
                     "Do not put the key in a committed toml."
                 )
 
@@ -107,7 +68,7 @@ class OpenAIClient:
         self._base_url = base_url
         self._api_env = api_env
         self._config = config
-        if config.llm.provider and config.llm.provider.lower() == "openai":
+        if is_openai_compat(config.llm.provider):
             self._model = config.llm.model
         else:
             self._model = config.llm.fallback_model or "gpt-4o"
@@ -151,7 +112,9 @@ class OpenAIClient:
             completion = self._client.chat.completions.create(**params)
             return completion.choices[0].message.content or ""
         except AuthenticationError:
-            raise OpenAIError(f"Invalid API key. Check {self._api_env or 'ZAI_API_KEY / OPENAI_API_KEY'}.")
+            raise OpenAIError(
+                f"Invalid API key. Check {self._api_env or 'GLM_API_KEY / ZAI_API_KEY / OPENAI_API_KEY'}."
+            )
         except RateLimitError:
             raise OpenAIError("OpenAI rate limit exceeded. Please wait and try again.")
         except APIError as e:

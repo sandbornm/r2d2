@@ -22,3 +22,4 @@ output/
 # Large local firmware test image (~31MB). Kept out of git history to avoid
 # bloating the repo; use Git LFS if this needs to be shared/versioned.
 /ax3000v2-up-us-ver1-1-2-P1-sign_2023-02-21_19.16.48.bin
+samples/firmware/
