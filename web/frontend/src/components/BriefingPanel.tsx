@@ -15,9 +15,12 @@ const copyText = async (text: string) => {
   }
 };
 
+const subjectClass = (briefing: AnalysisBriefingPayload) =>
+  String(briefing.subject?.subject_class || '');
+
 const isWrapper = (briefing: AnalysisBriefingPayload) => {
-  const format = String(briefing.subject?.format || briefing.summary || '').toLowerCase();
-  return format.includes('firmware') || format.includes('container') || (briefing.subject?.firmware_kind != null);
+  const klass = subjectClass(briefing);
+  return klass === 'firmware_container' || klass === 'uimage';
 };
 
 const RegionCard: FC<{ region: BriefingRegion; index: number; onAsk?: (prompt: string) => void }> = ({
@@ -67,7 +70,7 @@ const RegionCard: FC<{ region: BriefingRegion; index: number; onAsk?: (prompt: s
       <Stack direction="row" spacing={1} sx={{ pl: 3.25 }} alignItems="center">
         {onAsk && (
           <Button size="small" variant="contained" onClick={() => onAsk(region.ask)}>
-            Ask Qwen
+            Ask
           </Button>
         )}
         <Button size="small" variant="text" onClick={() => copyText(region.ask)}>
@@ -83,15 +86,17 @@ const RegionCard: FC<{ region: BriefingRegion; index: number; onAsk?: (prompt: s
 
 const BriefingPanel: FC<BriefingPanelProps> = ({ briefing, onAsk }) => {
   const wrapper = isWrapper(briefing);
+  const klass = subjectClass(briefing);
   return (
     <Paper variant="outlined" sx={{ p: 2, bgcolor: 'transparent' }}>
       <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1.25 }}>
         <Typography variant="overline" sx={{ flex: 1, letterSpacing: '0.08em' }}>
           What to ask next
         </Typography>
+        {klass && <Chip size="small" label={klass.replace(/_/g, ' ')} variant="outlined" />}
         {onAsk && (
           <Button size="small" variant="contained" onClick={() => onAsk(briefing.overall_ask)}>
-            Ask Qwen about this image
+            Ask about this image
           </Button>
         )}
       </Stack>
@@ -103,6 +108,13 @@ const BriefingPanel: FC<BriefingPanelProps> = ({ briefing, onAsk }) => {
           This is still a vendor upgrade blob. The useful program is usually
           {' '}<Box component="span" sx={{ fontFamily: 'var(--font-mono)' }}>httpd</Box>
           {' '}(web admin) or tdpServer after unpack — not this file, and not a process on this Pi.
+        </Typography>
+      )}
+      {klass === 'baremetal_elf' && (
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+          This is a program ELF (Cortex-M / Thumb), not a squashfs. Rank named
+          protocol symbols and <Box component="span" sx={{ fontFamily: 'var(--font-mono)' }}>feed</Box>
+          {' '}functions — do not unpack it.
         </Typography>
       )}
       {briefing.next_steps.length > 0 && (

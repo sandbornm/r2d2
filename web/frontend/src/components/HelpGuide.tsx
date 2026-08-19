@@ -50,7 +50,7 @@ const HelpGuide: FC<HelpGuideProps> = ({ open, onClose }) => (
       </Block>
       <Block title="4. Ask on a region, not the whole dump">
         Each ranked region has a four-bullet ask. That is what Qwen should see. Do not paste the
-        analysis JSON. Click Ask Qwen on the region that matches your thesis.
+        analysis JSON. Click Ask on the region that matches your thesis.
       </Block>
       <Block title="What a professional does first">
         Unpack, open httpd, list imports and CGI/nvram strings, xref system/sprintf/recv, rename

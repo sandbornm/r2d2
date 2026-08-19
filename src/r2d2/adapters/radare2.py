@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import re
 import shutil
 import types
 from dataclasses import dataclass
@@ -12,6 +14,21 @@ from typing import Any
 from .base import AdapterUnavailable
 
 _LOGGER = logging.getLogger(__name__)
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+_SYMBOL_HINTS = (
+    "subghz",
+    "nfc_",
+    "lfrfid",
+    "ibutton",
+    "infrared",
+    "protocol",
+    "httpd",
+    "tdpserver",
+    "keeloq",
+    "princeton",
+    "decoder",
+    "poller",
+)
 
 
 @dataclass(slots=True)
@@ -38,34 +55,96 @@ class Radare2Adapter:
             return False
         return True
 
+    def _open(self, binary: Path) -> Any:
+        r2pipe = self._r2pipe()
+        session = r2pipe.open(
+            str(binary),
+            flags=["-2", "-e", "bin.relocs.apply=true", "-e", "scr.interactive=false"],
+        )
+        session.cmd("e scr.color=false")
+        session.cmd("e scr.interactive=false")
+        session.cmd("e bin.relocs.apply=true")
+        return session
+
+    @staticmethod
+    def _cmdj(session: Any, command: str) -> Any:
+        """JSON command that survives r2 mouse/ANSI junk on headless hosts."""
+        try:
+            payload = session.cmdj(command)
+            if payload is not None:
+                return payload
+        except Exception as exc:
+            _LOGGER.debug("radare2 cmdj %s failed: %s", command, exc)
+        raw = session.cmd(command) or ""
+        cleaned = _ANSI_RE.sub("", raw).strip()
+        if not cleaned:
+            return None
+        try:
+            return json.loads(cleaned)
+        except json.JSONDecodeError:
+            start, end = cleaned.find("{"), cleaned.rfind("}")
+            if start >= 0 and end > start:
+                try:
+                    return json.loads(cleaned[start : end + 1])
+                except json.JSONDecodeError:
+                    return None
+            start, end = cleaned.find("["), cleaned.rfind("]")
+            if start >= 0 and end > start:
+                try:
+                    return json.loads(cleaned[start : end + 1])
+                except json.JSONDecodeError:
+                    return None
+            return None
+
+    @staticmethod
+    def _interesting_symbols(symbols: list[Any]) -> list[dict[str, Any]]:
+        hits: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for item in symbols:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or item.get("flagname") or item.get("realname") or "")
+            lowered = name.lower()
+            if not name or name in seen:
+                continue
+            if not any(hint in lowered for hint in _SYMBOL_HINTS):
+                continue
+            seen.add(name)
+            hits.append(item)
+            if len(hits) >= 48:
+                break
+        return hits
+
     def quick_scan(self, binary: Path) -> dict[str, object]:
         if not self.is_available():
             raise AdapterUnavailable("radare2 is not available on this system")
 
-        r2pipe = self._r2pipe()
-        session = r2pipe.open(str(binary))
+        session = self._open(binary)
         try:
-            info = session.cmdj("ij")  # Binary information
-            headers = session.cmdj("iHj")
-            imports = session.cmdj("iij")
-            strings = session.cmdj("izj")
-            sections = session.cmdj("iSj")  # Section info
-            symbols = session.cmdj("isj")  # Symbols
-            entry_points = session.cmdj("iej")  # Entry points
+            info = self._cmdj(session, "ij") or {}
+            headers = self._cmdj(session, "iHj") or []
+            imports = self._cmdj(session, "iij") or []
+            strings = self._cmdj(session, "izj") or []
+            sections = self._cmdj(session, "iSj") or []
+            symbols = self._cmdj(session, "isj") or []
+            entry_points = self._cmdj(session, "iej") or []
         except Exception as exc:  # pragma: no cover - runtime guard
             _LOGGER.exception("radare2 quick scan failed: %s", exc)
             raise AdapterUnavailable(f"radare2 quick scan failed: {exc}") from exc
         finally:
             session.quit()
 
+        symbol_list = symbols if isinstance(symbols, list) else []
+        string_list = strings if isinstance(strings, list) else []
         return {
             "info": info,
             "headers": headers,
-            "imports": imports,
-            "strings": strings[:200],  # limit for summaries
-            "sections": sections,
-            "symbols": symbols[:100] if symbols else [],
-            "entry_points": entry_points,
+            "imports": imports if isinstance(imports, list) else [],
+            "strings": string_list[:200],
+            "sections": sections if isinstance(sections, list) else [],
+            "symbols": symbol_list[:400],
+            "interesting_symbols": self._interesting_symbols(symbol_list),
+            "entry_points": entry_points if isinstance(entry_points, list) else [],
             "commands": ["ij", "iHj", "iij", "izj", "iSj", "isj", "iej"],
         }
 
@@ -73,17 +152,21 @@ class Radare2Adapter:
         if not self.is_available():
             raise AdapterUnavailable("radare2 is not available on this system")
 
-        r2pipe = self._r2pipe()
-        session = r2pipe.open(str(binary))
+        session = self._open(binary)
         
         try:
-            session.cmd("e scr.color=false")
             session.cmd("aaa")  # Full analysis
             
             # Basic analysis data
-            functions = session.cmdj("aflj") or []
-            xrefs = session.cmdj("axj") or []
-            cfg = session.cmdj("agj") or []
+            functions = self._cmdj(session, "aflj") or []
+            if not isinstance(functions, list):
+                functions = []
+            xrefs = self._cmdj(session, "axj") or []
+            if not isinstance(xrefs, list):
+                xrefs = []
+            cfg = self._cmdj(session, "agj") or []
+            if not isinstance(cfg, list):
+                cfg = []
             disassembly = session.cmd("pd 256")
 
             # Enhanced function-level data with CFG blocks
@@ -106,7 +189,7 @@ class Radare2Adapter:
                     
                 try:
                     # Get function CFG blocks using agfj (graph JSON format)
-                    func_cfg = session.cmdj(f"agfj @ {func_offset}")
+                    func_cfg = self._cmdj(session, f"agfj @ {func_offset}")
                     if not func_cfg:
                         _LOGGER.debug("No CFG data from agfj for %s at %s", func_name, hex(func_offset))
                         continue
@@ -195,7 +278,7 @@ class Radare2Adapter:
                 func_offset = func.get("offset")
                 if func_offset:
                     try:
-                        func_xrefs = session.cmdj(f"axtj @ {func_offset}")
+                        func_xrefs = self._cmdj(session, f"axtj @ {func_offset}")
                         if func_xrefs:
                             xref_map[hex(func_offset)] = [
                                 {
