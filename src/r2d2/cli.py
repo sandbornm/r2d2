@@ -402,7 +402,23 @@ def insights(
     if not payload.get("ready"):
         console.print(f"[yellow]{payload.get('reason')}")
         return
-    console.rule(f"Insights from {payload.get('sibling_count')} records")
+    family = payload.get("family") or {}
+    family_label = "/".join(
+        part for part in (family.get("subject_class"), family.get("id")) if part
+    )
+    title = f"Insights from {payload.get('sibling_count')} records"
+    if family_label:
+        title += f" ({family_label})"
+    console.rule(title)
+    others = [
+        item
+        for item in (payload.get("families") or [])
+        if (item.get("subject_class"), item.get("id"))
+        != (family.get("subject_class"), family.get("id"))
+    ]
+    if others:
+        bits = ", ".join(f"{item.get('subject_class')}/{item.get('id')} x{item.get('count')}" for item in others)
+        console.print(f"[dim]Other families not mixed in: {bits}[/]")
     for pattern in payload.get("patterns") or []:
         console.print(f"[bold]{pattern.get('title')}[/]")
         console.print(f"  {pattern.get('why')}")
