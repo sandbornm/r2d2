@@ -112,6 +112,8 @@ def test_rate_limit_message_distinguishes_z_ai_empty_credit():
 
 
 class _StubCompletions:
+    """Capture create() params; return one canned completion."""
+
     def __init__(self, content: str) -> None:
         self.calls: list[dict] = []
         self._content = content
@@ -121,6 +123,55 @@ class _StubCompletions:
         message = type("M", (), {"content": self._content})()
         choice = type("C", (), {"message": message})()
         return type("R", (), {"choices": [choice]})()
+
+
+def _local_client(monkeypatch) -> OpenAIClient:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    config = AppConfig(
+        llm=LLMSettings(
+            provider="openai",
+            model="qwen",
+            openai_base_url="http://127.0.0.1:52415/v1",
+        )
+    )
+    return OpenAIClient(config)
+
+
+def test_chat_overrides_per_call(monkeypatch):
+    client = _local_client(monkeypatch)
+    stub = _StubCompletions("planner reply")
+    client._client = type("Client", (), {"chat": type("Chat", (), {"completions": stub})()})()
+    out = client.chat(
+        [{"role": "user", "content": "hi"}],
+        max_tokens=17, temperature=0.4,
+        extra_body={"enable_thinking": False}, timeout=12.0,
+    )
+    assert out == "planner reply"
+    params = stub.calls[0]
+    assert params["max_tokens"] == 17
+    assert params["temperature"] == 0.4
+    assert params["extra_body"] == {"enable_thinking": False}
+    assert params["timeout"] == 12.0
+
+
+def test_chat_defaults_to_config_values(monkeypatch):
+    client = _local_client(monkeypatch)
+    stub = _StubCompletions("ok")
+    client._client = type("Client", (), {"chat": type("Chat", (), {"completions": stub})()})()
+    client.chat([{"role": "user", "content": "hi"}])
+    params = stub.calls[0]
+    assert params["max_tokens"] == client._config.llm.max_tokens
+    assert params["temperature"] == client._config.llm.temperature
+    assert "extra_body" not in params
+    assert "timeout" not in params
+
+
+def test_chat_truncates_chat_template_token_leak(monkeypatch):
+    client = _local_client(monkeypatch)
+    leak = "real answer<|endoftext|>garbage continuation<|im_end|>more"
+    stub = _StubCompletions(leak)
+    client._client = type("Client", (), {"chat": type("Chat", (), {"completions": stub})()})()
+    assert client.chat([{"role": "user", "content": "hi"}]) == "real answer"
 
 
 def test_coding_plan_host_disables_thinking_by_default(monkeypatch):
