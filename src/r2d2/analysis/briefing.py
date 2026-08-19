@@ -473,7 +473,7 @@ def _collect_regions(
     regions.extend(_signal_regions(firmware, profile))
     regions.extend(_import_regions(r2_quick))
     regions.extend(_symbol_regions(r2_quick))
-    regions.extend(_entry_regions(r2_deep, name))
+    regions.extend(_entry_regions(r2_deep, name, r2_quick=r2_quick))
     regions.extend(_function_regions(r2_deep, r2_quick))
     regions.extend(_ghidra_regions(ghidra))
     regions.extend(_child_regions(children))
@@ -516,6 +516,15 @@ def _symbol_regions(r2_quick: dict[str, Any]) -> list[RegionAsk]:
         name = str(item.get("name") or item.get("flagname") or item.get("realname") or "")
         lowered = name.lower()
         if not name or name in seen:
+            continue
+        kind = str(item.get("type") or item.get("kind") or "").lower()
+        if kind in {"file", "sect", "section"}:
+            continue
+        try:
+            vaddr = item.get("vaddr") if item.get("vaddr") is not None else item.get("offset")
+            if vaddr is not None and int(vaddr) < 0:
+                continue
+        except (TypeError, ValueError):
             continue
         if not any(hint in lowered for hint in _SYMBOL_HINTS):
             continue
@@ -688,11 +697,18 @@ def _import_regions(r2_quick: dict[str, Any]) -> list[RegionAsk]:
     ]
 
 
-def _entry_regions(r2_deep: dict[str, Any], name: str) -> list[RegionAsk]:
-    entry_fn = _dict(r2_deep.get("entry_function"))
+def _entry_regions(
+    r2_deep: dict[str, Any],
+    name: str,
+    *,
+    r2_quick: dict[str, Any] | None = None,
+) -> list[RegionAsk]:
+    entry_fn = _dict(r2_deep.get("entry_function")) or _dict((r2_quick or {}).get("entry_function"))
     disasm = r2_deep.get("entry_disassembly")
     if not isinstance(disasm, str) or not disasm.strip():
         disasm = r2_deep.get("disassembly")
+    if not isinstance(disasm, str) or not disasm.strip():
+        disasm = (r2_quick or {}).get("entry_disassembly")
     if not isinstance(disasm, str) or not disasm.strip():
         return []
     func_name = str(entry_fn.get("name") or "entry")

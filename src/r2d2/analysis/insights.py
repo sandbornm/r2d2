@@ -146,7 +146,8 @@ def _import_patterns(dossiers: list[dict[str, Any]]) -> list[dict[str, Any]]:
             owners[name].append(_sibling_ref(dossier))
     patterns = []
     total = len(dossiers)
-    for name, support in counts.most_common(12):
+    hot = {"system", "popen", "execve", "execl", "strcpy", "strcat", "sprintf", "gets", "memcpy"}
+    for name, support in counts.most_common(24):
         if support < MIN_SIBLINGS:
             continue
         patterns.append(
@@ -160,7 +161,14 @@ def _import_patterns(dossiers: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 next_action=f"r2: `ii~{name}` then `axt @ sym.imp.{name}` before reading random functions.",
             )
         )
-    return patterns
+    patterns.sort(
+        key=lambda item: (
+            0 if any(hit in str(item.get("title") or "") for hit in hot) else 1,
+            -int(item["support"]),
+            str(item.get("title") or ""),
+        )
+    )
+    return patterns[:12]
 
 
 def _wrapper_patterns(dossiers: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -262,8 +270,12 @@ def _import_names(dossier: dict[str, Any]) -> set[str]:
         name = str(raw or "")
         name = name.split("@", 1)[0]
         name = name.removeprefix("sym.imp.").removeprefix("imp.").removeprefix("sym.")
-        if name:
-            names.add(name)
+        if not name:
+            continue
+        # CRT/start stubs are shared by every glibc PIE and drown strcpy/system.
+        if name.startswith("_"):
+            continue
+        names.add(name)
     return names
 
 
@@ -432,7 +444,13 @@ def _pick_family(
                 return key, members
     ranked = sorted(
         groups.items(),
-        key=lambda item: (-len(item[1]), item[0][0], item[0][1]),
+        key=lambda item: (
+            -len(item[1]),
+            0 if item[0][0] in _ELF_SUBJECT_CLASSES else 1,
+            0 if item[0][1] not in {"container", "unknown", item[0][0]} else 1,
+            item[0][0],
+            item[0][1],
+        ),
     )
     if not ranked:
         return ("unknown", "unknown"), None
