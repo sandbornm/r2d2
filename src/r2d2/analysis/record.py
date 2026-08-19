@@ -78,7 +78,7 @@ class AnalysisRecordStore:
 
         existing = _read_json(directory / "record.json") or {}
         briefing = ensure_analysis_briefing(payload)
-        subject = _build_subject(path, digest, payload, extra_meta)
+        subject = _build_subject(path, digest, payload, extra_meta, briefing=briefing)
         tags = sorted(
             set(_derive_tags(path, payload, subject, briefing))
             | set(extra_tags or [])
@@ -277,6 +277,8 @@ def _build_subject(
     digest: str,
     analysis: dict[str, Any],
     extra_meta: dict[str, Any] | None,
+    *,
+    briefing: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     quick = _dict(analysis.get("quick_scan"))
     firmware = _dict(quick.get("firmware"))
@@ -284,6 +286,7 @@ def _build_subject(
     r2 = _dict(quick.get("radare2"))
     info = _dict(_dict(r2.get("info")).get("bin"))
     core = _dict(_dict(r2.get("info")).get("core"))
+    briefing_subject = _dict(_dict(briefing).get("subject"))
     subject = {
         "name": path.name,
         "path": str(path.resolve()),
@@ -296,6 +299,8 @@ def _build_subject(
         "stripped": profile.get("is_stripped"),
         "risk_level": profile.get("risk_level"),
         "firmware_kind": firmware.get("container_type") or firmware.get("top_level_format"),
+        "subject_class": briefing_subject.get("subject_class"),
+        "wrapper_family": firmware.get("wrapper_family") or briefing_subject.get("wrapper_family"),
     }
     if extra_meta:
         subject["lab"] = extra_meta
@@ -313,8 +318,15 @@ def _derive_tags(
     file_type = str(_profile(_dict(analysis.get("quick_scan"))).get("file_type") or "").lower()
     if "elf" in fmt or "elf" in file_type:
         tags.add("elf")
-    if subject.get("firmware_kind") or "firmware" in fmt or "container" in fmt:
+    subject_class = str(
+        subject.get("subject_class") or _dict(briefing.get("subject")).get("subject_class") or ""
+    )
+    if subject_class in {"firmware_container", "uimage"} or "firmware" in fmt or "container" in fmt:
         tags.add("firmware")
+    if subject_class:
+        tags.add(subject_class)
+    if subject.get("wrapper_family"):
+        tags.add(str(subject["wrapper_family"]))
     if subject.get("arch"):
         bits = subject.get("bits")
         tags.add(str(subject["arch"]).lower())
@@ -393,6 +405,7 @@ def _compact_tool_blob(name: str, payload: dict[str, Any]) -> dict[str, Any]:
             "recommended_targets": payload.get("recommended_targets") or [],
             "carved_targets": payload.get("carved_targets") or [],
             "string_signals": payload.get("string_signals") or {},
+            "wrapper_family": payload.get("wrapper_family"),
         }
     if name == "sniff":
         return {

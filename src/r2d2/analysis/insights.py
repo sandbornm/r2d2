@@ -16,6 +16,8 @@ from .record import AnalysisRecordStore, utcnow
 
 INSIGHTS_SCHEMA_VERSION = "r2d2.insights.v1"
 MIN_SIBLINGS = 2
+_ELF_SUBJECT_CLASSES = frozenset({"linux_elf", "baremetal_elf"})
+_CONTAINER_SUBJECT_CLASSES = frozenset({"firmware_container", "uimage"})
 _WEAK_TAGS = {
     "disasm",
     "entry",
@@ -28,6 +30,15 @@ _WEAK_TAGS = {
     "issue",
     "dangerous",
     "plt",
+    "firmware",
+    "string",
+    "elf",
+    "elf_binary",
+}
+_WEAK_REGION_TITLES = {
+    "crypto strings",
+    "network strings",
+    "credential strings",
 }
 
 
@@ -64,36 +75,39 @@ def extract_insights(
     if len(dossiers) < MIN_SIBLINGS:
         return _empty(reason="Sibling records could not be loaded.", focus_id=focus_id, siblings=catalog)
 
-    patterns = [
-        *_import_patterns(dossiers),
-        *_wrapper_patterns(dossiers),
-        *_region_patterns(dossiers),
-        *_tag_patterns(dossiers),
-    ]
-    kind_rank = {"wrapper": 0, "import": 1, "region": 2, "tag": 3}
-    patterns.sort(
-        key=lambda item: (
-            kind_rank.get(str(item.get("kind")), 9),
-            -item["support"],
-            -item["confidence"],
-            item["title"],
+    groups = _family_groups(dossiers)
+    family_summaries = [_family_summary(key, members) for key, members in groups.items()]
+    chosen_key, chosen = _pick_family(groups, focus_id=focus_id)
+    if chosen is None or len(chosen) < MIN_SIBLINGS:
+        return _empty(
+            reason=(
+                "Need at least two records in the same subject class "
+                "(and wrapper family, for containers). "
+                + _family_hint(family_summaries)
+            ),
+            focus_id=focus_id,
+            siblings=catalog,
+            families=family_summaries,
         )
-    )
-    patterns = patterns[:limit]
-    note = _lab_note(dossiers, patterns)
+
+    subject_class, family_id = chosen_key
+    patterns = _patterns_for_family(chosen, subject_class, family_id, limit=limit)
+    note = _lab_note(chosen, patterns, subject_class=subject_class, family_id=family_id)
     return {
         "schema_version": INSIGHTS_SCHEMA_VERSION,
         "ready": True,
         "reason": None,
         "focus_id": focus_id,
-        "sibling_count": len(dossiers),
-        "siblings": [_sibling_ref(item) for item in dossiers],
+        "family": {"subject_class": subject_class, "id": family_id, "sibling_count": len(chosen)},
+        "families": family_summaries,
+        "sibling_count": len(chosen),
+        "siblings": [_sibling_ref(item) for item in chosen],
         "patterns": patterns,
         "lab_note": note,
         "skill_ready": False,
         "skill_hint": (
             "Do not promote this to a Grok skill until a pattern has held on a third binary "
-            "and the next action is a concrete command, not a summary."
+            "in the same family and the next action is a concrete command, not a summary."
         ),
     }
 
@@ -153,30 +167,25 @@ def _wrapper_patterns(dossiers: list[dict[str, Any]]) -> list[dict[str, Any]]:
     counts: Counter[str] = Counter()
     owners: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for dossier in dossiers:
-        firmware = _dict(_dict(dossier.get("tool_blobs")).get("firmware"))
-        kind = firmware.get("top_level_format") or firmware.get("container_type")
-        if not kind:
-            subject = _dict(dossier.get("subject_blob"))
-            kind = subject.get("firmware_kind") or subject.get("format")
-        if not kind:
+        family = _dossier_family(dossier)
+        if not family:
             continue
-        key = str(kind)
-        counts[key] += 1
-        owners[key].append(_sibling_ref(dossier))
+        counts[family] += 1
+        owners[family].append(_sibling_ref(dossier))
     patterns = []
     total = len(dossiers)
-    for kind, support in counts.most_common(6):
+    for family, support in counts.most_common(6):
         if support < MIN_SIBLINGS:
             continue
         patterns.append(
             _pattern(
                 kind="wrapper",
-                title=f"Same container `{kind}` in {support}/{total} images",
+                title=f"Same wrapper family `{family}` in {support}/{total} images",
                 why="Wrapper family decides the carve order. Do not send this blob to Ghidra.",
                 support=support,
                 total=total,
-                evidence=owners[kind],
-                next_action="Unpack with /unpack-firmware, then brief the carved httpd/tdpServer — not the .bin.",
+                evidence=owners[family],
+                next_action="r2d2 brief a carved child ELF (httpd/tdpServer), not the wrapper .bin.",
             )
         )
     return patterns
@@ -202,6 +211,8 @@ def _region_patterns(dossiers: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if support < MIN_SIBLINGS:
             continue
         if title.lower().startswith("characterize "):
+            continue
+        if title.lower() in _WEAK_REGION_TITLES:
             continue
         patterns.append(
             _pattern(
@@ -279,14 +290,21 @@ def _pattern(
     }
 
 
-def _lab_note(dossiers: list[dict[str, Any]], patterns: list[dict[str, Any]]) -> str:
+def _lab_note(
+    dossiers: list[dict[str, Any]],
+    patterns: list[dict[str, Any]],
+    *,
+    subject_class: str = "",
+    family_id: str = "",
+) -> str:
     names = ", ".join(_label(item) for item in dossiers[:8])
+    family = f"{subject_class}/{family_id}".strip("/") if subject_class or family_id else "mixed"
     lines = [
         "# Lab note (not a skill)",
         "",
-        f"Distilled from {len(dossiers)} records: {names}",
+        f"Family `{family}` from {len(dossiers)} records: {names}",
         "",
-        "These are recurring facts. Promote to a skill only after a third confirming sample.",
+        "These are recurring facts. Promote to a skill only after a third confirming sample in this family.",
         "",
     ]
     if not patterns:
@@ -305,6 +323,7 @@ def _empty(
     reason: str,
     focus_id: str | None,
     siblings: list[dict[str, Any]] | None = None,
+    families: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     refs = [_sibling_ref(item) for item in (siblings or [])]
     return {
@@ -312,6 +331,8 @@ def _empty(
         "ready": False,
         "reason": reason,
         "focus_id": focus_id,
+        "family": None,
+        "families": families or [],
         "sibling_count": len(refs),
         "siblings": refs,
         "patterns": [],
@@ -322,11 +343,174 @@ def _empty(
 
 
 def _sibling_ref(item: dict[str, Any]) -> dict[str, Any]:
+    cls, family = _family_key(item)
     return {
         "record_id": item.get("record_id"),
         "name": _label(item),
         "tags": list(item.get("tags") or [])[:8],
+        "subject_class": cls,
+        "family": family,
     }
+
+
+def _patterns_for_family(
+    dossiers: list[dict[str, Any]],
+    subject_class: str,
+    family_id: str,
+    *,
+    limit: int,
+) -> list[dict[str, Any]]:
+    if subject_class in _ELF_SUBJECT_CLASSES:
+        patterns = [
+            *_import_patterns(dossiers),
+            *_region_patterns(dossiers),
+            *_tag_patterns(dossiers),
+        ]
+        kind_rank = {"import": 0, "region": 1, "tag": 2}
+    elif subject_class == "firmware_container":
+        patterns = [
+            *_wrapper_patterns(dossiers),
+            *_region_patterns(dossiers),
+            *_tag_patterns(dossiers),
+        ]
+        kind_rank = {"wrapper": 0, "region": 1, "tag": 2}
+    else:
+        patterns = [*_region_patterns(dossiers), *_tag_patterns(dossiers)]
+        kind_rank = {"region": 0, "tag": 1}
+    if not any(item.get("kind") == "wrapper" for item in patterns) and subject_class == "firmware_container":
+        patterns.insert(
+            0,
+            _pattern(
+                kind="wrapper",
+                title=f"Wrapper family `{family_id}` ({len(dossiers)} images)",
+                why="Same vendor wrapper. Arrive at a child ELF before asking about functions.",
+                support=len(dossiers),
+                total=len(dossiers),
+                evidence=[_sibling_ref(item) for item in dossiers],
+                next_action="r2d2 brief a carved child ELF (httpd/tdpServer), not the wrapper .bin.",
+            ),
+        )
+    if subject_class == "uimage":
+        patterns.insert(
+            0,
+            _pattern(
+                kind="wrapper",
+                title=f"uImage family ({len(dossiers)} images)",
+                why="This is a boot header, not userspace. Extract the payload next.",
+                support=len(dossiers),
+                total=len(dossiers),
+                evidence=[_sibling_ref(item) for item in dossiers],
+                next_action="Extract the uImage payload; do not treat this header as httpd.",
+            ),
+        )
+    patterns.sort(
+        key=lambda item: (
+            kind_rank.get(str(item.get("kind")), 9),
+            -item["support"],
+            -item["confidence"],
+            item["title"],
+        )
+    )
+    return patterns[:limit]
+
+
+def _family_groups(dossiers: list[dict[str, Any]]) -> dict[tuple[str, str], list[dict[str, Any]]]:
+    groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    for dossier in dossiers:
+        groups[_family_key(dossier)].append(dossier)
+    return groups
+
+
+def _pick_family(
+    groups: dict[tuple[str, str], list[dict[str, Any]]],
+    *,
+    focus_id: str | None,
+) -> tuple[tuple[str, str], list[dict[str, Any]] | None]:
+    if focus_id:
+        for key, members in groups.items():
+            if any(str(item.get("record_id")) == focus_id for item in members):
+                return key, members
+    ranked = sorted(
+        groups.items(),
+        key=lambda item: (-len(item[1]), item[0][0], item[0][1]),
+    )
+    if not ranked:
+        return ("unknown", "unknown"), None
+    return ranked[0]
+
+
+def _family_summary(key: tuple[str, str], members: list[dict[str, Any]]) -> dict[str, Any]:
+    subject_class, family_id = key
+    return {
+        "subject_class": subject_class,
+        "id": family_id,
+        "count": len(members),
+        "names": [_label(item) for item in members[:8]],
+    }
+
+
+def _family_hint(summaries: list[dict[str, Any]]) -> str:
+    if not summaries:
+        return ""
+    parts = [f"{item['subject_class']}/{item['id']} ({item['count']})" for item in summaries]
+    return "Seen: " + ", ".join(parts) + "."
+
+
+def _family_key(item: dict[str, Any]) -> tuple[str, str]:
+    subject_class = _dossier_class(item)
+    if subject_class == "firmware_container":
+        return subject_class, _dossier_family(item) or "container"
+    if subject_class == "uimage":
+        return subject_class, "uimage"
+    if subject_class in _ELF_SUBJECT_CLASSES:
+        return subject_class, subject_class
+    return subject_class or "unknown", "unknown"
+
+
+def _dossier_class(item: dict[str, Any]) -> str:
+    briefing = _dict(_dict(item.get("briefing_blob")).get("subject"))
+    if briefing.get("subject_class"):
+        return str(briefing["subject_class"])
+    subject = _dict(item.get("subject_blob"))
+    if subject.get("subject_class"):
+        return str(subject["subject_class"])
+    firmware = _dict(_dict(item.get("tool_blobs")).get("firmware"))
+    if firmware.get("is_elf") or str(firmware.get("top_level_format") or "").lower() == "elf":
+        bits = firmware.get("bits") or _dict(subject).get("bits")
+        try:
+            bits_n = int(bits) if bits is not None else None
+        except (TypeError, ValueError):
+            bits_n = None
+        if bits_n == 16:
+            return "baremetal_elf"
+        return "linux_elf"
+    top = str(firmware.get("top_level_format") or subject.get("format") or "").lower()
+    if top == "uimage":
+        return "uimage"
+    if "firmware" in top or "container" in top or firmware.get("wrapper_family"):
+        return "firmware_container"
+    tags = {str(tag).lower() for tag in (item.get("tags") or [])}
+    for cls in ("baremetal_elf", "linux_elf", "firmware_container", "uimage"):
+        if cls in tags:
+            return cls
+    return "unknown"
+
+
+def _dossier_family(item: dict[str, Any]) -> str | None:
+    briefing = _dict(_dict(item.get("briefing_blob")).get("subject"))
+    if briefing.get("wrapper_family"):
+        return str(briefing["wrapper_family"])
+    subject = _dict(item.get("subject_blob"))
+    if subject.get("wrapper_family"):
+        return str(subject["wrapper_family"])
+    firmware = _dict(_dict(item.get("tool_blobs")).get("firmware"))
+    if firmware.get("wrapper_family"):
+        return str(firmware["wrapper_family"])
+    tags = {str(tag).lower() for tag in (item.get("tags") or [])}
+    for name in ("safeloader", "img0", "cloud", "ver20"):
+        if name in tags:
+            return name
+    return None
 
 
 def _label(item: dict[str, Any]) -> str:
