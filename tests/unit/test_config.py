@@ -10,6 +10,7 @@ from r2d2.config import (
     AppConfig,
     AnalysisSettings,
     LLMSettings,
+    apply_lab_tool_path,
     MCPServerSettings,
     MCPSettings,
     StorageSettings,
@@ -341,6 +342,19 @@ api_key_env = "GLM_API_KEY"
         assert config.llm.model == "glm-5.2"
         assert config.llm.api_key_env == "GLM_API_KEY"
         assert config.llm.openai_base_url == "https://open.bigmodel.cn/api/paas/v4"
+
+
+class TestLabToolPath:
+    def test_apply_lab_tool_path_appends_r2d2_tool_path(self, tmp_path, monkeypatch):
+        tool_dir = tmp_path / "rebin"
+        tool_dir.mkdir()
+        monkeypatch.setenv("R2D2_TOOL_PATH", str(tool_dir))
+        monkeypatch.setenv("PATH", "/usr/bin")
+        applied = apply_lab_tool_path()
+        assert tool_dir in applied
+        parts = os.environ["PATH"].split(":")
+        assert parts[0] == "/usr/bin"
+        assert str(tool_dir) in parts
 
 
 class TestDetectEnvironmentHeadless:
