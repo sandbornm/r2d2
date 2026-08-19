@@ -4,10 +4,13 @@ from pathlib import Path
 from unittest.mock import patch
 import os
 
+import pytest
+
 from r2d2.config import (
     AppConfig,
     AnalysisSettings,
     LLMSettings,
+    apply_lab_tool_path,
     MCPServerSettings,
     MCPSettings,
     StorageSettings,
@@ -341,6 +344,19 @@ api_key_env = "GLM_API_KEY"
         assert config.llm.openai_base_url == "https://open.bigmodel.cn/api/paas/v4"
 
 
+class TestLabToolPath:
+    def test_apply_lab_tool_path_appends_r2d2_tool_path(self, tmp_path, monkeypatch):
+        tool_dir = tmp_path / "rebin"
+        tool_dir.mkdir()
+        monkeypatch.setenv("R2D2_TOOL_PATH", str(tool_dir))
+        monkeypatch.setenv("PATH", "/usr/bin")
+        applied = apply_lab_tool_path()
+        assert tool_dir in applied
+        parts = os.environ["PATH"].split(":")
+        assert parts[0] == "/usr/bin"
+        assert str(tool_dir) in parts
+
+
 class TestDetectEnvironmentHeadless:
     def test_missing_ghidra_is_a_note_not_a_blocker(self):
         from r2d2.environment.detectors import detect_environment
@@ -358,3 +374,18 @@ class TestDetectEnvironmentHeadless:
         assert any("Ghidra skipped" in note for note in report.notes)
         assert report.llm is not None
         assert report.llm.provider == config.llm.provider
+
+
+class TestExplicitConfigPath:
+    """An explicitly requested config must exist — no silent fallback."""
+
+    def test_missing_explicit_config_raises(self, tmp_path):
+        with pytest.raises(FileNotFoundError, match="no-such-file.toml"):
+            load_config(tmp_path / "no-such-file.toml")
+
+    def test_existing_explicit_config_loads(self, tmp_path):
+        overlay = tmp_path / "overlay.toml"
+        overlay.write_text("[llm]\nprovider = 'openai'\nmodel = 'qwen-test'\n")
+        config = load_config(overlay)
+        assert config.llm.provider == "openai"
+        assert config.llm.model == "qwen-test"

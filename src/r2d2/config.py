@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent.parent / "config" / "default_config.toml"
 LOCAL_CONFIG_PATH = DEFAULT_CONFIG_PATH.with_name("local.toml")
 USER_CONFIG_PATH = Path("~/.config/r2d2/config.toml").expanduser()
+LAB_RE_VENV_BIN = Path("~/work/envs/re/bin").expanduser()
 TRUE_ENV_VALUES = {"1", "true", "yes", "on"}
 FALSE_ENV_VALUES = {"0", "false", "no", "off"}
 
@@ -214,6 +215,35 @@ def _load_toml(path: Path) -> dict[str, Any]:
         return tomllib.load(fh)
 
 
+def apply_lab_tool_path() -> list[Path]:
+    """Prepend lab RE tool bins to PATH (checksec, jefferson, ubireader).
+
+    Does not switch Python. r2d2 stays in its uv venv; those CLIs are
+    discovered via PATH. Override with R2D2_TOOL_PATH=dir:dir.
+    """
+    extra: list[Path] = []
+    raw = os.getenv("R2D2_TOOL_PATH") or ""
+    for part in raw.split(":"):
+        text = part.strip()
+        if text:
+            extra.append(Path(text).expanduser())
+    if LAB_RE_VENV_BIN.is_dir():
+        extra.append(LAB_RE_VENV_BIN)
+    seen: set[str] = set()
+    prepend: list[str] = []
+    for path in extra:
+        resolved = str(path)
+        if resolved in seen or not path.is_dir():
+            continue
+        seen.add(resolved)
+        prepend.append(resolved)
+    if prepend:
+        current = os.environ.get("PATH", "")
+        # Append: r2d2's uv .venv (angr, frida, r2pipe) stays first.
+        os.environ["PATH"] = ":".join(([current] if current else []) + prepend)
+    return [Path(item) for item in prepend]
+
+
 def _merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     result = dict(base)
     for key, value in override.items():
@@ -235,6 +265,7 @@ def load_config(config_path: Path | None = None) -> AppConfig:
     5. Environment variables (GHIDRA_INSTALL_DIR, API keys)
     """
     load_dotenv()
+    apply_lab_tool_path()
 
     data: dict[str, Any] = {}
     
@@ -254,8 +285,15 @@ def load_config(config_path: Path | None = None) -> AppConfig:
         env_config = os.getenv("R2D2_CONFIG")
         if env_config:
             custom_config = Path(env_config).expanduser()
-    
-    if custom_config and custom_config.exists():
+
+    if custom_config is not None:
+        # An explicitly requested config must exist — silently falling back to
+        # the default/local chain hides wrong-cwd mistakes (e.g. a relative
+        # --config under `uv run --directory`, which chdirs before launch).
+        if not custom_config.exists():
+            raise FileNotFoundError(
+                f"Config file not found: {custom_config} (resolved from cwd {Path.cwd()})"
+            )
         data = _merge(data, _load_toml(custom_config))
 
     config = AppConfig(raw=data)

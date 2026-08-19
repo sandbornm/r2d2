@@ -4,6 +4,8 @@
 # Do not run Ghidra on a Raspberry Pi. analyzeHeadless wants a multi-GB Java
 # heap; firmware blobs will swap or OOM. Use sniff + firmware + radare2 here,
 # and decompile on a bigger box if you need C.
+# angr-mcp on :8770 is optional; kill it on 8 GB hosts.
+# Lab tools: export R2D2_TOOL_PATH=$HOME/work/envs/re/bin  (auto if that dir exists)
 
 [analysis]
 require_elf = false
