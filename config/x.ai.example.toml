@@ -1,0 +1,17 @@
+# xAI (Grok) overlay. Key lives in gitignored `.env`, never in this file:
+#   echo 'XAI_API_KEY=...' >> .env
+#
+# Keep Z.ai as the default in config/local.toml. When GLM 1113/429:
+#   cp config/x.ai.example.toml config/local.toml
+#   systemctl --user restart r2d2-api
+# Then put the Z.ai overlay back.
+
+[llm]
+provider = "openai"
+model = "grok-4"
+api_key_env = "XAI_API_KEY"
+openai_base_url = "https://api.x.ai/v1"
+enable_fallback = false
+temperature = 0.2
+max_tokens = 2048
+compact_context = true
