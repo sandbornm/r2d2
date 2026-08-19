@@ -33,6 +33,7 @@ class LLMBridge:
         ("anthropic", "claude-5-1", "Claude 5.1"),
         ("anthropic", "claude-sonnet-4-5", "Claude Sonnet 4.5"),
         ("openai", "gpt-4o", "GPT-4o"),
+        ("glm", "glm-5.3", "GLM-5.3"),
         ("glm", "glm-5.2", "GLM-5.2"),
         ("glm", "glm-5.1", "GLM-5.1"),
         ("glm", "glm-4.6", "GLM-4.6"),
