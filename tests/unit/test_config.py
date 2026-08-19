@@ -4,6 +4,8 @@ from pathlib import Path
 from unittest.mock import patch
 import os
 
+import pytest
+
 from r2d2.config import (
     AppConfig,
     AnalysisSettings,
@@ -358,3 +360,18 @@ class TestDetectEnvironmentHeadless:
         assert any("Ghidra skipped" in note for note in report.notes)
         assert report.llm is not None
         assert report.llm.provider == config.llm.provider
+
+
+class TestExplicitConfigPath:
+    """An explicitly requested config must exist — no silent fallback."""
+
+    def test_missing_explicit_config_raises(self, tmp_path):
+        with pytest.raises(FileNotFoundError, match="no-such-file.toml"):
+            load_config(tmp_path / "no-such-file.toml")
+
+    def test_existing_explicit_config_loads(self, tmp_path):
+        overlay = tmp_path / "overlay.toml"
+        overlay.write_text("[llm]\nprovider = 'openai'\nmodel = 'qwen-test'\n")
+        config = load_config(overlay)
+        assert config.llm.provider == "openai"
+        assert config.llm.model == "qwen-test"

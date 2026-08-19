@@ -254,8 +254,15 @@ def load_config(config_path: Path | None = None) -> AppConfig:
         env_config = os.getenv("R2D2_CONFIG")
         if env_config:
             custom_config = Path(env_config).expanduser()
-    
-    if custom_config and custom_config.exists():
+
+    if custom_config is not None:
+        # An explicitly requested config must exist — silently falling back to
+        # the default/local chain hides wrong-cwd mistakes (e.g. a relative
+        # --config under `uv run --directory`, which chdirs before launch).
+        if not custom_config.exists():
+            raise FileNotFoundError(
+                f"Config file not found: {custom_config} (resolved from cwd {Path.cwd()})"
+            )
         data = _merge(data, _load_toml(custom_config))
 
     config = AppConfig(raw=data)
