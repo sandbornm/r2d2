@@ -15,7 +15,7 @@ from typing import Iterable
 
 import httpx
 
-from ..config import AppConfig
+from ..config import AppConfig, apply_lab_tool_path
 from ..llm.credentials import resolve_llm_api_key, resolve_openai_base_url, unused_glm_key_hint
 from .ghidra import GhidraDetection, detect_ghidra
 
@@ -84,6 +84,9 @@ _COMMANDS: dict[str, list[str]] = {
     "ollama": ["ollama"],
     "qemu": ["qemu-system-x86_64", "qemu-system-aarch64"],
     "frida": ["frida-server", "frida"],
+    "checksec": ["checksec"],
+    "jefferson": ["jefferson"],
+    "ubireader": ["ubireader_extract_files", "ubireader_list_files"],
 }
 
 
@@ -438,6 +441,7 @@ def detect_mcp_connections(config: AppConfig) -> dict[str, MCPConnectionCheck]:
 
 
 def detect_environment(config: AppConfig) -> EnvironmentReport:
+    apply_lab_tool_path()
     key, key_env = resolve_llm_api_key(config)
     key_present = bool(key)
     report = EnvironmentReport(
@@ -478,13 +482,16 @@ def detect_environment(config: AppConfig) -> EnvironmentReport:
     # Optional runtime tools helpful for replay/debugging.
     report.tools.append(_check_command("qemu", _COMMANDS["qemu"]))
     report.tools.append(_check_command("frida", _COMMANDS["frida"]))
+    report.tools.append(_check_command("checksec", _COMMANDS["checksec"]))
+    report.tools.append(_check_command("jefferson", _COMMANDS["jefferson"]))
+    report.tools.append(_check_command("ubireader", _COMMANDS["ubireader"]))
 
     ghidra_detection = detect_ghidra(config)
     report.ghidra = ghidra_detection
     report.notes.extend(ghidra_detection.notes)
     report.issues.extend(ghidra_detection.issues)
 
-    optional_tools = {"qemu", "frida"}
+    optional_tools = {"qemu", "frida", "checksec", "jefferson", "ubireader"}
     for tool in report.tools:
         if not tool.available:
             if tool.name in optional_tools:

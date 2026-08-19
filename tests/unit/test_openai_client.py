@@ -5,6 +5,7 @@ from r2d2.llm.openai_client import (
     OpenAIClient,
     OpenAIError,
     _openai_base_url,
+    _rate_limit_message,
     _requires_api_key,
     _resolve_openai_api_key,
 )
@@ -99,6 +100,17 @@ def test_glm_provider_uses_z_ai_when_zai_key(monkeypatch):
     assert _openai_base_url(config) == "https://api.z.ai/api/paas/v4"
 
 
+def test_rate_limit_message_distinguishes_z_ai_empty_credit():
+    credit = (
+        "Error code: 429 - {'error': {'code': '1113', "
+        "'message': 'Insufficient balance or no resource package. Please recharge.'}}"
+    )
+    mapped = _rate_limit_message(Exception(credit))
+    assert "1113" in mapped
+    assert "coding/paas" in mapped
+    assert "wait" in _rate_limit_message(Exception("Error code: 429 - rate limit exceeded")).lower()
+
+
 class _StubCompletions:
     """Capture create() params; return one canned completion."""
 
@@ -160,3 +172,20 @@ def test_chat_truncates_chat_template_token_leak(monkeypatch):
     stub = _StubCompletions(leak)
     client._client = type("Client", (), {"chat": type("Chat", (), {"completions": stub})()})()
     assert client.chat([{"role": "user", "content": "hi"}]) == "real answer"
+
+
+def test_coding_plan_host_disables_thinking_by_default(monkeypatch):
+    monkeypatch.setenv("ZAI_API_KEY", "id.secret")
+    config = AppConfig(
+        llm=LLMSettings(
+            provider="openai",
+            model="glm-5.3",
+            api_key_env="ZAI_API_KEY",
+            openai_base_url="https://api.z.ai/api/coding/paas/v4/",
+        )
+    )
+    client = OpenAIClient(config)
+    stub = _StubCompletions("pong")
+    client._client = type("Client", (), {"chat": type("Chat", (), {"completions": stub})()})()
+    client.chat([{"role": "user", "content": "hi"}])
+    assert stub.calls[0]["extra_body"] == {"thinking": {"type": "disabled"}}

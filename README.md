@@ -48,7 +48,8 @@ uv run r2d2 insights --tag httpd
 ```
 
 `--quick` = sniff + firmware + r2 metadata. Full analyze adds listing/CFG.
-`--brief` ranks regions. `--ask` sends those asks to the configured model.
+`--brief` ranks regions by **subject class** (container vs uImage vs ELF).
+`--ask` sends those asks to the configured model. An ELF is not a squashfs.
 
 ### LLM keys
 
@@ -172,6 +173,10 @@ headless. r2d2 itself is not an MCP — do not Funnel `/api/tools/execute`.
 
 Overlays merge in order: `config/default_config.toml`, `~/.config/r2d2/config.toml`,
 `config/local.toml` (gitignored), then `R2D2_CONFIG` / `--config`. Later wins.
+
+`uv sync --extra analyzers` is r2d2's own stack (r2pipe, angr, frida, capstone).
+`~/work/envs/re/bin` is appended to `PATH` only for CLIs r2d2 does not ship
+(`checksec`, `jefferson`, `ubireader_*`). Override with `R2D2_TOOL_PATH`.
 
 ```bash
 export GHIDRA_INSTALL_DIR=/home/kali/ghidra_11.2_PUBLIC

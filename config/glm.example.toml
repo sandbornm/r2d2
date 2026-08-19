@@ -7,8 +7,9 @@
 #   export R2D2_LLM_PROVIDER=glm            # enough if you skip this overlay
 #
 # Official China (open.bigmodel.cn) — GLM_API_KEY / ZHIPUAI_API_KEY
-# International Z.ai — ZAI_API_KEY + the z.ai.example.toml overlay
-# Coding-plan keys: https://api.z.ai/api/coding/paas/v4/  model glm-5.3
+# International Z.ai prepaid — ZAI_API_KEY + /api/paas/v4 + glm-5.2
+# International coding plan — ZAI_API_KEY + /api/coding/paas/v4 + glm-5.3
+# 1113 on /paas/v4 with a live key usually means switch to the coding host.
 
 [llm]
 provider = "glm"

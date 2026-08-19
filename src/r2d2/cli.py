@@ -23,6 +23,7 @@ from .environment.ghidra import detect_ghidra
 from .environment.ghidra_setup import GhidraSetupError, GhidraSetupResult, setup_ghidra
 from .environment.mcp_launcher import MCPLaunchError, MCPLaunchResult, launch_mcp_services
 from .llm import ChatMessage as LLMChatMessage, LLMBridge, LLMError
+from .llm.prompts import ANALYST_SYSTEM
 from .state import AppState, build_state
 from .pilot import (
     build_engine,
@@ -454,12 +455,7 @@ def _ask_briefing(
 
     bridge = LLMBridge(state.config)
     context = render_briefing_markdown(briefing, include_asks=False)
-    system = (
-        "You are r2d2, a senior reverse engineer. The analyst is not a beginner. "
-        "Answer only from the briefing and snippet. Hunt for a non-obvious claim: "
-        "sink caller, vendor IPC, auth gap, or missing carve. "
-        "Cite 0x addresses. One exact next command. No lectures, no exploit steps."
-    )
+    system = ANALYST_SYSTEM
     for title, ask_text in asks:
         messages = [
             LLMChatMessage(role="system", content=system),

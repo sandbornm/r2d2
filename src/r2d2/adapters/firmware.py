@@ -53,8 +53,8 @@ _SIGNATURES: tuple[_Signature, ...] = (
     _Signature("SquashFS BE", "squashfs_filesystem", b"sqsh", "SquashFS filesystem", 0.85, True),
     _Signature("CramFS", "cramfs_filesystem", b"\x45\x3d\xcd\x28", "CramFS filesystem", 0.85, True),
     _Signature("UBI", "ubi_volume", b"UBI#", "UBI flash volume", 0.85, True),
-    _Signature("JFFS2 LE", "jffs2_marker", b"\x85\x19", "JFFS2 erase block marker", 0.65, True),
-    _Signature("JFFS2 BE", "jffs2_marker", b"\x19\x85", "JFFS2 erase block marker", 0.65, True),
+    _Signature("JFFS2 LE", "jffs2_marker", b"\x85\x19", "JFFS2 erase block marker", 0.65, False),
+    _Signature("JFFS2 BE", "jffs2_marker", b"\x19\x85", "JFFS2 erase block marker", 0.65, False),
     _Signature("gzip", "compressed_stream", b"\x1f\x8b\x08", "gzip compressed stream", 0.8, True),
     _Signature("xz", "compressed_stream", b"\xfd7zXZ\x00", "xz compressed stream", 0.85, True),
     _Signature("zstd", "compressed_stream", b"\x28\xb5\x2f\xfd", "Zstandard compressed stream", 0.85, True),
@@ -161,12 +161,23 @@ class FirmwareAdapter:
             artifacts.extend(self._scan_binwalk(binary))
 
         artifacts = self._dedupe_artifacts(artifacts)
+        is_elf = data.startswith(b"\x7fELF")
+        if is_elf:
+            # Two-byte JFFS2 markers fire inside ARM/Thumb code. An ELF is the
+            # program; do not treat it as a flash image.
+            artifacts = [
+                artifact
+                for artifact in artifacts
+                if artifact.get("kind") not in {"jffs2_marker", "firmware_marker"}
+            ]
         top_level_format = self._classify_top_level(data, artifacts)
-        recommended_targets = [
-            artifact
-            for artifact in artifacts
-            if artifact.get("recommended") and int(artifact.get("offset", -1)) > 0
-        ][:25]
+        recommended_targets = []
+        if not is_elf:
+            recommended_targets = [
+                artifact
+                for artifact in artifacts
+                if artifact.get("recommended") and int(artifact.get("offset", -1)) > 0
+            ][:25]
         for artifact in artifacts:
             artifact.update(self._analysis_routing(artifact))
         carved_targets = self._carve_targets(binary, artifacts, recommended_targets, size_bytes)
@@ -176,9 +187,10 @@ class FirmwareAdapter:
             "mode": "firmware_inventory",
             "size_bytes": size_bytes,
             "sha256": self._sha256(binary),
-            "is_elf": data.startswith(b"\x7fELF"),
+            "is_elf": is_elf,
             "top_level_format": top_level_format,
             "container_type": self._classify_container(top_level_format, artifacts),
+            "wrapper_family": self._wrapper_family(artifacts),
             "scan": {
                 "bytes_scanned": len(data),
                 "truncated": size_bytes > len(data),
@@ -252,6 +264,8 @@ class FirmwareAdapter:
 
         for offset, value in self._iter_ascii_strings(data):
             total_strings += 1
+            if not self._usable_signal_string(value):
+                continue
             lower = value.lower()
             for rule in _STRING_RULES:
                 if not rule.pattern.search(lower):
@@ -293,8 +307,31 @@ class FirmwareAdapter:
             "category_counts": populated_counts,
             "categories": populated_categories,
             "top_signals": top_signals,
-            "string_min_length": 4,
+            "string_min_length": 8,
         }
+
+    @staticmethod
+    def _usable_signal_string(value: str) -> bool:
+        text = value.strip()
+        if len(text) < 8:
+            return False
+        if not any(ch in text.lower() for ch in "aeiou"):
+            return False
+        letters = sum(ch.isalpha() for ch in text)
+        return letters >= 4
+
+    @staticmethod
+    def _wrapper_family(artifacts: list[dict[str, Any]]) -> str | None:
+        names = {str(item.get("name") or "") for item in artifacts}
+        if "TP-Link IMG0" in names:
+            return "img0"
+        if "TP-Link fwup-ptn" in names:
+            return "safeloader"
+        if "TP-Link Cloud" in names:
+            return "cloud"
+        if "TP-Link ver. 2.0" in names:
+            return "ver20"
+        return None
 
     def _iter_ascii_strings(self, data: bytes) -> Iterator[tuple[int, str]]:
         start: int | None = None
@@ -745,7 +782,12 @@ class FirmwareAdapter:
         notes: list[str] = []
         if size_bytes > len(data):
             notes.append(f"Scan truncated at {len(data)} bytes.")
-        if not data.startswith(b"\x7fELF"):
+        if data.startswith(b"\x7fELF"):
+            notes.append(
+                "Top-level subject is an ELF; signature carving skipped. "
+                "Rank symbols / functions, not a vendor wrapper."
+            )
+        else:
             notes.append("Top-level subject is not an ELF; use embedded artifacts as code/filesystem targets.")
         if not artifacts:
             notes.append("No common firmware signatures found in the scanned prefix.")

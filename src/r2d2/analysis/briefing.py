@@ -13,6 +13,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
+from ..llm.prompts import PROMPT_ID, overall_ask_header, overall_ask_tail, region_ask_tail
+
 BRIEFING_SCHEMA_VERSION = "r2d2.briefing.v1"
 MAX_REGIONS = 6
 MAX_ASM_LINES = 18
@@ -88,7 +90,32 @@ _NAME_HINTS = (
     "parse",
     "handler",
     "socket",
+    "subghz",
+    "nfc_",
+    "lfrfid",
+    "ibutton",
+    "infrared",
+    "keeloq",
+    "princeton",
+    "protocol",
+    "decoder",
+    "poller",
 )
+_SYMBOL_HINTS = (
+    "subghz",
+    "nfc_",
+    "lfrfid",
+    "ibutton",
+    "infrared",
+    "keeloq",
+    "princeton",
+    "protocol",
+    "httpd",
+    "tdpserver",
+    "decoder_feed",
+)
+_ELF_SUBJECT_CLASSES = frozenset({"linux_elf", "baremetal_elf"})
+_CONTAINER_SUBJECT_CLASSES = frozenset({"firmware_container", "uimage"})
 _FIRMWARE_KIND_SCORE = {
     "vendor_wrapper": 96,
     "elf_binary": 94,
@@ -109,6 +136,13 @@ _WEAK_STRINGS = {
     "auth",
     "tftp",
     "bootcmd=tftp",
+    "acceptallpasswords",
+    "password read",
+    "password write",
+    "password privacy",
+    "passwords are optional",
+    "/app:u2f/u2f token",
+    "u2f token",
 }
 
 
@@ -167,6 +201,7 @@ class AnalysisBriefing:
     def to_dict(self) -> dict[str, Any]:
         return {
             "schema_version": self.schema_version,
+            "prompt_id": PROMPT_ID,
             "binary": self.binary,
             "subject": dict(self.subject),
             "summary": self.summary,
@@ -205,6 +240,7 @@ def build_briefing(
         children=children,
         graph=_dict(analysis.get("analysis_graph")),
         issues=list(analysis.get("issues") or []),
+        subject_class=str(subject.get("subject_class") or ""),
     )
     candidates.sort(key=lambda region: (-region.score, region.id))
     regions = _dedupe_regions(candidates)[: max(1, max_regions)]
@@ -362,13 +398,24 @@ def _subject(
     dangerous = sorted({item for item in imports if _basename(item) in _DANGEROUS_IMPORTS})
     interesting = sorted({item for item in imports if _basename(item) in _INTERESTING_IMPORTS})
     functions = _list(r2_deep.get("functions"))
+    symbols = _list(r2_quick.get("interesting_symbols")) or _list(r2_quick.get("symbols"))
+    function_count = r2_deep.get("function_count") or len(functions)
+    if not function_count:
+        function_count = sum(
+            1
+            for item in symbols
+            if isinstance(item, dict)
+            and str(item.get("type") or item.get("kind") or "").lower() in {"func", "fcn", "function"}
+        ) or len(symbols)
+    subject_class = _classify_subject(firmware, info, profile)
     return {
         "name": name,
         "binary": binary,
         "format": firmware.get("top_level_format") or core.get("format") or profile.get("file_type"),
         "arch": _arch_label(info, profile),
         "os": info.get("os") or firmware.get("container_type"),
-        "function_count": r2_deep.get("function_count") or len(functions),
+        "subject_class": subject_class,
+        "function_count": function_count,
         "import_count": len(imports),
         "dangerous_imports": dangerous,
         "interesting_imports": interesting,
@@ -377,8 +424,34 @@ def _subject(
         "stripped": profile.get("is_stripped"),
         "issues": list(analysis.get("issues") or [])[:6],
         "firmware_kind": firmware.get("container_type") or firmware.get("top_level_format"),
+        "wrapper_family": firmware.get("wrapper_family"),
         "carved_count": len(_list(firmware.get("carved_targets"))),
     }
+
+
+def _classify_subject(
+    firmware: dict[str, Any],
+    info: dict[str, Any],
+    profile: dict[str, Any],
+) -> str:
+    top = str(firmware.get("top_level_format") or "").lower()
+    is_elf = bool(firmware.get("is_elf")) or top == "elf"
+    bits = info.get("bits") or profile.get("bits")
+    try:
+        bits_n = int(bits) if bits is not None else None
+    except (TypeError, ValueError):
+        bits_n = None
+    if is_elf:
+        if bits_n == 16 or "thumb" in str(info.get("arch") or profile.get("architecture") or "").lower():
+            return "baremetal_elf"
+        return "linux_elf"
+    if top in {"uimage", "fit_or_dtb"} or firmware.get("container_type") == "boot_firmware":
+        return "uimage"
+    if top in {"firmware_container", "binary_blob_with_embedded_artifacts", "squashfs", "ubi", "gzip"}:
+        return "firmware_container"
+    if firmware.get("container_type") in {"filesystem_image", "opaque_blob", "compressed_container"}:
+        return "firmware_container"
+    return "unknown"
 
 
 def _collect_regions(
@@ -392,13 +465,16 @@ def _collect_regions(
     children: dict[str, Any],
     graph: dict[str, Any],
     issues: list[Any],
+    subject_class: str = "",
 ) -> list[RegionAsk]:
     regions: list[RegionAsk] = []
-    regions.extend(_firmware_regions(firmware))
+    if subject_class not in _ELF_SUBJECT_CLASSES:
+        regions.extend(_firmware_regions(firmware))
     regions.extend(_signal_regions(firmware, profile))
     regions.extend(_import_regions(r2_quick))
+    regions.extend(_symbol_regions(r2_quick))
     regions.extend(_entry_regions(r2_deep, name))
-    regions.extend(_function_regions(r2_deep))
+    regions.extend(_function_regions(r2_deep, r2_quick))
     regions.extend(_ghidra_regions(ghidra))
     regions.extend(_child_regions(children))
     regions.extend(_issue_regions(issues, graph))
@@ -417,11 +493,64 @@ def _collect_regions(
                 ),
                 next_actions=[
                     "Run a deep radare2 scan (`aaa; afl`) if this was triage-only.",
-                    "If this is a vendor wrapper, unpack and re-run on the carved ELF.",
+                    "If this is a vendor wrapper, unpack and re-run on the carved ELF."
+                    if subject_class in _CONTAINER_SUBJECT_CLASSES
+                    else "List symbols (`is~protocol`) before treating this as a container.",
                 ],
             )
         )
     return regions
+
+
+def _symbol_regions(r2_quick: dict[str, Any]) -> list[RegionAsk]:
+    symbols = [
+        item
+        for item in (
+            _list(r2_quick.get("interesting_symbols")) or _list(r2_quick.get("symbols"))
+        )
+        if isinstance(item, dict)
+    ]
+    hits: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in symbols:
+        name = str(item.get("name") or item.get("flagname") or item.get("realname") or "")
+        lowered = name.lower()
+        if not name or name in seen:
+            continue
+        if not any(hint in lowered for hint in _SYMBOL_HINTS):
+            continue
+        seen.add(name)
+        hits.append(item)
+        if len(hits) >= 10:
+            break
+    if not hits:
+        return []
+    lines = []
+    for item in hits:
+        name = str(item.get("name") or "?")
+        addr = _hex(item.get("vaddr") or item.get("offset") or item.get("paddr"))
+        lines.append(f"{addr or '?'}  {name}")
+    first = hits[0]
+    return [
+        RegionAsk(
+            id="symbols:protocol",
+            title="Named protocol / service symbols",
+            why="Unstripped names beat wrapper inventory on a program ELF.",
+            score=97,
+            tags=["symbols", "protocol"],
+            snippet=RegionSnippet(
+                source="radare2",
+                kind="inventory",
+                text="\n".join(lines),
+                address=_hex(first.get("vaddr") or first.get("offset")),
+                function=str(first.get("name") or ""),
+            ),
+            next_actions=[
+                f"r2: `pdf @ {hits[0].get('name')}` (or `is~{hits[0].get('name')}`).",
+                "Treat these as vtables/registries, not files in a squashfs.",
+            ],
+        )
+    ]
 
 
 def _firmware_regions(firmware: dict[str, Any]) -> list[RegionAsk]:
@@ -432,7 +561,7 @@ def _firmware_regions(firmware: dict[str, Any]) -> list[RegionAsk]:
         if not isinstance(artifact, dict):
             continue
         kind = str(artifact.get("kind") or "artifact")
-        if kind in _NOISY_FIRMWARE_KINDS and not artifact.get("carved_path"):
+        if kind in _NOISY_FIRMWARE_KINDS:
             continue
         if kind == "vendor_wrapper":
             wrapper_key = str(artifact.get("name") or kind)
@@ -590,7 +719,7 @@ def _entry_regions(r2_deep: dict[str, Any], name: str) -> list[RegionAsk]:
     ]
 
 
-def _function_regions(r2_deep: dict[str, Any]) -> list[RegionAsk]:
+def _function_regions(r2_deep: dict[str, Any], r2_quick: dict[str, Any] | None = None) -> list[RegionAsk]:
     regions: list[RegionAsk] = []
     snippets_by_name: dict[str, dict[str, Any]] = {}
     for snippet in _list(r2_deep.get("snippets")):
@@ -598,6 +727,16 @@ def _function_regions(r2_deep: dict[str, Any]) -> list[RegionAsk]:
             snippets_by_name[str(snippet["function"])] = snippet
 
     functions = [item for item in _list(r2_deep.get("functions")) if isinstance(item, dict)]
+    if not functions and r2_quick:
+        functions = [
+            {
+                "name": item.get("name") or item.get("flagname"),
+                "offset": item.get("vaddr") or item.get("offset"),
+                "size": item.get("size") or 0,
+            }
+            for item in _list(r2_quick.get("interesting_symbols"))
+            if isinstance(item, dict)
+        ]
     ranked: list[tuple[float, dict[str, Any]]] = []
     for func in functions:
         name = str(func.get("name") or "")
@@ -788,17 +927,7 @@ def _region_ask(region: RegionAsk, *, index: int, total: int, subject: dict[str,
     if excerpt:
         fence = "asm" if snippet and snippet.kind in {"disasm", "decompile"} else "text"
         lines.extend(["", f"```{fence}", excerpt, "```", ""])
-    lines.extend(
-        [
-            "You are briefing a professional RE. Do not define terms. Do not restate the listing.",
-            "Answer in exactly 4 bullets:",
-            "1. The non-obvious claim this snippet supports (or 'nothing interesting')",
-            "2. Trust boundary / attacker-controlled data visible HERE only",
-            "3. Highest-value next address, callee, or carved file — and why it could surprise",
-            "4. One exact next command (r2, Ghidra headless, or unpack)",
-            "Rules: do not invent symbols absent from the snippet; no exploit/PoC; no tutorial.",
-        ]
-    )
+    lines.extend(region_ask_tail())
     return _clamp("\n".join(lines), MAX_ASK_CHARS)
 
 
@@ -820,21 +949,18 @@ def _overall_ask(subject: dict[str, Any], regions: list[RegionAsk], next_steps: 
         facts.append(f"Firmware container: {subject['firmware_kind']} ({subject.get('carved_count') or 0} carved)")
     if subject.get("risk_level"):
         facts.append(f"Autoprofile risk: {subject['risk_level']}")
+    if subject.get("subject_class"):
+        facts.append(f"subject_class: {subject['subject_class']}")
+    if subject.get("wrapper_family"):
+        facts.append(f"wrapper_family: {subject['wrapper_family']}")
     lines = [
-        "PROFESSIONAL TRIAGE — facts and region titles only. No lecture.",
+        overall_ask_header(),
         *facts,
         "",
         "Ranked regions:",
         *region_lines,
         "",
-        "Answer in exactly 6 bullets:",
-        "1. What is actually unusual (not 'it is firmware')",
-        "2. Highest-leverage region and the claim it supports",
-        "3. Best next ELF/function — prefer httpd/tdpServer/sink callers over size",
-        "4. What is still unknown (missing carve, stripped names, dead tool)",
-        "5. Exact next r2 or Ghidra-headless command",
-        "6. Exact next unpack step if this is still a wrapper",
-        "Rules: defensive only; no exploit steps; do not invent symbols.",
+        *overall_ask_tail(),
     ]
     if next_steps:
         lines.extend(["", "Analyst next steps already queued:"] + [f"- {step}" for step in next_steps[:4]])
@@ -848,8 +974,13 @@ def _overall_next_steps(
     children: dict[str, Any],
 ) -> list[str]:
     steps: list[str] = []
-    if firmware.get("top_level_format") and not _list(children.get("analyses")):
+    subject_class = str(subject.get("subject_class") or "")
+    if subject_class == "firmware_container" and not _list(children.get("analyses")):
         steps.append("Unpack the vendor wrapper and brief a carved ELF (httpd/tdpServer), not the .bin.")
+    elif subject_class == "uimage" and not _list(children.get("analyses")):
+        steps.append("Extract the uImage payload (kernel/rootfs); do not treat this header as a userspace ELF.")
+    elif subject_class in _ELF_SUBJECT_CLASSES:
+        steps.append("This is already an ELF. Rank named symbols / entry; do not unsquash it.")
     if subject.get("dangerous_imports"):
         first = subject["dangerous_imports"][0]
         steps.append(f"r2: `axt @ sym.imp.{_basename(first)}` and brief that caller.")
@@ -880,6 +1011,11 @@ def _firmware_next_actions(kind: str, artifact: dict[str, Any]) -> list[str]:
         return [
             "Identify the wrapper (ver. 2.0 / Cloud / IMG0 / fwup-ptn) and carve kernel + rootfs.",
             "Do not send the wrapper blob to the model; brief the extracted ELF instead.",
+        ]
+    if kind == "uimage":
+        return [
+            "Dump the uImage header (OS/arch/load/payload size) then extract the payload.",
+            "Do not brief this header as httpd; look for squashfs after the kernel.",
         ]
     if kind == "squashfs_filesystem":
         return [

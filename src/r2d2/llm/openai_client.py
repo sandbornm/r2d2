@@ -40,6 +40,19 @@ def _truncate_template_leak(content: str) -> str:
     return content
 
 
+def _rate_limit_message(exc: BaseException) -> str:
+    """Z.ai uses HTTP 429 for empty credit and for the wrong product host."""
+    text = str(exc)
+    lowered = text.lower()
+    if "1113" in text or "insufficient balance" in lowered or "no resource package" in lowered:
+        return (
+            "Z.ai/GLM 1113: this host has no package for this key. "
+            "Coding-plan keys need https://api.z.ai/api/coding/paas/v4/ and glm-5.3 "
+            "(not /api/paas/v4 + glm-5.2). Prepaid keys need a top-up on /api/paas/v4."
+        )
+    return "OpenAI-compatible rate limit exceeded. Please wait and try again."
+
+
 class ChatMessage(BaseModel):
     role: str
     content: str
@@ -136,6 +149,8 @@ class OpenAIClient:
             params["max_completion_tokens"] = token_budget
         else:
             params["max_tokens"] = token_budget
+        if extra_body is None and self._base_url and "coding/paas" in self._base_url:
+            extra_body = {"thinking": {"type": "disabled"}}
         if extra_body:
             params["extra_body"] = extra_body
         if timeout is not None:
@@ -149,8 +164,8 @@ class OpenAIClient:
             raise OpenAIError(
                 f"Invalid API key. Check {self._api_env or 'GLM_API_KEY / ZAI_API_KEY / OPENAI_API_KEY'}."
             )
-        except RateLimitError:
-            raise OpenAIError("OpenAI rate limit exceeded. Please wait and try again.")
+        except RateLimitError as e:
+            raise OpenAIError(_rate_limit_message(e))
         except APIError as e:
             # Extract clean message from API error
             msg = str(e)
