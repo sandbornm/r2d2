@@ -69,6 +69,9 @@ echo 'GLM_API_KEY=...' >> .env                  # or ZHIPUAI_API_KEY
 
 # Local exo / llama.cpp / vLLM — no cloud key
 # openai_base_url = "http://<tailscale-host>:52415/v1"
+
+# xAI (Grok) — spare host if Z.ai quota dies (do not enable_fallback; one URL)
+# cp config/x.ai.example.toml config/local.toml && echo 'XAI_API_KEY=...' >> .env
 ```
 
 Never put the secret in toml. `uv run r2d2 env` shows provider / model / whether the named key is present.
@@ -193,6 +196,18 @@ uv run ruff check src tests
 uv run pytest tests/unit tests/integration/test_api.py::TestChatsEndpoint::test_chat_bundle_exports_json_and_markdown
 cd web/frontend && npm test && npm run build
 ```
+
+## Tests
+
+CI runs ruff + unit tests on **Python 3.11 and 3.12** (this lab is 3.11) with a
+45% coverage floor on `src/r2d2`. Locally:
+
+```bash
+uv run pytest tests/unit --cov=r2d2 --cov-report=term
+uv run ruff check src tests
+```
+
+mypy is installed but not a CI gate (`strict` is not green on the whole tree).
 
 ## License
 
