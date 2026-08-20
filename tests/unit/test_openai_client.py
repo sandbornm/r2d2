@@ -58,8 +58,8 @@ def test_resolve_prefers_named_api_key_env(monkeypatch):
 
 
 def test_z_ai_host_requires_a_key(monkeypatch):
-    monkeypatch.delenv("ZAI_API_KEY", raising=False)
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    for name in ("ZAI_API_KEY", "XAI_API_KEY", "OPENAI_API_KEY", "GLM_API_KEY", "ZHIPUAI_API_KEY", "ZHIPU_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
     config = AppConfig(
         llm=LLMSettings(
             provider="openai",

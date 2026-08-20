@@ -82,6 +82,11 @@ _COMMANDS: dict[str, list[str]] = {
     "ghidra": ["ghidraRun", "analyzeHeadless"],
     "docker": ["docker"],
     "ollama": ["ollama"],
+    "file": ["file"],
+    "binwalk": ["binwalk"],
+    "unsquashfs": ["unsquashfs"],
+    "sasquatch": ["sasquatch"],
+    "qemu-user": ["qemu-aarch64", "qemu-arm", "qemu-x86_64"],
     "qemu": ["qemu-system-x86_64", "qemu-system-aarch64"],
     "frida": ["frida-server", "frida"],
     "checksec": ["checksec"],
@@ -480,6 +485,11 @@ def detect_environment(config: AppConfig) -> EnvironmentReport:
         report.tools.append(_check_python_module("anthropic"))
 
     # Optional runtime tools helpful for replay/debugging.
+    report.tools.append(_check_command("file", _COMMANDS["file"]))
+    report.tools.append(_check_command("binwalk", _COMMANDS["binwalk"]))
+    report.tools.append(_check_command("unsquashfs", _COMMANDS["unsquashfs"]))
+    report.tools.append(_check_command("sasquatch", _COMMANDS["sasquatch"]))
+    report.tools.append(_check_command("qemu-user", _COMMANDS["qemu-user"]))
     report.tools.append(_check_command("qemu", _COMMANDS["qemu"]))
     report.tools.append(_check_command("frida", _COMMANDS["frida"]))
     report.tools.append(_check_command("checksec", _COMMANDS["checksec"]))
@@ -491,7 +501,17 @@ def detect_environment(config: AppConfig) -> EnvironmentReport:
     report.notes.extend(ghidra_detection.notes)
     report.issues.extend(ghidra_detection.issues)
 
-    optional_tools = {"qemu", "frida", "checksec", "jefferson", "ubireader"}
+    optional_tools = {
+        "qemu",
+        "qemu-user",
+        "frida",
+        "checksec",
+        "jefferson",
+        "ubireader",
+        "binwalk",
+        "unsquashfs",
+        "sasquatch",
+    }
     for tool in report.tools:
         if not tool.available:
             if tool.name in optional_tools:
