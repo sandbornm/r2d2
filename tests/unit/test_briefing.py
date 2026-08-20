@@ -213,6 +213,35 @@ def test_briefing_elf_subject_does_not_ask_to_unpack(tmp_path: Path):
     assert "acceptallpasswords" not in asks
 
 
+def test_briefing_quick_elf_uses_entry_listing_not_overview(tmp_path: Path):
+    analysis = {
+        "binary": str(tmp_path / "hello"),
+        "quick_scan": {
+            "firmware": {"is_elf": True, "top_level_format": "elf", "container_type": "executable"},
+            "radare2": {
+                "info": {"bin": {"arch": "arm", "bits": 64, "os": "linux"}, "core": {"format": "elf"}},
+                "imports": [{"name": "puts"}],
+                "symbols": [
+                    {"name": "main", "vaddr": 0x4005A4, "type": "FUNC", "size": 48},
+                    {"name": "hello.c", "vaddr": 0xFFFFFFFFFFFFFFFF, "type": "FILE"},
+                ],
+                "entry_function": {"name": "main", "offset": 0x4005A4},
+                "entry_disassembly": "0x4005a4  stp x29, x30, [sp, -16]!\n0x4005a8  mov x29, sp\n0x4005ac  bl sym.imp.puts\n",
+            },
+        },
+        "deep_scan": {},
+        "issues": [],
+    }
+    briefing = build_briefing(analysis, max_regions=4)
+    assert briefing["subject"]["subject_class"] == "linux_elf"
+    titles = " ".join(region["title"].lower() for region in briefing["regions"])
+    assert "characterize" not in titles
+    assert "entry" in titles or "main" in titles
+    texts = " ".join((region.get("snippet") or {}).get("text") or "" for region in briefing["regions"])
+    assert "stp" in texts or "puts" in texts
+    assert "hello.c" not in texts
+
+
 def test_briefing_uimage_does_not_ask_to_unpack_httpd(tmp_path: Path):
     analysis = {
         "binary": str(tmp_path / "kernel.uimage"),

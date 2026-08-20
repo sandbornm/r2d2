@@ -21,6 +21,7 @@ CLOUD_KEY_ENVS = (
     "ZHIPUAI_API_KEY",
     "ZHIPU_API_KEY",
     "ZAI_API_KEY",
+    "XAI_API_KEY",
     "OPENAI_API_KEY",
 )
 ZAI_KEY_ENVS = frozenset({"ZAI_API_KEY"})

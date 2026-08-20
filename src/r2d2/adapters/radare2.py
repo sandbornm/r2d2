@@ -104,16 +104,68 @@ class Radare2Adapter:
             if not isinstance(item, dict):
                 continue
             name = str(item.get("name") or item.get("flagname") or item.get("realname") or "")
+            kind = str(item.get("type") or item.get("kind") or "").lower()
+            if kind in {"file", "sect", "section"}:
+                continue
             lowered = name.lower()
             if not name or name in seen:
                 continue
             if not any(hint in lowered for hint in _SYMBOL_HINTS):
+                continue
+            vaddr = item.get("vaddr") if item.get("vaddr") is not None else item.get("offset")
+            try:
+                if vaddr is not None and int(vaddr) < 0:
+                    continue
+            except (TypeError, ValueError):
                 continue
             seen.add(name)
             hits.append(item)
             if len(hits) >= 48:
                 break
         return hits
+
+    @classmethod
+    def _quick_entry(
+        cls,
+        session: Any,
+        symbols: list[Any],
+        entry_points: list[Any],
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        """Cheap entry listing without `aaa` so --quick ELFs are not overview-only."""
+        preferred = ("main", "sym.main", "entry0", "_start", "start")
+        chosen: dict[str, Any] | None = None
+        for item in symbols:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "")
+            if name in preferred:
+                chosen = item
+                if name in {"main", "sym.main"}:
+                    break
+        offset = None
+        name = "entry"
+        if chosen is not None:
+            offset = chosen.get("vaddr")
+            if offset is None:
+                offset = chosen.get("offset")
+            name = str(chosen.get("name") or name)
+        elif entry_points:
+            first = entry_points[0] if isinstance(entry_points[0], dict) else {}
+            offset = first.get("vaddr")
+            if offset is None:
+                offset = first.get("paddr")
+            name = str(first.get("name") or name)
+        if offset is None:
+            return None, None
+        try:
+            addr = int(offset)
+        except (TypeError, ValueError):
+            return {"name": name, "offset": offset}, None
+        if addr < 0:
+            return None, None
+        listing = session.cmd(f"pD 32 @ {addr}") or ""
+        listing = _ANSI_RE.sub("", listing).strip()
+        return {"name": name, "offset": addr}, listing or None
 
     def quick_scan(self, binary: Path) -> dict[str, object]:
         if not self.is_available():
@@ -128,6 +180,11 @@ class Radare2Adapter:
             sections = self._cmdj(session, "iSj") or []
             symbols = self._cmdj(session, "isj") or []
             entry_points = self._cmdj(session, "iej") or []
+            entry_function, entry_disassembly = self._quick_entry(
+                session,
+                symbols if isinstance(symbols, list) else [],
+                entry_points if isinstance(entry_points, list) else [],
+            )
         except Exception as exc:  # pragma: no cover - runtime guard
             _LOGGER.exception("radare2 quick scan failed: %s", exc)
             raise AdapterUnavailable(f"radare2 quick scan failed: {exc}") from exc
@@ -145,7 +202,9 @@ class Radare2Adapter:
             "symbols": symbol_list[:400],
             "interesting_symbols": self._interesting_symbols(symbol_list),
             "entry_points": entry_points if isinstance(entry_points, list) else [],
-            "commands": ["ij", "iHj", "iij", "izj", "iSj", "isj", "iej"],
+            "entry_function": entry_function,
+            "entry_disassembly": entry_disassembly,
+            "commands": ["ij", "iHj", "iij", "izj", "iSj", "isj", "iej", "pD"],
         }
 
     def deep_scan(self, binary: Path, *, resource_tree: object | None = None) -> dict[str, object]:
